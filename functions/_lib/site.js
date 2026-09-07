@@ -161,6 +161,7 @@ img{max-width:100%}
 /* 页脚 */
 .ft{border-top:1px solid var(--line);background:var(--card);color:var(--muted);font-size:13.5px;padding:20px 0;text-align:center}
 .ft a{color:var(--muted)}
+.ft a:hover{text-decoration:underline}
 @media (max-width:640px){
  .pc{grid-template-columns:1fr}.pc-cover img{width:100%;height:auto;max-height:180px}
  .article{padding:22px 18px}.comments{padding:20px 18px}.cmt-child{margin-left:20px}
@@ -175,6 +176,7 @@ export function layout(s, o) {
   const desc = o.desc || s.get('seo_desc') || s.get('site_subtitle');
   const year = new Date(Date.now() + 8 * 3600e3).getUTCFullYear();
   const footer = (s.get('footer_text') || '').split('\n').map(esc).join('<br>');
+  const beian = (s.get('beian') || '').trim(); // ICP 备案号：填了才在页脚显示，链工信部官网
   const nav = (href, label, key) =>
     `<a href="${href}"${o.active === key ? ' class="on"' : ''}>${esc(label)}</a>`;
   return `<!doctype html>
@@ -205,7 +207,8 @@ ${o.bodySlug ? '<script src="/js/site.js" defer></script>' : ''}
 </div></header>
 <main class="main"><div class="wrap">${o.content}</div></main>
 <footer class="ft"><div class="wrap">
-  ${footer ? footer + '<br>' : ''}© ${year} ${esc(title)} · 由 Cloudflare Pages 驱动 · <a href="/admin">后台管理</a>
+  ${footer ? footer + '<br>' : ''}© ${year} ${esc(title)} · 由 Cloudflare Pages 驱动
+  ${beian ? `<br><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">${esc(beian)}</a>` : ''}
 </div></footer>
 </body>
 </html>`;
@@ -255,7 +258,7 @@ export function renderHome(s, data, page) {
     <section class="hero"><h1>${esc(s.get('site_subtitle'))}</h1></section>
     ${catChips(data.categories)}
     ${items ? `<div class="plist">${items}</div>` + pagination(page, data.pages, '/', 1)
-      : `<div class="empty">还没有发布文章，快去后台写第一篇吧 → <a href="/admin">管理后台</a></div>`}
+      : `<div class="empty">还没有发布文章</div>`}
     ${pagination(page, data.pages, '/', 1) ? '' : ''}`;
   return layout(s, { content, active: 'home', bodySlug: '' });
 }
