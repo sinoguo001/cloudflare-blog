@@ -258,7 +258,7 @@ async function api(ctx, url, seg, method) {
     await db.setSetting(dbx, 'admin_username', username);
     await db.setSetting(dbx, 'admin_pass_salt', salt);
     await db.setSetting(dbx, 'admin_pass_hash', hash);
-    await db.setSetting(dbx, 'admin_pass_iter', String(150000));
+    await db.setSetting(dbx, 'admin_pass_iter', String(100000));
     const value = await makeSessionValue(env, username);
     return jset({ ok: true }, setSessionCookie(value));
   }
@@ -272,7 +272,7 @@ async function api(ctx, url, seg, method) {
       if (!u2 || u2 !== uname) return err('用户名或密码错误', 401);
       const salt = await db.getSetting(dbx, 'admin_pass_salt');
       const hash = await db.getSetting(dbx, 'admin_pass_hash');
-      const iter = parseInt(await db.getSetting(dbx, 'admin_pass_iter'), 10) || 150000;
+      const iter = parseInt(await db.getSetting(dbx, 'admin_pass_iter'), 10) || 100000;
       if ((await pbkdf2(String(b.password || ''), salt, iter)) !== hash) return err('用户名或密码错误', 401);
       const value = await makeSessionValue(env, uname);
       return jset({ ok: true, username: uname }, setSessionCookie(value));
@@ -508,7 +508,7 @@ async function api(ctx, url, seg, method) {
       const salt = newSalt();
       await db.setSetting(dbx, 'admin_pass_salt', salt);
       await db.setSetting(dbx, 'admin_pass_hash', await pbkdf2(String(b.new_password), salt));
-      await db.setSetting(dbx, 'admin_pass_iter', String(150000));
+      await db.setSetting(dbx, 'admin_pass_iter', String(100000));
     }
     return json({ ok: true });
   }
