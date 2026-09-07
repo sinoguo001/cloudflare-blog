@@ -61,17 +61,17 @@
 npx wrangler login
 
 # 2) 创建 D1 数据库与 R2 存储桶
-npx wrangler d1 create jiecheng-blog-db     # 把输出的 database_id 填进 wrangler.toml
-npx wrangler r2 bucket create jiecheng-blog-assets
+npx wrangler d1 create blog-db     # 把输出的 database_id 填进 wrangler.toml
+npx wrangler r2 bucket create blog-assets
 
 # 3) 建表（读取 migrations/ 目录）
-npx wrangler d1 migrations apply jiecheng-blog-db
+npx wrangler d1 migrations apply blog-db
 
 # 4) 部署（目录内含 functions/，自动作为 API 与渲染层）
-npx wrangler pages deploy public --project-name jiecheng-blog
+npx wrangler pages deploy public --project-name blog
 ```
 
-部署完成后打开 `https://jiecheng-blog.pages.dev/admin`：
+部署完成后打开 `https://blog.pages.dev/admin`：
 
 1. 首次进入会看到**初始化向导**——填写站点名称、副标题、作者署名与管理员账号（仅此一次可用），提交后自动登录；
 2. 点「写文章」，享受所见即所得编辑 → 一键发布；
@@ -86,7 +86,7 @@ npx wrangler pages deploy public --project-name jiecheng-blog
 ## 💻 本地预览（可选）
 
 ```bash
-npx wrangler d1 migrations apply jiecheng-blog-db --local   # 首次建本地库
+npx wrangler d1 migrations apply blog-db --local   # 首次建本地库
 npx wrangler pages dev public                                # http://127.0.0.1:8788
 ```
 
@@ -260,7 +260,7 @@ my-theme/
 
 1. **GitHub**：注册 github.com → 新建 **Private** 私有仓库（不勾选任何初始化文件）→ `Add file → Upload files` 把本文件夹全部内容拖入 → Commit；
 2. **Cloudflare**：dash.cloudflare.com 注册；
-3. 建 **D1** 数据库（命名随意，如 `jiecheng-blog-db`）→ 打开该库 **Console**，把 `migrations/d1-console.sql` 全文粘贴执行（⚠️ 不要用 `0001_init.sql` 原文直接粘贴，原因见文末"建表坑"）；建 **R2** 桶（如 `jiecheng-blog-assets`）；
+3. 建 **D1** 数据库（命名随意，如 `blog-db`）→ 打开该库 **Console**，把 `migrations/d1-console.sql` 全文粘贴执行（⚠️ 不要用 `0001_init.sql` 原文直接粘贴，原因见文末"建表坑"）；建 **R2** 桶（如 `blog-assets`）；
 4. **Pages** → Create project → Connect to Git → 授权并选择仓库 → 框架预设 **None**、构建命令**留空**、输出目录 **`public`** → Save and Deploy（首次部署可能失败，属正常）；
 5. 项目 **Settings → Functions → Bindings**：添加 D1 绑定（变量名 **`DB`**）、R2 绑定（变量名 **`BLOG`**）；**Settings → Variables and Secrets**：添加加密变量 **`AUTH_SECRET`**（随机长串）；
 6. **Deployments** 里对最新一次点 Retry（重新部署，让绑定生效），随后打开 `https://<项目名>.pages.dev/admin` 完成初始化向导即可。

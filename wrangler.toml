@@ -1,12 +1,12 @@
 # ============================================================
 # Cloudflare Pages + Functions 博客（全部跑在免费套餐内）
 # 部署前必读 README.md：
-#   1) npx wrangler d1 create jiecheng-blog-db   取回 database_id 填到下方
-#   2) npx wrangler r2 bucket create jiecheng-blog-assets
-#   3) npx wrangler d1 migrations apply jiecheng-blog-db
+#   1) npx wrangler d1 create blog-db   取回 database_id 填到下方
+#   2) npx wrangler r2 bucket create blog-assets
+#   3) npx wrangler d1 migrations apply blog-db
 #   4) npx wrangler pages deploy public
 # ============================================================
-name = "jiecheng-blog"
+name = "blog"
 compatibility_date = "2025-05-01"
 pages_build_output_dir = "public"
 
@@ -15,8 +15,8 @@ pages_build_output_dir = "public"
 # D1 数据库 / R2 存储桶 / 密钥 AUTH_SECRET 全部改为在
 # Cloudflare 网页后台配置（无需在本机安装 wrangler）：
 #   项目 Settings → Functions → Bindings：
-#     - D1 数据库绑定，变量名填 DB，选 jiecheng-blog-db
-#     - R2 存储桶绑定，变量名填 BLOG，选 jiecheng-blog-assets
+#     - D1 数据库绑定，变量名填 DB，选 blog-db
+#     - R2 存储桶绑定，变量名填 BLOG，选 blog-assets
 #   项目 Settings → Variables and Secrets：
 #     - 加密变量(Secret) AUTH_SECRET
 # 若日后想回到本机用 wrangler 部署，取消下面注释并补 database_id 即可：
@@ -24,9 +24,9 @@ pages_build_output_dir = "public"
 # AUTH_SECRET = "dev-only-insecure-change-me-please-0123456789abcdef"
 # [[d1_databases]]
 # binding = "DB"
-# database_name = "jiecheng-blog-db"
+# database_name = "blog-db"
 # database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 # [[r2_buckets]]
 # binding = "BLOG"
-# bucket_name = "jiecheng-blog-assets"
+# bucket_name = "blog-assets"
 # ------------------------------------------------------------
