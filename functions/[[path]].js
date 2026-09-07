@@ -7,6 +7,7 @@ import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, stripHtml } fro
 import { render } from './_lib/md.js';
 import * as db from './_lib/db.js';
 import * as site from './_lib/site.js';
+import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 
 // 携带 Set-Cookie 的 JSON 响应
