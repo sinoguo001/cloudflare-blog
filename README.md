@@ -97,7 +97,8 @@ npx wrangler pages dev public                                # http://127.0.0.1:
 ```
 cloudflare-blog/
 ├── wrangler.toml            # 项目名与构建目录；绑定段已注释（改用控制台绑定，见下）
-├── migrations/0001_init.sql # 数据库建表 + 默认设置
+├── migrations/0001_init.sql # 数据库建表 + 默认设置（命令行迁移用）
+├── migrations/d1-console.sql # 去注释压缩版（D1 网页 Console 粘贴用，见免本地部署"建表坑"）
 ├── themes-example/          # 示例主题（可整个拖入后台安装）
 │   ├── ocean-blue/          #   浅色主题：theme.json + style.css
 │   └── ink-night/           #   深色主题
@@ -259,9 +260,13 @@ my-theme/
 
 1. **GitHub**：注册 github.com → 新建 **Private** 私有仓库（不勾选任何初始化文件）→ `Add file → Upload files` 把本文件夹全部内容拖入 → Commit；
 2. **Cloudflare**：dash.cloudflare.com 注册；
-3. 建 **D1** 数据库（命名随意，如 `jiecheng-blog-db`）→ 打开该库 **Console**，把 `migrations/0001_init.sql` 全文粘贴执行；建 **R2** 桶（如 `jiecheng-blog-assets`）；
+3. 建 **D1** 数据库（命名随意，如 `jiecheng-blog-db`）→ 打开该库 **Console**，把 `migrations/d1-console.sql` 全文粘贴执行（⚠️ 不要用 `0001_init.sql` 原文直接粘贴，原因见文末"建表坑"）；建 **R2** 桶（如 `jiecheng-blog-assets`）；
 4. **Pages** → Create project → Connect to Git → 授权并选择仓库 → 框架预设 **None**、构建命令**留空**、输出目录 **`public`** → Save and Deploy（首次部署可能失败，属正常）；
 5. 项目 **Settings → Functions → Bindings**：添加 D1 绑定（变量名 **`DB`**）、R2 绑定（变量名 **`BLOG`**）；**Settings → Variables and Secrets**：添加加密变量 **`AUTH_SECRET`**（随机长串）；
 6. **Deployments** 里对最新一次点 Retry（重新部署，让绑定生效），随后打开 `https://<项目名>.pages.dev/admin` 完成初始化向导即可。
+
+> ⚠️ **D1 网页 Console 建表坑（2026-09 实测）**：把 `migrations/0001_init.sql` 原样复制到 Console 执行会失败——文件开头的 `--` 注释行与行内注释会被 Console 的多语句解析误判，报 `The request is malformed: Requests without any query are not supported`（看起来像"没粘贴成功"，实际已粘贴、只是解析失败）。典型特征是：单独跑 `SELECT 1;` 正常、整段大 SQL 必失败。
+> **正确做法**：改用同目录 `migrations/d1-console.sql`（已去掉全部注释与空行、每条语句独立一行，与 Console 完全兼容），整段粘贴一次执行即可；若个别情况仍报错，把建表语句（前 10 句）与最后的 INSERT 默认设置分两次执行。
+> 命令行部署（wrangler d1 migrations apply）不受此问题影响，照常使用 `0001_init.sql`。
 
 此后：改代码 → 在 GitHub 仓库页按 `.` 键（github.dev 网页编辑器）改完提交，Pages 自动重新部署；写作、传图、审评论、**安装主题**等日常全部在网页后台完成，与本地是否装软件无关。
