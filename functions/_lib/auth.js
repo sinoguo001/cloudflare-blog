@@ -2,7 +2,11 @@
 import { readCookie } from './util.js';
 
 const enc = new TextEncoder();
-const ITER = 150000;
+// Cloudflare Workers（workerd）的 WebCrypto 把 PBKDF2 迭代次数上限固定在 100,000，
+// 超过即抛 "Pbkdf2 failed: iteration counts above 100000 are not supported"。
+// 本地 Node 无此限制，但生产跑在 Workers 上，故取平台上限值。
+const ITER = 100000;
+const MAX_ITER = 100000;
 
 function hex(b) { return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join(''); }
 function b64u(b) {
@@ -23,6 +27,9 @@ export const newSalt = () => { const b = new Uint8Array(16); crypto.getRandomVal
 export function secretOf(env) { return env.AUTH_SECRET || 'dev-only-insecure-change-me'; }
 
 export async function pbkdf2(pass, saltB64, iter = ITER) {
+  // 平台硬上限兜底：即使调用方传入更高值（如数据库残留旧值）也不越过 100,000，
+  // 避免登录/改密时再次触发 Workers 的迭代数上限报错。
+  iter = Math.max(1000, Math.min(iter, MAX_ITER));
   const salt = unb64u(saltB64);
   const k = await crypto.subtle.importKey('raw', enc.encode(String(pass)), 'PBKDF2', false, ['deriveBits']);
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: iter, hash: 'SHA-256' }, k, 256);
