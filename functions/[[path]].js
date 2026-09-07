@@ -496,7 +496,7 @@ async function api(ctx, url, seg, method) {
     }
     if (method === 'PATCH') {
     const b = (await readJson(request)) || {};
-    const allowed = { site_title: 60, site_subtitle: 80, author_name: 30, footer_text: 500, seo_desc: 200 };
+    const allowed = { site_title: 60, site_subtitle: 80, author_name: 30, footer_text: 500, seo_desc: 200, beian: 100 };
     for (const k of Object.keys(allowed)) {
       if (b[k] != null) await db.setSetting(dbx, k, String(b[k]).slice(0, allowed[k]));
     }
