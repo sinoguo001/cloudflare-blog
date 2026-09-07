@@ -111,6 +111,7 @@ cloudflare-blog/
 │       ├── site.js          # 前台模板与骨架 CSS（THEME_VARS 变量表）+ 主题外链注入
 │       └── util.js          # 时间(UTC+8)/转义/分页/MIME 等工具
 ├── public/                  # = Pages 静态资源
+│   ├── _routes.json         # Functions 路由排除表：/admin* 走纯静态托管（绕开平台 index.html 308 循环坑）
 │   ├── js/site.js           # 前台：评论异步提交 + 阅读量
 │   ├── favicon.svg
 │   └── admin/               # 后台单页应用（零依赖原生 JS，含「主题」管理页）
@@ -271,6 +272,9 @@ my-theme/
 > 命令行部署（wrangler d1 migrations apply）不受此问题影响，照常使用 `0001_init.sql`。
 
 > ⚠️ **绑定锁坑（2026-09 实测）**：第 5 步忘记删除 `wrangler.toml` 时，Bindings 页会出现提示“此项目的绑定在通过 wrangler.toml 进行管理”，Add binding 按钮被禁用。原因：Pages 检测到仓库存在 `wrangler.toml` 就把绑定管理权交给配置文件，网页添加入口随之关闭；Git 部署时该文件仅会读取绑定段，而本项目的 `wrangler.toml` 已不含任何绑定——**删掉它网页绑定立即解锁**（若删除后页面仍提示，刷新一次 Bindings 页即可）。其余文件照常上传即可（注意 `migrations/0001_init.sql` 仅命令行迁移使用，网页建表请用 `d1-console.sql`）。
+
+> ⚠️ **后台 308 循环坑（2026-09 实测）**：部署完成后打开 `/admin/` 提示"重定向过多"，而首页/样式/API 均正常。根因是 Pages 平台的一条硬编码规则：**静态托管会把 `xxx/index.html` 请求 308 重定向到 `xxx/`**；而本项目入口 `functions/[[path]].js` 是 catch-all，会把 `/admin` 改写成 `/admin/index.html` 再经 ASSETS 转发 → 平台又 308 回 `/admin` → 无限循环。
+> **修复（已内置）**：① 项目已新增 `public/_routes.json`，把 `/admin`、`/admin/`、`/admin/*` 排除出 Functions 路由，后台页面改由纯静态托管直出（目录请求直接返回 index.html，不再触发 308）；② 入口函数对 `/admin` 的转发也改为规范化目录形式（`/admin` → `/admin/`），双保险。若重新部署后仍循环，多半是该文件未上传成功——确认仓库 `public/_routes.json` 存在且与本地一致。
 
 此后：改代码 → 在 GitHub 仓库页按 `.` 键（github.dev 网页编辑器）改完提交，Pages 自动重新部署；写作、传图、审评论、**安装主题**等日常全部在网页后台完成，与本地是否装软件无关。
 
