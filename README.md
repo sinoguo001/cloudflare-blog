@@ -79,7 +79,7 @@ npx wrangler pages deploy public --project-name blog
 
 **安全必做**：在 Pages 控制台 `Settings → Variables and Secrets` 添加同名**加密变量** `AUTH_SECRET`（随机长字符串，覆盖 toml 里的兜底值）。密码以 PBKDF2 加盐哈希存储，会话为 HMAC 签名的 HttpOnly Cookie。
 
-> 关于绑定（D1 `DB`、R2 `BLOG`）：命令行部署时写在 `wrangler.toml` 里即可；若采用**免本地 Git 部署**，仓库内的 `wrangler.toml` 已把绑定段注释掉，请改为在 Pages 控制台 `Settings → Functions → Bindings` 里添加（变量名严格用 `DB` 与 `BLOG`），添加后需重新部署一次生效。
+> 关于绑定（D1 `DB`、R2 `BLOG`）：命令行部署时写在 `wrangler.toml` 里即可。**免本地 Git 部署则相反——仓库里只要存在 `wrangler.toml`，Pages 就会锁定网页上的绑定管理**（Bindings 页提示“此项目的绑定在通过 wrangler.toml 进行管理”，Add binding 按钮不可用）。因此 Git 部署请**删除仓库里的 `wrangler.toml`**（删除不影响构建：输出目录 `public` 已存在 Pages 项目设置里），随后在 `Settings → Functions → Bindings` 手动添加绑定（变量名严格用 `DB` 与 `BLOG`），再 Deployments 里 Retry 一次生效。详见文末《免本地部署》第 5 步的坑说明。
 
 ---
 
@@ -96,7 +96,7 @@ npx wrangler pages dev public                                # http://127.0.0.1:
 
 ```
 cloudflare-blog/
-├── wrangler.toml            # 项目名与构建目录；绑定段已注释（改用控制台绑定，见下）
+├── wrangler.toml            # 仅「方式 A 命令行」需要；Git 部署请勿提交（会锁死网页绑定，见免本地部署第 5 步）
 ├── migrations/0001_init.sql # 数据库建表 + 默认设置（命令行迁移用）
 ├── migrations/d1-console.sql # 去注释压缩版（D1 网页 Console 粘贴用，见免本地部署"建表坑"）
 ├── themes-example/          # 示例主题（可整个拖入后台安装）
@@ -135,7 +135,7 @@ cloudflare-blog/
 | 换主题色/站名 | 「设置」保存即生效 |
 | 换整套主题 | 「主题」页 → 拖入主题文件夹 → 启用（详见《主题设计指南》） |
 | 备份/恢复 | 「备份与恢复」一键备份，或从 R2 记录/本地文件恢复 |
-| 域名 | Pages 控制台 `Custom domains` 绑定自己的域名（大陆访问建议绑定已备案域名，pages.dev 在大陆网络不稳定） |
+| 域名 | Pages 控制台 `Custom domains` 绑定自己的域名（大陆访问建议绑定已备案域名，步骤见文末《绑定自定义域名》） |
 
 ---
 
@@ -260,13 +260,66 @@ my-theme/
 
 1. **GitHub**：注册 github.com → 新建 **Private** 私有仓库（不勾选任何初始化文件）→ `Add file → Upload files` 把本文件夹全部内容拖入 → Commit；
 2. **Cloudflare**：dash.cloudflare.com 注册；
-3. 建 **D1** 数据库（命名随意，如 `blog-db`）→ 打开该库 **Console**，把 `migrations/d1-console.sql` 全文粘贴执行（⚠️ 不要用 `0001_init.sql` 原文直接粘贴，原因见文末"建表坑"）；建 **R2** 桶（如 `blog-assets`）；
+3. 建 **D1** 数据库（命名随意，如 `blog-db`）→ 打开该库 **Console**，把 `migrations/d1-console.sql` 全文粘贴执行（⚠️ 不要用 `0001_init.sql` 原文直接粘贴，原因见下方"建表坑"警示）；建 **R2** 桶（如 `blog-assets`）；
 4. **Pages** → Create project → Connect to Git → 授权并选择仓库 → 框架预设 **None**、构建命令**留空**、输出目录 **`public`** → Save and Deploy（首次部署可能失败，属正常）；
-5. 项目 **Settings → Functions → Bindings**：添加 D1 绑定（变量名 **`DB`**）、R2 绑定（变量名 **`BLOG`**）；**Settings → Variables and Secrets**：添加加密变量 **`AUTH_SECRET`**（随机长串）；
-6. **Deployments** 里对最新一次点 Retry（重新部署，让绑定生效），随后打开 `https://<项目名>.pages.dev/admin` 完成初始化向导即可。
+5. **删除仓库里的 `wrangler.toml`**（打开该文件 → 右上角垃圾桶 → Commit）。⚠️ 此文件在 Git 部署模式下**没有作用还会锁死网页绑定**——只要它在，Bindings 页就提示“此项目的绑定在通过 wrangler.toml 进行管理”、无法手动添加（详见下方“绑定锁”坑）。删除不影响构建（输出目录 `public` 已存在 Pages 项目设置里）；
+6. 项目 **Settings → Functions → Bindings**：添加 D1 绑定（变量名 **`DB`**）、R2 绑定（变量名 **`BLOG`**）；**Settings → Variables and Secrets**：添加加密变量 **`AUTH_SECRET`**（随机长串）；
+7. **Deployments** 里对最新一次点 Retry（重新部署，让绑定生效），随后打开 `https://<项目名>.pages.dev/admin` 完成初始化向导即可。
 
 > ⚠️ **D1 网页 Console 建表坑（2026-09 实测）**：把 `migrations/0001_init.sql` 原样复制到 Console 执行会失败——文件开头的 `--` 注释行与行内注释会被 Console 的多语句解析误判，报 `The request is malformed: Requests without any query are not supported`（看起来像"没粘贴成功"，实际已粘贴、只是解析失败）。典型特征是：单独跑 `SELECT 1;` 正常、整段大 SQL 必失败。
 > **正确做法**：改用同目录 `migrations/d1-console.sql`（已去掉全部注释与空行、每条语句独立一行，与 Console 完全兼容），整段粘贴一次执行即可；若个别情况仍报错，把建表语句（前 10 句）与最后的 INSERT 默认设置分两次执行。
 > 命令行部署（wrangler d1 migrations apply）不受此问题影响，照常使用 `0001_init.sql`。
 
+> ⚠️ **绑定锁坑（2026-09 实测）**：第 5 步忘记删除 `wrangler.toml` 时，Bindings 页会出现提示“此项目的绑定在通过 wrangler.toml 进行管理”，Add binding 按钮被禁用。原因：Pages 检测到仓库存在 `wrangler.toml` 就把绑定管理权交给配置文件，网页添加入口随之关闭；Git 部署时该文件仅会读取绑定段，而本项目的 `wrangler.toml` 已不含任何绑定——**删掉它网页绑定立即解锁**（若删除后页面仍提示，刷新一次 Bindings 页即可）。其余文件照常上传即可（注意 `migrations/0001_init.sql` 仅命令行迁移使用，网页建表请用 `d1-console.sql`）。
+
 此后：改代码 → 在 GitHub 仓库页按 `.` 键（github.dev 网页编辑器）改完提交，Pages 自动重新部署；写作、传图、审评论、**安装主题**等日常全部在网页后台完成，与本地是否装软件无关。
+
+---
+
+## 🌐 绑定自定义域名（可选，推荐）
+
+> 适用两种部署方式（命令行 / Git 集成），操作完全相同。`*.pages.dev` 域名在大陆网络访问不稳定，个人博客建议绑定自己的域名；**若站点面向大陆用户访问，域名须完成 ICP 备案**（解析到海外节点的未备案域名同样会被阻断）。
+
+### 前提：先想好绑根域还是子域
+
+| 绑定形式 | 示例 | 要求 |
+|---|---|---|
+| 子域名（推荐） | `blog.example.com` | 无需迁移 DNS，在任意 DNS 处加一条 CNAME 即可 |
+| 根域名 | `example.com` | 必须把整个域名托管到 Cloudflare（改 nameserver） |
+
+个人博客建议绑**子域名**：不动主站 DNS、以后换平台只改一条记录。
+
+### 场景 A：域名已经托管在 Cloudflare（DNS 归 Cloudflare 管）
+
+1. dash.cloudflare.com → **Workers & Pages** → 点进你的 Pages 项目 → **Custom domains**（自定义域）；
+2. 点 **Set up a custom domain** → 输入要用的域名（如 `blog.example.com`）→ Continue；
+3. Cloudflare **自动创建 DNS 记录并签发 SSL 证书**，无需手动加记录；
+4. 等状态变成 **Active**（通常几分钟内）即完成。
+
+### 场景 B：域名在阿里云 / 腾讯云等外部注册商
+
+两条路任选：
+
+**路线 1（推荐）：把 DNS 托管整体迁到 Cloudflare**
+1. Cloudflare 首页 → **Add a site / 添加站点** → 输入你的域名 → 选 Free 免费套餐；
+2. 按提示记下 Cloudflare 分配的两个 nameserver（形如 `xxx.ns.cloudflare.com`）；
+3. 去域名注册商控制台，把域名的 **NS 记录**改成这两个值（域名 DNS 服务商处修改）；
+4. 等生效后（几小时到 1 天），回到场景 A 操作即可——以后还能免费用 Cloudflare 的 CDN 加速与防护。
+
+**路线 2（不迁移）：在外部 DNS 加一条 CNAME**
+1. 先到 Pages 项目 **Custom domains → Set up a custom domain**，输入子域名（如 `blog.example.com`）→ Continue（⚠️ **必须先在这里关联域名**，官方明确：先手动加 CNAME 会导致 522 错误）；
+2. 到域名当前的 DNS 服务商控制台，添加记录：
+
+```
+类型：CNAME
+名称：blog              ← 子域前缀，对应 blog.example.com
+目标：<你的项目名>.pages.dev
+```
+
+3. 回 Cloudflare 等状态变 **Active** 即可，HTTPS 证书自动签发。
+
+### 绑定后
+
+- 新域名与原来的 `<项目名>.pages.dev` **同时可用**（两个地址访问同一站点，后台、RSS、站点地图全部自动跟随新域名）；
+- 如需彻底隐藏 pages.dev 地址、只留自己的域名，可用 Cloudflare 的 Bulk Redirect 功能做 301 跳转，非必需可跳过；
+- 若域名配置过 **CAA 记录**（限制证书颁发机构的 DNS 记录）且不含 Cloudflare 允许的机构，证书会签发失败——普通用户一般没有此记录，遇到报错再排查即可。
