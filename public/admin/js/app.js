@@ -888,6 +888,7 @@ async function viewSettings() {
       <div class="field"><label>主题色</label><input class="inp" type="color" name="accent" id="s-accent" style="width:120px;height:40px;padding:4px"></div>
       <div class="field"><label>每页文章数</label><input class="inp" type="number" min="1" max="20" name="per_page" id="s-per_page" style="width:120px"></div>
       <div class="field"><label>页脚自定义文字（可留空，支持换行）</label><textarea class="txa" name="footer_text" id="s-footer_text"></textarea></div>
+      <div class="field"><label>ICP 备案号（可选，如 苏ICP备xxxxxxxx号）</label><input class="inp" name="beian" id="s-beian" placeholder="填写后显示在页脚并链接工信部官网；留空则不显示"></div>
     </div>
     <div>
       <div class="card">
@@ -929,6 +930,7 @@ async function viewSettings() {
   set('s-author_name', s.author_name); set('s-seo_desc', s.seo_desc);
   set('s-accent', s.accent || '#2563eb'); set('s-per_page', s.per_page || '8');
   set('s-footer_text', s.footer_text);
+  set('s-beian', s.beian);
   v.querySelector('#s-allow').checked = s.allow_comments !== '0';
   v.querySelector('#s-audit').checked = s.comment_audit !== '0';
 
@@ -945,6 +947,7 @@ async function viewSettings() {
       accent: v.querySelector('#s-accent').value,
       per_page: v.querySelector('#s-per_page').value,
       footer_text: v.querySelector('#s-footer_text').value,
+      beian: v.querySelector('#s-beian').value.trim(),
       allow_comments: v.querySelector('#s-allow').checked,
       comment_audit: v.querySelector('#s-audit').checked,
     };
