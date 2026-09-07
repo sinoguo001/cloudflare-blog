@@ -43,7 +43,12 @@ async function handle(ctx) {
     || ['rss.xml', 'feed.xml', 'sitemap.xml', 'robots.txt'].includes(path.slice(1));
   if (seg[0] === 'admin' || (STATIC_EXT.test(path) && !isDynamicExt) || path === '/favicon.ico') {
     const target = new URL(request.url);
-    if (seg[0] === 'admin' && seg.length === 1) target.pathname = '/admin/index.html';
+    if (seg[0] === 'admin' && seg.length === 1) {
+      // 规范化为目录 URL（/admin → /admin/）交给静态层服务 index.html。
+      // ⚠️ 不能改写成 /admin/index.html：Pages 平台硬编码会把 xxx/index.html 请求
+      // 308 重定向回 xxx/，而 /admin 又在 catch-all 内，形成 308 死循环（"重定向过多"）。
+      if (!path.endsWith('/')) target.pathname += '/';
+    }
     return env.ASSETS.fetch(new Request(target, request));
   }
 
