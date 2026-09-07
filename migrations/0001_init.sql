@@ -1,0 +1,72 @@
+-- 博客系统初始化（D1）
+CREATE TABLE IF NOT EXISTS settings(
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS categories(
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL,
+  slug        TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tags(
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT NOT NULL,
+  slug       TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS posts(
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  title        TEXT NOT NULL,
+  slug         TEXT NOT NULL UNIQUE,
+  excerpt      TEXT NOT NULL DEFAULT '',
+  content_md   TEXT NOT NULL DEFAULT '',
+  content_html TEXT NOT NULL DEFAULT '',
+  cover_key    TEXT,
+  status       TEXT NOT NULL DEFAULT 'draft',          -- draft | published
+  category_id  INTEGER,
+  view_count   INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  published_at TEXT,
+  FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_posts_pub ON posts(status, published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_posts_cat ON posts(category_id);
+
+CREATE TABLE IF NOT EXISTS post_tags(
+  post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  tag_id  INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
+  PRIMARY KEY(post_id, tag_id)
+);
+CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id);
+
+CREATE TABLE IF NOT EXISTS comments(
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  parent_id  INTEGER REFERENCES comments(id) ON DELETE CASCADE,
+  author     TEXT NOT NULL,
+  email      TEXT NOT NULL DEFAULT '',
+  content    TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'pending',        -- pending | approved | trash
+  is_admin   INTEGER NOT NULL DEFAULT 0,
+  ip         TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, status);
+
+-- 默认站点设置
+INSERT OR IGNORE INTO settings(key,value) VALUES
+ ('site_title','我的博客'),
+ ('site_subtitle','记录 · 思考 · 分享'),
+ ('author_name','博主'),
+ ('per_page','8'),
+ ('footer_text',''),
+ ('allow_comments','1'),
+ ('comment_audit','1'),
+ ('accent','#2563eb'),
+ ('seo_desc','');

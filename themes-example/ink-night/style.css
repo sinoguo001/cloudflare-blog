@@ -1,0 +1,47 @@
+/* ============================================================
+   主题：墨夜 ink-night v1.0.0（深色示例）
+   骨架布局里的所有颜色都引用 :root 变量，所以这套暗色
+   仅靠覆盖变量即可生效；个别元素再补少量修正规则。
+   ============================================================ */
+
+:root {
+  --bg: #0e1219;                 /* 页面底色 */
+  --card: #161d29;               /* 卡片 / 顶栏 / 页脚 */
+  --tint: #1f2937;
+
+  --text: #dbe4f0;               /* 主文字 */
+  --text-soft: #a8b6c9;          /* 摘要 */
+  --muted: #76879d;              /* 时间 / 弱化 */
+
+  --accent: #6ba6ff;             /* 亮蓝，暗底上更醒目 */
+  --accent-soft: #1d2c47;        /* 标签底 / 悬停底 */
+  --on-accent: #0b1220;          /* 主色上的文字用深色保证对比 */
+  --quote-bg: #1b2434;
+  --quote-text: #c4d2e4;
+
+  --line: #2a3548;
+
+  --code-bg: #080c13;            /* 更深一档的代码块 */
+  --code-text: #cfe3ff;
+  --inline-code-bg: #243047;
+
+  --admin: #c084fc;
+  --admin-soft: #33244d;
+  --admin-text: #d8b4fe;
+
+  --ok: #4ade80;
+  --bad: #f87171;
+}
+
+/* 暗色微调：正文中普通 <a> 的底线更清晰、按钮悬停提亮 */
+.art-body a { text-decoration-color: rgba(107, 166, 255, 0.45); }
+.btn:hover { filter: brightness(1.15); }
+
+/* 输入框在暗色下自动跟随 --card 底与 --text 文字 */
+.hd-search input, .cform input, .cform textarea {
+  color: var(--text);
+  background: var(--card);
+}
+
+/* 预览用的封面底色跟随主题 */
+.pc-cover img, .art-cover img { background: var(--card); }
