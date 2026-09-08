@@ -224,8 +224,9 @@ export async function deleteTag(db, id) {
 // ---------- comments ----------
 export async function listComments(db, { status, limit = 100, postId } = {}) {
   const w = [], b = [];
-  if (status && status !== 'all') { w.push('status=?'); b.push(status); }
-  if (postId) { w.push('post_id=?'); b.push(postId); }
+  // 注意：本查询联了 posts 表，两表都有 status / id 等列，条件必须限定别名 cm.
+  if (status && status !== 'all') { w.push('cm.status=?'); b.push(status); }
+  if (postId) { w.push('cm.post_id=?'); b.push(postId); }
   const wsql = w.length ? 'WHERE ' + w.join(' AND ') : '';
   const r = await db.prepare(
     `SELECT cm.*, p.title AS post_title, p.slug AS post_slug
