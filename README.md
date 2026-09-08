@@ -13,6 +13,19 @@
 
 ---
 
+## V0.1
+
+修复了以下问题：
+
+| # | 问题 | 解决方法 |
+|---|---|---|
+| 1 | 后台发布文章后提示「接口不存在」，无法自动跳转（文章实际已发布） | 修正请求路径：改用后端实际存在的 `GET /api/posts/:id` |
+| 2 | 前台文章正文没有首行缩进，后台分好的段落在前台粘成一片 | 编辑器段落间补空行、渲染器段内换行输出 `<br>`，正文 CSS 加首行缩进 2 字符 |
+| 3 | 评论只有昵称和邮箱，没有网址 | 评论新增选填「网址」字段（D1 加 `website` 列），填写后昵称显示为链接 |
+| 4 | 后台编辑器「图片 / 行内码 / 块代码 / 引用」按钮点了毫无反应 | 按钮标识与代码分支名不匹配（`img`≠`image`、`codeblock`≠`codeBlock` 等），补齐别名分支，并改用站内弹窗 |
+
+---
+
 ## ✨ 功能一览
 
 **写作与发布**
@@ -80,8 +93,6 @@ npx wrangler pages deploy public --project-name blog
 
 **安全必做**：在 Pages 控制台 `Settings → Variables and Secrets` 添加同名**加密变量** `AUTH_SECRET`（随机长字符串，覆盖 toml 里的兜底值）。密码以 PBKDF2 加盐哈希存储，会话为 HMAC 签名的 HttpOnly Cookie。
 
-> ⚠️ **PBKDF2 迭代上限坑（2026-09 实测）**：Cloudflare Workers 的 WebCrypto 把 PBKDF2 迭代次数**硬性封顶 100,000**，超过即抛 `Pbkdf2 failed: iteration counts above 100000 are not supported (requested 150000)`——首次初始化/改密时直接"服务器内部错误"。本地 Node 无此限制，所以本地测试发现不了。本项目已统一使用 **100,000**（`functions/_lib/auth.js` 的 `ITER` 常量 + 初始化/登录/改密三处写入值），并在 `pbkdf2()` 内部加了上限兜底（传入更高值自动压回 100,000）。改动 `auth.js` / 入口文件后需重新部署。
-
 > 关于绑定（D1 `DB`、R2 `BLOG`）：命令行部署时写在 `wrangler.toml` 里即可。**免本地 Git 部署则相反——仓库里只要存在 `wrangler.toml`，Pages 就会锁定网页上的绑定管理**（Bindings 页提示“此项目的绑定在通过 wrangler.toml 进行管理”，Add binding 按钮不可用）。因此 Git 部署请**删除仓库里的 `wrangler.toml`**（删除不影响构建：输出目录 `public` 已存在 Pages 项目设置里），随后在 `Settings → Functions → Bindings` 手动添加绑定（变量名严格用 `DB` 与 `BLOG`），再 Deployments 里 Retry 一次生效。详见文末《免本地部署》第 5 步的坑说明。
 
 ---
@@ -115,7 +126,7 @@ cloudflare-blog/
 │       ├── site.js          # 前台模板与骨架 CSS（THEME_VARS 变量表）+ 主题外链注入
 │       └── util.js          # 时间(UTC+8)/转义/分页/MIME 等工具
 ├── public/                  # = Pages 静态资源
-│   ├── _routes.json         # Functions 路由排除表：/admin* 走纯静态托管（绕开平台 index.html 308 循环坑）
+│   ├── _routes.json         # Functions 路由排除表：/admin* 走纯静态托管（不占函数额度）
 │   ├── js/site.js           # 前台：评论异步提交 + 阅读量
 │   ├── favicon.svg
 │   └── admin/               # 后台单页应用（零依赖原生 JS，含「主题」管理页）
@@ -278,12 +289,7 @@ my-theme/
 
 > ⚠️ **绑定锁坑（2026-09 实测）**：第 5 步忘记删除 `wrangler.toml` 时，Bindings 页会出现提示“此项目的绑定在通过 wrangler.toml 进行管理”，Add binding 按钮被禁用。原因：Pages 检测到仓库存在 `wrangler.toml` 就把绑定管理权交给配置文件，网页添加入口随之关闭；Git 部署时该文件仅会读取绑定段，而本项目的 `wrangler.toml` 已不含任何绑定——**删掉它网页绑定立即解锁**（若删除后页面仍提示，刷新一次 Bindings 页即可）。其余文件照常上传即可（注意 `migrations/0001_init.sql` 仅命令行迁移使用，网页建表请用 `d1-console.sql`）。
 
-> ⚠️ **后台 308 循环坑（2026-09 实测）**：部署完成后打开 `/admin/` 提示"重定向过多"，而首页/样式/API 均正常。根因是 Pages 平台的一条硬编码规则：**静态托管会把 `xxx/index.html` 请求 308 重定向到 `xxx/`**；而本项目入口 `functions/[[path]].js` 是 catch-all，旧版会把 `/admin` 改写成 `/admin/index.html` 再经 ASSETS 转发 → 平台又 308 回 `/admin` → 无限循环。
-> **修复（当前版本内置，双保险）**：
-> ① **主修复**：入口函数对 `/admin`、`/admin/` **直接返回内嵌的 HTML 内容**（`functions/_lib/admin-shell.js`，由 `public/admin/index.html` 生成），完全不经静态层转发——平台 308 规则从此无法触发，**只要新代码部署成功必然 200**，不依赖任何其他条件；
-> ② **辅助**：`public/_routes.json` 排除 `/admin` 与 `/admin/*`（精确规则 + 通配规则，见下）→ 后台请求不占函数额度，静态层直出 index.html，同样 200。
 > **⚠️ `_routes.json` 重叠规则坑（2026-09 实测）**：排除列表里若同时写 `/admin/` 和 `/admin/*`（后者已覆盖前者），部署会在最后一步报 `Error 8000057: Overlapping rules in _routes.json are not allowed. Rule "/admin/" is overlapped by "/admin/*"`——Worker 编译与静态资源均成功，仅 Function 发布失败、整次部署标记失败（Deployments 显示 "No deployment available"）。**规则之间不得互相覆盖**：保留 `/admin`（精确，无尾斜杠）+ `/admin/*`（覆盖目录树）两条即可，勿再写 `/admin/`。
-> 两条路径任一命中都正常。若部署新代码后仍循环，几乎可以断定是**文件没上传成功或部署失败**——请确认仓库里有 `functions/_lib/admin-shell.js` 和 `public/_routes.json` 这两个文件、且 `functions/[[path]].js` 已更新，并检查 Deployments 最近一次是 Success。
 
 此后：改代码 → 在 GitHub 仓库页按 `.` 键（github.dev 网页编辑器）改完提交，Pages 自动重新部署；写作、传图、审评论、**安装主题**等日常全部在网页后台完成，与本地是否装软件无关。
 
