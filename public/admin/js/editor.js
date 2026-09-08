@@ -3,7 +3,7 @@
 // 工具栏限制标签白名单 -> 保存时 html2md 转 Markdown 落库，
 // 发布由服务端 Markdown 渲染器渲染为网页（两端语义一致）。
 // ============================================================
-import { dialog, esc } from './ui.js';
+import { dialog, esc, toast } from './ui.js';
 
 const ALLOW = new Set([
   'p', 'div', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
@@ -203,11 +203,6 @@ export class Editor {
     host.appendChild(div);
     this.tool = div.querySelector('[data-tool]');
     this.we = div.querySelector('[data-we]');
-    this.fileInput = document.createElement('input');
-    this.fileInput.type = 'file';
-    this.fileInput.accept = 'image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp';
-    this.fileInput.style.display = 'none';
-    div.appendChild(this.fileInput);
     this._buildToolbar();
     this._bindEvents();
   }
@@ -274,37 +269,19 @@ export class Editor {
       case 'ol': document.execCommand('insertOrderedList'); break;
       case 'inlineCode': {
         const t = selText();
-        wrapSel('<code>' + esc(t) + '</code>');
+        if (t) { wrapSel('<code>' + esc(t) + '</code>'); break; }
+        // 无选区：弹窗让用户输入代码内容，避免"点了没反应"
+        this._inlineCodeDialog();
         break;
       }
-      case 'codeBlock': {
-        const lang = window.prompt('代码语言标识（可留空，如 js / python）') || '';
-        const node = document.createElement('pre');
-        const code = document.createElement('code');
-        if (lang) code.className = 'language-' + lang;
-        code.textContent = ' ';
-        node.appendChild(code);
-        wrapSel(node.outerHTML);
-        const pre = this.we.querySelector('pre:last-of-type');
-        if (pre) {
-          const r = document.createRange();
-          r.selectNodeContents(pre.querySelector('code') || pre);
-          r.collapse(false);
-          const s = window.getSelection();
-          s.removeAllRanges();
-          s.addRange(r);
-        }
-        break;
-      }
+      case 'codeBlock': this._codeBlockDialog(); break;
       case 'link': {
-        const href = window.prompt('链接地址：', 'https://');
-        if (!href) break;
-        if (selText()) document.execCommand('createLink', false, href);
-        else wrapSel('<a href="' + esc(href) + '">' + esc(href) + '</a>');
+        const t = selText();
+        this._linkDialog(t);
         break;
       }
       case 'unlink': document.execCommand('unlink'); break;
-      case 'image': this.fileInput.click(); break;
+      case 'image': this._imageDialog(); break;
       case 'table': this._insertTable(); break;
       case 'hr': document.execCommand('insertHorizontalRule'); break;
       case 'clean': document.execCommand('removeFormat'); document.execCommand('formatBlock', false, 'p'); break;
@@ -351,6 +328,122 @@ export class Editor {
     }
   }
 
+  // ---------- 弹窗式插入（图片 / 代码 / 链接），统一走站内 dialog，不再依赖浏览器原生弹窗 ----------
+
+  // 行内代码：无选区时弹窗输入
+  async _inlineCodeDialog() {
+    let txt = '';
+    const res = await dialog({
+      title: '插入行内代码',
+      bodyHtml: `<div class="field"><label>代码内容</label>
+        <input class="inp" id="dlg-codetext" placeholder="例如：const a = 1" style="width:100%"></div>
+        <div class="hint">提示：也可先在正文中选中文字再点「行内码」，选中的内容会直接变成代码。</div>`,
+      actions: [{ val: 'ok', label: '插入', cls: 'p' }, { val: 'cancel', label: '取消', cls: 'g' }],
+      onSubmit: (b) => {
+        txt = String((b.querySelector('#dlg-codetext') || {}).value || '').trim();
+        return !!txt;
+      },
+    });
+    if (res !== 'ok' || !txt) return;
+    this.we.focus();
+    document.execCommand('insertHTML', false, '<code>' + esc(txt) + '</code>');
+  }
+
+  // 代码块
+  async _codeBlockDialog() {
+    let lang = '', code = '';
+    const res = await dialog({
+      title: '插入代码块',
+      bodyHtml: `<div class="field"><label>语言标识（可留空，如 js / python / bash）</label>
+        <input class="inp" id="dlg-cblang" style="width:100%"></div>
+        <div class="field" style="margin-top:12px"><label>代码内容（可留空，插入后直接在代码区内输入）</label>
+        <textarea class="inp" id="dlg-cbcode" rows="8" style="width:100%;resize:vertical;font-family:Consolas,Menlo,monospace" placeholder="在这里粘贴代码…"></textarea></div>`,
+      actions: [{ val: 'ok', label: '插入', cls: 'p' }, { val: 'cancel', label: '取消', cls: 'g' }],
+      onSubmit: (b) => {
+        lang = String((b.querySelector('#dlg-cblang') || {}).value || '').trim();
+        code = String((b.querySelector('#dlg-cbcode') || {}).value || '').replace(/\r\n/g, '\n');
+        return true;
+      },
+    });
+    if (res !== 'ok') return;
+    const pre = document.createElement('pre');
+    const c = document.createElement('code');
+    if (lang) c.className = 'language-' + lang.replace(/[^A-Za-z0-9_+\-]/g, '');
+    c.textContent = code || ' ';
+    pre.appendChild(c);
+    this.we.focus();
+    document.execCommand('insertHTML', false, pre.outerHTML);
+    const last = this.we.querySelector('pre:last-of-type');
+    if (last) {
+      const r = document.createRange();
+      r.selectNodeContents(last.querySelector('code') || last);
+      r.collapse(false);
+      const s = window.getSelection();
+      s.removeAllRanges();
+      s.addRange(r);
+    }
+  }
+
+  // 链接：sel 为当前选中的文字（可能为空）
+  async _linkDialog(sel) {
+    let url = '', text = '';
+    const res = await dialog({
+      title: '插入链接',
+      bodyHtml: `<div class="field"><label>链接地址</label>
+        <input class="inp" id="dlg-url" value="https://" style="width:100%"></div>
+        <div class="field" style="margin-top:12px"><label>显示文字（留空则${sel ? '使用选中的文字' : '显示链接地址本身'}）</label>
+        <input class="inp" id="dlg-ltxt" style="width:100%"></div>
+        <div class="hint">支持 http(s)://、mailto:、tel: 或以 / 开头的站内路径。</div>`,
+      actions: [{ val: 'ok', label: '插入', cls: 'p' }, { val: 'cancel', label: '取消', cls: 'g' }],
+      onSubmit: (b) => {
+        url = String((b.querySelector('#dlg-url') || {}).value || '').trim();
+        text = String((b.querySelector('#dlg-ltxt') || {}).value || '').trim();
+        return !!url && /^(https?:|mailto:|tel:|\/|#)/i.test(url);
+      },
+    });
+    if (res !== 'ok' || !url) return;
+    this.we.focus();
+    if (sel) {
+      document.execCommand('createLink', false, url);
+    } else {
+      const t = text || url;
+      document.execCommand('insertHTML', false, '<a href="' + esc(url) + '">' + esc(t) + '</a>');
+    }
+  }
+
+  // 图片：弹窗里选择「上传」或「填链接」
+  async _imageDialog() {
+    let file = null, url = '';
+    const res = await dialog({
+      title: '插入图片',
+      bodyHtml: `<div class="field"><label>方式一 · 从电脑上传（保存到本站媒体库，推荐）</label>
+        <input type="file" id="dlg-imgfile" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp" class="inp"></div>
+        <div class="field" style="margin-top:12px"><label>方式二 · 使用图片链接</label>
+        <input class="inp" id="dlg-imgurl" placeholder="https://… 或以 / 开头的站内路径" style="width:100%"></div>
+        <div class="hint">两种方式任选其一即可插入图片。</div>`,
+      actions: [{ val: 'ok', label: '插入', cls: 'p' }, { val: 'cancel', label: '取消', cls: 'g' }],
+      onSubmit: (b) => {
+        file = ((b.querySelector('#dlg-imgfile') || {}).files || [])[0] || null;
+        url = String((b.querySelector('#dlg-imgurl') || {}).value || '').trim();
+        return !!(file || url);
+      },
+    });
+    if (res !== 'ok' || (!file && !url)) return;
+    this.we.focus();
+    if (file) {
+      try {
+        const src = await this.upload(file);
+        document.execCommand('insertHTML', false, `<img src="${esc(src)}" alt="${esc(file.name || '')}" loading="lazy">`);
+      } catch (e) { toast((e && e.message) || '上传失败', 'bad'); }
+      return;
+    }
+    if (!/^(https?:)?\/\//i.test(url) && !url.startsWith('/')) {
+      toast('图片链接需以 http(s):// 或 / 开头', 'bad');
+      return;
+    }
+    document.execCommand('insertHTML', false, `<img src="${esc(url)}" alt="" loading="lazy">`);
+  }
+
   _bindEvents() {
     this.tool.addEventListener('mousedown', (e) => e.preventDefault());
     this.tool.addEventListener('click', (e) => {
@@ -362,14 +455,6 @@ export class Editor {
         return;
       }
       this._exec(k);
-    });
-    this.fileInput.addEventListener('change', async () => {
-      const file = this.fileInput.files && this.fileInput.files[0];
-      this.fileInput.value = '';
-      if (!file) return;
-      const url = await this.upload(file);
-      this.we.focus();
-      document.execCommand('insertHTML', false, `<img src="${esc(url)}" alt="${esc(file.name)}" loading="lazy">`);
     });
     const refresh = () => this._refreshState();
     document.addEventListener('selectionchange', refresh);
