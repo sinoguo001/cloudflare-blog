@@ -92,6 +92,8 @@ img{max-width:100%}
 .art-body h2{font-size:23px;margin:1.6em 0 .6em;padding-left:11px;border-left:4px solid var(--accent)}
 .art-body h3{font-size:19px;margin:1.5em 0 .5em}
 .art-body h4{font-size:17px;margin:1.4em 0 .4em}
+/* 正文自然段：首行缩进 2 字符；列表/引用/表格内的段不缩进 */
+.art-body>p{margin:0 0 1.05em;text-indent:2em}
 .art-body p{margin:0 0 1.05em}
 .art-body ul,.art-body ol{margin:0 0 1.1em;padding-left:1.6em}
 .art-body li{margin:.25em 0}
@@ -310,9 +312,14 @@ function commentNode(c, level) {
   const body = c.content.split('\n').map(esc).join('<br>');
   const avatarCls = c.is_admin ? ' avatar admin' : '';
   const initial = esc((c.author || '匿').trim().slice(0, 1));
+  // 网址选填：填了合法 http(s) 地址，昵称即可点击跳转（nofollow，防垃圾链接权重传递）
+  const web = /^https?:\/\/[^\s]+$/i.test(String(c.website || '').trim()) ? String(c.website).trim() : '';
+  const name = web
+    ? `<a href="${esc(web)}" target="_blank" rel="noopener nofollow ugc" style="color:inherit;text-decoration:underline">${esc(c.author)}</a>`
+    : esc(c.author);
   return `<div class="cmt">
     <div class="cmt-top"><span class="avatar${avatarCls}">${initial}</span>
-      <div><span class="cmt-who"><b>${esc(c.author)}</b> ${who}</span><br>
+      <div><span class="cmt-who"><b>${name}</b> ${who}</span><br>
       <span class="cmt-time">${fmtDate(c.created_at, true)}</span></div></div>
     <div class="cmt-body">${body}</div>
     ${child}</div>`;
@@ -335,6 +342,7 @@ export function renderComments(s, post, comments, cfg) {
       <div class="row">
         <input name="author" placeholder="昵称 *" maxlength="40" required>
         <input name="email" type="email" placeholder="邮箱（选填，仅用于博主回复联系）" maxlength="120">
+        <input name="website" type="url" placeholder="网址（选填，展示在昵称上）" maxlength="200">
       </div>
       <textarea name="content" placeholder="写下你的想法…（3–2000 字，纯文本）" required></textarea>
       <div class="hp-field" aria-hidden="true"><input name="company" tabindex="-1" autocomplete="off"></div>
@@ -439,6 +447,7 @@ h1{font-size:30px;line-height:1.4;margin:0 0 6px}
 .art-body h2{font-size:23px;margin:1.6em 0 .6em;padding-left:11px;border-left:4px solid var(--accent)}
 .art-body h3{font-size:19px;margin:1.5em 0 .5em}
 .art-body h4{font-size:17px;margin:1.4em 0 .4em}
+.art-body>p{margin:0 0 1.05em;text-indent:2em}
 .art-body p{margin:0 0 1.05em}
 .art-body ul,.art-body ol{margin:0 0 1.1em;padding-left:1.6em}
 .art-body li{margin:.25em 0}

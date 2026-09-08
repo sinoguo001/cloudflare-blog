@@ -87,6 +87,9 @@ function inline(src) {
     const c = src[i];
     const two = src.slice(i, i + 2);
 
+    // 段落内的软换行（编辑器按 Enter 产生的行分隔、旧数据单换行等）保留为可见换行
+    if (c === '\n') { flush(); out += '<br>\n'; i++; continue; }
+
     if (c === '\\' && i + 1 < src.length && ESC_CHARS.includes(src[i + 1])) { pushText(src[i + 1]); i += 2; continue; }
 
     if (c === '`') {

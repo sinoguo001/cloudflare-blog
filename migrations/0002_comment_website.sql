@@ -1,0 +1,1 @@
+ALTER TABLE comments ADD COLUMN website TEXT NOT NULL DEFAULT '';

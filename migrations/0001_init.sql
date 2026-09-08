@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS comments(
   parent_id  INTEGER REFERENCES comments(id) ON DELETE CASCADE,
   author     TEXT NOT NULL,
   email      TEXT NOT NULL DEFAULT '',
+  website    TEXT NOT NULL DEFAULT '',
   content    TEXT NOT NULL,
   status     TEXT NOT NULL DEFAULT 'pending',        -- pending | approved | trash
   is_admin   INTEGER NOT NULL DEFAULT 0,

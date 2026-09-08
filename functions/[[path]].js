@@ -303,15 +303,17 @@ async function api(ctx, url, seg, method) {
     if (b.company) return json({ ok: true, pending: false }); // 蜜罐命中：静默放行
     const author = String(b.author || '').trim().slice(0, 40);
     const email = String(b.email || '').trim().slice(0, 120);
+    const website = String(b.website || '').trim().slice(0, 200);
     const content = String(b.content || '').trim();
     if (!author) return err('请填写昵称');
     if (content.length < 3 || content.length > 2000) return err('评论内容需在 3–2000 字之间');
     if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return err('邮箱格式不正确');
+    if (website && !/^https?:\/\/[^\s]+$/i.test(website)) return err('网址需以 http:// 或 https:// 开头');
     const ip = request.headers.get('CF-Connecting-IP') || '';
     if ((await db.recentCommentsByIp(dbx, ip, 60)) >= 5) return err('评论过于频繁，请稍后再试', 429);
     const audit = (await db.getSetting(dbx, 'comment_audit')) === '1';
     await db.addComment(dbx, {
-      postId: post.id, author, email, content,
+      postId: post.id, author, email, website, content,
       status: audit ? 'pending' : 'approved', isAdmin: 0, ip,
     });
     return json({ ok: true, pending: audit });

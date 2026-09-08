@@ -95,7 +95,10 @@ function blockLines(el) {
     case 'blockquote': {
       const lines = [];
       for (const k of kids) {
-        for (const line of blockLines(k)) lines.push('> ' + line);
+        const rows = blockLines(k);
+        if (!rows.length) continue;
+        if (lines.length) lines.push('>'); // 引用内段落间用 > 空行分隔
+        for (const line of rows) lines.push('> ' + line);
       }
       return lines;
     }
@@ -158,10 +161,15 @@ function blockLines(el) {
 // 将 .we 内容容器转成 Markdown 字符串
 export function mdFromHtml(container) {
   sanitize(container);
-  const lines = [];
+  // 每个顶层块产出一组行；块与块之间用空行分隔（= Markdown 段落边界），
+  // 块内换行（<br> 拆分出的行）保持单换行，渲染时再转 <br>，与所见即所得一致。
+  const blocks = [];
+  const add = (rows) => {
+    if (rows && rows.some((r) => r.trim())) blocks.push(rows);
+  };
   for (const c of [...container.childNodes]) {
     if (c.nodeType === Node.TEXT_NODE) {
-      if (c.data.trim()) lines.push(c.data.trim());
+      if (c.data.trim()) add([c.data.trim()]);
       continue;
     }
     if (c.nodeType !== Node.ELEMENT_NODE) continue;
@@ -169,14 +177,14 @@ export function mdFromHtml(container) {
     if (tag === 'img') {
       const src = c.getAttribute('src') || '';
       const alt = c.getAttribute('alt') || '';
-      if (src) lines.push('![' + alt + '](' + src + ')');
+      if (src) add(['![' + alt + '](' + src + ')']);
       continue;
     }
     if (tag === 'br') continue;
-    lines.push(...blockLines(c));
+    add(blockLines(c));
   }
-  // 合并空行，压缩多余空行
-  let md = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  // 块间空行分隔；顺带压缩 3 个及以上连续空行
+  let md = blocks.map((rows) => rows.join('\n')).join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
   return md;
 }
 

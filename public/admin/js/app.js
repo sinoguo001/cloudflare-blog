@@ -242,7 +242,7 @@ async function viewEditor(id) {
   showLoading('加载编辑器…');
   let post = null;
   const cats = (await API.get('/categories').catch(() => []));
-  if (id) post = await API.get('/admin/posts/' + id);
+  if (id) post = await API.get('/posts/' + id); // 单篇读取：后端路由为 GET /api/posts/:id
 
   shell(`
   <div class="page-head"><h1>${id ? '编辑文章' : '写文章'}</h1>
@@ -428,7 +428,9 @@ async function viewComments() {
         return;
       }
       box.innerHTML = r.items.map((c) => {
-        const author = c.is_admin ? esc(c.author) + ' <span class="tag-mini">博主</span>' : esc(c.author);
+        const web = /^https?:\/\/[^\s]+$/i.test(String(c.website || '').trim()) ? String(c.website).trim() : '';
+        const author = (c.is_admin ? esc(c.author) + ' <span class="tag-mini">博主</span>' : esc(c.author))
+          + (web ? ` <a class="hint" href="${esc(web)}" target="_blank" rel="noopener nofollow ugc">↗ 网址</a>` : '');
         const st = c.status === 'pending' ? '<span class="st pending">待审核</span>' : c.status === 'trash' ? '<span class="st trash">回收站</span>' : '<span class="st approved">已通过</span>';
         const ops = [];
         if (c.status !== 'approved') ops.push(`<button class="btn sm ok" data-o="app" data-id="${c.id}">通过</button>`);

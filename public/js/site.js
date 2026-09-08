@@ -27,6 +27,7 @@
       var body = { slug: form.dataset.post };
       body.author = (form.author.value || '').trim();
       body.email = (form.email.value || '').trim();
+      body.website = (form.website && form.website.value || '').trim();
       body.content = (form.content.value || '').trim();
       body.company = (form.company && form.company.value) || '';
       if (!body.author) { btn.disabled = false; return showBad('请填写昵称'); }

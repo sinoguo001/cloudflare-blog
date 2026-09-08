@@ -243,16 +243,16 @@ export async function getComment(db, id) {
 // 文章已过审评论（含博主回复）
 export async function commentsForPost(db, postId) {
   const r = await db.prepare(
-    `SELECT id,parent_id,author,content,is_admin,created_at FROM comments
+    `SELECT id,parent_id,author,website,content,is_admin,created_at FROM comments
      WHERE post_id=? AND status='approved' ORDER BY id ASC`).bind(postId).all();
   return r.results || [];
 }
-export async function addComment(db, { postId, parentId = null, author, email, content, status, isAdmin = 0, ip }) {
+export async function addComment(db, { postId, parentId = null, author, email, website = '', content, status, isAdmin = 0, ip }) {
   const t = bnNow();
   const r = await db.prepare(
-    `INSERT INTO comments(post_id,parent_id,author,email,content,status,is_admin,ip,created_at)
-     VALUES(?,?,?,?,?,?,?,?,?)`
-  ).bind(postId, parentId, author, email || '', content, status, isAdmin, ip || '', t).run();
+    `INSERT INTO comments(post_id,parent_id,author,email,website,content,status,is_admin,ip,created_at)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`
+  ).bind(postId, parentId, author, email || '', website || '', content, status, isAdmin, ip || '', t).run();
   return r.meta.last_row_id;
 }
 export async function setCommentStatus(db, id, status) {
