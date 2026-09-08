@@ -10,7 +10,12 @@ export function el(html) {
 
 let toastTimer = null;
 export function toast(msg, type = 'ok') {
-  const box = document.getElementById('toast');
+  let box = document.getElementById('toast');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'toast';
+    document.body.appendChild(box);
+  }
   const node = el(`<div class="tst ${type}">${esc(msg)}</div>`);
   box.appendChild(node);
   setTimeout(() => { node.style.opacity = '0'; node.style.transition = 'opacity .3s'; }, 2600);
@@ -20,7 +25,12 @@ export function toast(msg, type = 'ok') {
 // 通用对话框，返回 Promise<action 值>。actions: [{val,label,cls}]
 export function dialog({ title, bodyHtml, actions = [{ val: 'ok', label: '确定', cls: 'p' }, { val: 'cancel', label: '取消', cls: 'g' }], onSubmit } = {}) {
   return new Promise((resolve) => {
-    const root = document.getElementById('modal-root');
+    let root = document.getElementById('modal-root');
+    if (!root) {
+      root = document.createElement('div');
+      root.id = 'modal-root';
+      document.body.appendChild(root);
+    }
     const mk = (a) => `<button class="btn ${a.cls || ''}" data-val="${esc(a.val)}">${esc(a.label)}</button>`;
     const node = el(`
       <div class="mask"><div class="dlg">

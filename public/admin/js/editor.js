@@ -450,11 +450,13 @@ export class Editor {
       const btn = e.target.closest('.tbtn');
       if (!btn) return;
       const k = btn.dataset.k;
-      if (k === 'image') {
-        this._exec('image');
-        return;
+      try {
+        if (k === 'image') { this._exec('image'); return; }
+        this._exec(k);
+      } catch (err) {
+        // 任何隐藏异常都以红字提示暴露，避免"点了没反应"
+        toast((err && err.message) || '操作失败，请重试', 'bad');
       }
-      this._exec(k);
     });
     const refresh = () => this._refreshState();
     document.addEventListener('selectionchange', refresh);
