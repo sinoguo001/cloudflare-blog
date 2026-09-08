@@ -19,7 +19,10 @@ button{font-family:inherit}
 .inp,.txa,select.inp{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;outline:none;background:#fff;color:var(--text);font-family:inherit}
 .inp:focus,.txa:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
 .txa{min-height:90px;resize:vertical}
-.btn{display:inline-flex;align-items:center;gap:6px;border:none;border-radius:9px;padding:9px 18px;font-size:14px;cursor:pointer;background:#e5e9f2;color:var(--text)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  border:1px solid transparent;border-radius:9px;padding:9px 18px;font-size:14px;
+  line-height:1.45;vertical-align:middle;font-family:inherit;cursor:pointer;
+  background:#e5e9f2;color:var(--text)}
 .btn:hover{filter:brightness(.97)}
 .btn.p{background:var(--ac);color:#fff}
 .btn.ok{background:var(--ok);color:#fff}
@@ -28,6 +31,9 @@ button{font-family:inherit}
 .btn.v{background:var(--violet);color:#fff}
 .btn.sm{padding:4px 11px;font-size:12.5px;border-radius:7px}
 .btn:disabled{opacity:.5;cursor:not-allowed}
+/* 表格操作列：同类小按钮等宽等高、间距一致 */
+.tbl td .btn.sm{min-width:54px;margin:2px 6px 2px 0}
+.tbl td .btn.sm:last-child{margin-right:0}
 .form-err{color:var(--bad);font-size:13px;min-height:18px;margin:8px 0 0}
 .hint{color:var(--mut);font-size:12.5px}
 
