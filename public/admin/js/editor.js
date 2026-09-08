@@ -264,24 +264,24 @@ export class Editor {
       case 'bold': document.execCommand('bold'); break;
       case 'italic': document.execCommand('italic'); break;
       case 'strike': document.execCommand('strikeThrough'); break;
-      case 'block': document.execCommand('formatBlock', false, 'blockquote'); break;
+      case 'block': case 'quote': document.execCommand('formatBlock', false, 'blockquote'); break;
       case 'ul': document.execCommand('insertUnorderedList'); break;
       case 'ol': document.execCommand('insertOrderedList'); break;
-      case 'inlineCode': {
+      case 'inlineCode': case 'code': {
         const t = selText();
         if (t) { wrapSel('<code>' + esc(t) + '</code>'); break; }
         // 无选区：弹窗让用户输入代码内容，避免"点了没反应"
         this._inlineCodeDialog();
         break;
       }
-      case 'codeBlock': this._codeBlockDialog(); break;
+      case 'codeBlock': case 'codeblock': this._codeBlockDialog(); break;
       case 'link': {
         const t = selText();
         this._linkDialog(t);
         break;
       }
       case 'unlink': document.execCommand('unlink'); break;
-      case 'image': this._imageDialog(); break;
+      case 'image': case 'img': this._imageDialog(); break;
       case 'table': this._insertTable(); break;
       case 'hr': document.execCommand('insertHorizontalRule'); break;
       case 'clean': document.execCommand('removeFormat'); document.execCommand('formatBlock', false, 'p'); break;
