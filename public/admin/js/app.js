@@ -15,6 +15,13 @@ let draftSaver = null; // 由编辑器页注入的“保存草稿”函数（Ctr
 
 // ---------- 工具 ----------
 function pageTitle(t) { document.title = (t ? t + ' · ' : '') + '博客管理后台'; }
+// 上传提示：若图片已被转成 WebP，附上体积变化（d._webp 由 API.upload 写入）
+function webpNote(d) {
+  const w = d && d._webp;
+  if (!w || !w.from) return '';
+  const pct = Math.round((1 - w.to / w.from) * 100);
+  return pct > 0 ? ` · 已转 WebP（${fmtSize(w.from)} → ${fmtSize(w.to)}，省 ${pct}%）` : ' · 已转 WebP';
+}
 async function statsBadge() {
   try {
     const st = await API.get('/stats');
@@ -275,7 +282,7 @@ async function viewEditor(id) {
   editor = new Editor(editorHost, { ph: '开始写作…（可粘贴图片，或点工具栏 🖼 上传图片至 R2）' });
   editor.upload = async (file) => {
     const d = await API.upload(file);
-    toast('图片已上传');
+    toast('图片已上传' + webpNote(d));
     return d.url;
   };
   editor.setHTML(post?.content_html || '');
@@ -299,7 +306,7 @@ async function viewEditor(id) {
       const d = await API.upload(file);
       coverKey = d.key;
       coverPrev();
-      toast('封面已上传');
+      toast('封面已上传' + webpNote(d));
     } catch (e) { toast(e.message, 'bad'); }
   });
   view().querySelector('#e-cover-del').addEventListener('click', () => { coverKey = null; coverPrev(); });
@@ -619,8 +626,8 @@ async function viewMedia() {
     ev.target.value = '';
     if (!file) return;
     try {
-      await API.upload(file);
-      toast('上传成功');
+      const d = await API.upload(file);
+      toast('上传成功' + webpNote(d));
       load();
     } catch (e) { toast(e.message, 'bad'); }
   });

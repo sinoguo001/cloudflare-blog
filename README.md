@@ -13,17 +13,23 @@
 
 ---
 
-## Ver 0.1
+## 📌 更新日志
 
-修复了以下问题：
+### Ver 0.1（最新）
 
-| # | 问题 | 解决方法 |
-|---|---|---|
-| 1 | 后台发布文章后提示「接口不存在」，无法自动跳转（文章实际已发布） | 修正请求路径：改用后端实际存在的 `GET /api/posts/:id` |
-| 2 | 前台文章正文没有首行缩进，后台分好的段落在前台粘成一片 | 编辑器段落间补空行、渲染器段内换行输出 `<br>`，正文 CSS 加首行缩进 2 字符 |
-| 3 | 评论只有昵称和邮箱，没有网址 | 评论新增选填「网址」字段（D1 加 `website` 列），填写后昵称显示为链接 |
-| 4 | 后台编辑器「图片 / 行内码 / 块代码 / 引用」按钮点了毫无反应 | 按钮标识与代码分支名不匹配（`img`≠`image`、`codeblock`≠`codeBlock` 等），补齐别名分支，并改用站内弹窗 |
-| 5 | 后台「备份与恢复」的 R2 备份列表提示「接口不存在」 | 前后端路径单复数不一致（`/api/backups` vs `/api/backup`），前端改回单数，后端加别名兼容 |
+0.1 版本进行了以下修复和优化：
+
+1. **发布后无法跳转** — 后台发布提示"接口不存在"，改用后端实际存在的 `GET /api/posts/:id`
+2. **前台正文不缩进** — 段落间补空行、段内换行输出 `<br>`，正文 CSS 首行缩进 2 字符
+3. **评论缺网址字段** — 新增选填「网址」（D1 加 `website` 列），填写后昵称显示为链接
+4. **编辑器按钮点了没反应** — 按钮标识与分支名不匹配（`img`≠`image`、`codeblock`≠`codeBlock`），补齐别名并改站内弹窗
+5. **备份列表报"接口不存在"** — 前后端路径单复数不一致（`/api/backups` vs `/api/backup`），前端改回单数、后端加别名兼容
+6. **Gravatar 头像** — 评论支持全球通用头像：邮箱由选填改**必填**（仅存 MD5，不公开原文），内置 5 个头像源（默认国内可达的镜像），取不到时回落昵称首字
+7. **代码高亮** — 自研零依赖高亮器，支持 21 种语言、7 套配色（默认 GitHub 浅色），兼容 WordPress / Typecho 在代码围栏后标注语言名的写法，编辑器新增高亮代码按钮
+8. **留言验证码** — 「几加几等于几」算术验证码，SVG 随机旋转 + 乱序 + 诱饵字符 + 噪点曲线防 OCR；答案 HMAC 签名存 HttpOnly Cookie（30 分钟、一次性），后台「设置」可开关
+9. **图片自动转 WebP** — 上传 PNG / JPG / BMP 时在**浏览器端** canvas 转 WebP（画质 0.85）再传 R2，实测省 60%~95% 体积且保留透明通道；GIF / AVIF 不动，转码失败自动回退原图
+
+> 历史版本的完整记录见 **[CHANGELOG.md](CHANGELOG.md)**。README 只保留最新版本摘要，以后每版往 CHANGELOG 顶部追加，README 长度不再随版本数增长。
 
 ---
 
@@ -42,12 +48,14 @@
 - **页脚不暴露后台入口**（安全考虑）；后台「设置」可填 **ICP 备案号**——填写后显示在页脚并链接工信部官网（`beian.miit.gov.cn`），留空则不显示
 
 **评论（内置，无需 Disqus / Waline）**
-- 读者发表评论（昵称必填、邮箱选填），内置蜜罐 + 同 IP 频率限制防垃圾
+- 读者发表评论（昵称、邮箱必填，网址选填），邮箱用于取 **Gravatar 全球通用头像**（只存 MD5 哈希，不公开邮箱原文）
+- 内置**算术验证码**（SVG 图形干扰，后台可关）+ 蜜罐字段 + 同 IP 频率限制，三重防垃圾
 - 后台「评论」页：待审核/已通过/回收站分桶，可**通过、转待审、移垃圾、彻底删除、博主回复**
 - 可关闭评论、可切换“先审后发”
 
 **媒体（R2）**
-- 编辑器 🖼 按钮或图片库页上传 → 原图直传 R2；白名单 PNG/JPG/GIF/WebP/AVIF/BMP，单张 ≤ 8 MB
+- 编辑器 🖼 按钮或图片库页上传 → 白名单 PNG/JPG/GIF/WebP/AVIF/BMP，单张 ≤ 8 MB
+- **PNG / JPG / BMP 上传前在浏览器端自动转 WebP**（省 60%~95% 体积，透明通道保留），GIF/AVIF 原样上传
 - `/media/...` 经 Worker 代理输出并长缓存（图片对象不可变，安全提速）
 
 **主题换肤（一套 CSS 换全站外观）**
@@ -118,6 +126,7 @@ npx wrangler pages dev public                                # http://127.0.0.1:
 
 ```
 cloudflare-blog/
+├── CHANGELOG.md             # 完整更新历史（倒序），README 只放最新版本摘要
 ├── wrangler.example.toml    # 命令行部署的配置模板（复制为 wrangler.toml 并填 database_id 后用）；Git 部署不要提交 wrangler.toml，否则会锁死网页绑定
 ├── migrations/0001_init.sql # 数据库建表 + 默认设置（命令行迁移用）
 ├── migrations/d1-console.sql # 去注释压缩版（D1 网页 Console 粘贴用，见免本地部署"建表坑"）
@@ -129,6 +138,9 @@ cloudflare-blog/
 │   └── _lib/
 │       ├── admin-shell.js   # 后台入口 HTML（自动生成，勿手改；改 index.html 后跑 .gen-admin-shell.mjs）
 │       ├── md.js            # 自研 Markdown 渲染器（GFM 子集 + XSS 全转义）
+│       ├── hl.js            # 代码高亮（21 种语言 / 7 套配色，输出 hljs 标准类名）
+│       ├── md5.js           # Gravatar 头像地址所需的 MD5
+│       ├── captcha.js       # 算术验证码：SVG 生成 + 答案 HMAC 签名校验
 │       ├── db.js            # D1 数据访问层
 │       ├── auth.js          # PBKDF2 密码哈希 + HMAC 会话
 │       ├── site.js          # 前台模板与骨架 CSS（THEME_VARS 变量表）+ 主题外链注入
@@ -140,7 +152,7 @@ cloudflare-blog/
 │   └── admin/               # 后台单页应用（零依赖原生 JS，含「主题」管理页）
 │       ├── index.html
 │       ├── css/app.css
-│       └── js/{app,editor,api,ui}.js
+│       └── js/{app,editor,api,ui}.js   # api.js 内含上传前 WebP 转码
 ├── .gen-admin-shell.mjs     # 由 public/admin/index.html 重新生成 admin-shell.js（node .gen-admin-shell.mjs）
 └── .smoke.mjs               # Markdown 渲染器自检脚本（node .smoke.mjs）
 ```
