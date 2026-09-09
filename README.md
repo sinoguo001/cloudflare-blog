@@ -13,7 +13,7 @@
 
 ---
 
-## V0.1
+## Ver 0.1
 
 修复了以下问题：
 
@@ -23,6 +23,7 @@
 | 2 | 前台文章正文没有首行缩进，后台分好的段落在前台粘成一片 | 编辑器段落间补空行、渲染器段内换行输出 `<br>`，正文 CSS 加首行缩进 2 字符 |
 | 3 | 评论只有昵称和邮箱，没有网址 | 评论新增选填「网址」字段（D1 加 `website` 列），填写后昵称显示为链接 |
 | 4 | 后台编辑器「图片 / 行内码 / 块代码 / 引用」按钮点了毫无反应 | 按钮标识与代码分支名不匹配（`img`≠`image`、`codeblock`≠`codeBlock` 等），补齐别名分支，并改用站内弹窗 |
+| 5 | 后台「备份与恢复」的 R2 备份列表提示「接口不存在」 | 前后端路径单复数不一致（`/api/backups` vs `/api/backup`），前端改回单数，后端加别名兼容 |
 
 ---
 
@@ -288,8 +289,6 @@ my-theme/
 > 命令行部署（wrangler d1 migrations apply）不受此问题影响，照常使用 `0001_init.sql`。
 
 > ⚠️ **绑定锁坑（2026-09 实测）**：第 5 步忘记删除 `wrangler.toml` 时，Bindings 页会出现提示“此项目的绑定在通过 wrangler.toml 进行管理”，Add binding 按钮被禁用。原因：Pages 检测到仓库存在 `wrangler.toml` 就把绑定管理权交给配置文件，网页添加入口随之关闭；Git 部署时该文件仅会读取绑定段，而本项目的 `wrangler.toml` 已不含任何绑定——**删掉它网页绑定立即解锁**（若删除后页面仍提示，刷新一次 Bindings 页即可）。其余文件照常上传即可（注意 `migrations/0001_init.sql` 仅命令行迁移使用，网页建表请用 `d1-console.sql`）。
-
-> **⚠️ `_routes.json` 重叠规则坑（2026-09 实测）**：排除列表里若同时写 `/admin/` 和 `/admin/*`（后者已覆盖前者），部署会在最后一步报 `Error 8000057: Overlapping rules in _routes.json are not allowed. Rule "/admin/" is overlapped by "/admin/*"`——Worker 编译与静态资源均成功，仅 Function 发布失败、整次部署标记失败（Deployments 显示 "No deployment available"）。**规则之间不得互相覆盖**：保留 `/admin`（精确，无尾斜杠）+ `/admin/*`（覆盖目录树）两条即可，勿再写 `/admin/`。
 
 此后：改代码 → 在 GitHub 仓库页按 `.` 键（github.dev 网页编辑器）改完提交，Pages 自动重新部署；写作、传图、审评论、**安装主题**等日常全部在网页后台完成，与本地是否装软件无关。
 

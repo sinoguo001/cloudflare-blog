@@ -836,7 +836,8 @@ async function viewBackup() {
     }));
   };
   const load = async () => {
-    try { render((await API.get('/backups')).items); }
+    // 注意：后端路由是单数 /api/backup（不是 /backups）
+    try { render((await API.get('/backup')).items); }
     catch (e) { listBox.innerHTML = `<div class="empty-note">${esc(e.message)}</div>`; }
   };
   view().querySelector('#b-now').addEventListener('click', async () => {
@@ -847,14 +848,25 @@ async function viewBackup() {
     btn.disabled = false;
   });
   view().querySelector('#b-dl').addEventListener('click', async () => {
-    const r = await fetch('/api/backup', { method: 'POST', credentials: 'same-origin' });
-    const data = await r.json();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'blog-backup-' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14) + '.json';
-    a.click();
-    URL.revokeObjectURL(a.href);
+    const btn = view().querySelector('#b-dl');
+    btn.disabled = true;
+    try {
+      // POST /api/backup 只返回 {ok,key}，数据存在 R2 里；需再按文件名 GET 取回内容
+      const r = await API.post('/backup');
+      const name = String(r.key || '').split('/').pop();
+      if (!name) throw new Error('备份失败：未返回文件名');
+      const res = await fetch('/api/backup/' + encodeURIComponent(name), { credentials: 'same-origin' });
+      if (!res.ok) throw new Error('下载备份失败');
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast('已下载：' + name);
+      load();
+    } catch (e) { toast(e.message, 'bad'); }
+    btn.disabled = false;
   });
   view().querySelector('#b-up').addEventListener('click', () => view().querySelector('#b-file').click());
   view().querySelector('#b-file').addEventListener('change', async (ev) => {

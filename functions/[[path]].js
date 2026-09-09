@@ -40,7 +40,7 @@ async function handle(ctx) {
 
   // ---- 后台静态资源与根静态文件 ----
   // （/media、/backup、robots/rss/sitemap 等动态路径需排除，避免被扩展名规则截胡）
-  const isDynamicExt = seg[0] === 'media' || seg[0] === 'backup' || seg[0] === 'theme-assets'
+  const isDynamicExt = seg[0] === 'media' || seg[0] === 'backup' || seg[0] === 'backups' || seg[0] === 'theme-assets'
     || ['rss.xml', 'feed.xml', 'sitemap.xml', 'robots.txt'].includes(path.slice(1));
   if (seg[0] === 'admin' || (STATIC_EXT.test(path) && !isDynamicExt) || path === '/favicon.ico') {
     const target = new URL(request.url);
@@ -358,7 +358,8 @@ async function api(ctx, url, seg, method) {
   }
 
   // --- 备份（R2） ---
-  if (seg[0] === 'backup') {
+  // 说明：路由是单数 /api/backup；'backups' 作为别名保留，兼容旧版前端的复数写法
+  if (seg[0] === 'backup' || seg[0] === 'backups') {
     if (method === 'POST' && seg.length === 1) {
       const data = await db.dumpAll(dbx);
       const key = `backups/backup-${bnNow().replace(/[-: ]/g, '')}.json`;
