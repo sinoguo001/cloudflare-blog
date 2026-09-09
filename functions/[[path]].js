@@ -5,10 +5,12 @@
 // ============================================================
 import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, stripHtml } from './_lib/util.js';
 import { render } from './_lib/md.js';
+import { CODE_THEMES } from './_lib/hl.js';
 import * as db from './_lib/db.js';
 import * as site from './_lib/site.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
+import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
 
 // 携带 Set-Cookie 的 JSON 响应
 const jset = (data, cookie, status = 200) => {
@@ -134,7 +136,11 @@ async function front(ctx, url, seg, method, path) {
     const [siblings, comments, cfg] = await Promise.all([
       db.siblings(env.DB, post),
       db.commentsForPost(env.DB, post.id),
-      Promise.resolve({ allow: s.get('allow_comments') === '1', audit: s.get('comment_audit') === '1' }),
+      Promise.resolve({
+        allow: s.get('allow_comments') === '1',
+        audit: s.get('comment_audit') === '1',
+        captcha: s.get('captcha') !== '0',   // 未设置即默认开启
+      }),
     ]);
     return html(site.renderArticle(s, post, { siblings, comments, cfg }));
   }
@@ -286,6 +292,20 @@ async function api(ctx, url, seg, method) {
     return err('接口不存在', 404);
   }
 
+  // --- 算术验证码图片（公开）：下发 SVG，同时把签名后的答案写入 HttpOnly Cookie ---
+  if (seg[0] === 'captcha' && method === 'GET' && seg.length === 1) {
+    const cap = await newCaptcha(env);
+    return new Response(cap.svg, {
+      status: 200,
+      headers: {
+        'content-type': 'image/svg+xml; charset=utf-8',
+        'cache-control': 'no-store, no-cache, must-revalidate',
+        'content-security-policy': "default-src 'none'",
+        'set-cookie': cap.cookie,
+      },
+    });
+  }
+
   // --- 阅读量（公开） ---
   if (seg[0] === 'view' && method === 'POST' && seg.length === 1) {
     const b = (await readJson(request)) || {};
@@ -307,8 +327,15 @@ async function api(ctx, url, seg, method) {
     const content = String(b.content || '').trim();
     if (!author) return err('请填写昵称');
     if (content.length < 3 || content.length > 2000) return err('评论内容需在 3–2000 字之间');
-    if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return err('邮箱格式不正确');
+    // 邮箱必填：用于生成 Gravatar 头像（仅存 MD5 后的头像地址，不公开邮箱原文）
+    if (!email) return err('请填写邮箱（用于显示头像，不会公开）');
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return err('邮箱格式不正确');
     if (website && !/^https?:\/\/[^\s]+$/i.test(website)) return err('网址需以 http:// 或 https:// 开头');
+    // 算术验证码：默认开启（设置项缺失即视为开启），答错/过期都拒绝
+    const capOn = (await db.getSetting(dbx, 'captcha')) !== '0';
+    if (capOn && !(await checkCaptcha(env, request, b.captcha))) {
+      return err('验证码不正确或已过期，请点击图片换一张');
+    }
     const ip = request.headers.get('CF-Connecting-IP') || '';
     if ((await db.recentCommentsByIp(dbx, ip, 60)) >= 5) return err('评论过于频繁，请稍后再试', 429);
     const audit = (await db.getSetting(dbx, 'comment_audit')) === '1';
@@ -316,7 +343,8 @@ async function api(ctx, url, seg, method) {
       postId: post.id, author, email, website, content,
       status: audit ? 'pending' : 'approved', isAdmin: 0, ip,
     });
-    return json({ ok: true, pending: audit });
+    // 验证码一次性：用掉即作废（前端随后会自动换一张新图）
+    return capOn ? jset({ ok: true, pending: audit }, clearCaptchaCookie()) : json({ ok: true, pending: audit });
   }
 
   // ================= 以下全部需登录 =================
@@ -500,12 +528,22 @@ async function api(ctx, url, seg, method) {
     if (method === 'PATCH') {
     const b = (await readJson(request)) || {};
     const allowed = { site_title: 60, site_subtitle: 80, author_name: 30, footer_text: 500, seo_desc: 200, beian: 100 };
+    // 代码高亮主题与头像源：取值受限，避免写入任意值
+    if (b.code_theme != null) {
+      const t = String(b.code_theme).slice(0, 30);
+      if (CODE_THEMES.some((x) => x.id === t)) await db.setSetting(dbx, 'code_theme', t);
+    }
+    if (b.gravatar_source != null) {
+      const g = String(b.gravatar_source).slice(0, 20);
+      if (['weavatar', 'cravatar', 'sepcc', 'gravatar', 'secure'].includes(g)) await db.setSetting(dbx, 'gravatar_source', g);
+    }
     for (const k of Object.keys(allowed)) {
       if (b[k] != null) await db.setSetting(dbx, k, String(b[k]).slice(0, allowed[k]));
     }
     if (b.per_page != null) await db.setSetting(dbx, 'per_page', String(Math.min(20, Math.max(1, parseInt(b.per_page, 10) || 8))));
     if (b.allow_comments != null) await db.setSetting(dbx, 'allow_comments', b.allow_comments ? '1' : '0');
     if (b.comment_audit != null) await db.setSetting(dbx, 'comment_audit', b.comment_audit ? '1' : '0');
+    if (b.captcha != null) await db.setSetting(dbx, 'captcha', b.captcha ? '1' : '0');
     if (b.accent && isHexColor(String(b.accent))) await db.setSetting(dbx, 'accent', b.accent);
     if (b.new_password && String(b.new_password).length >= 6) {
       const salt = newSalt();

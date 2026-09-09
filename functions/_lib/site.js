@@ -4,6 +4,23 @@
 // ============================================================
 import * as db from './db.js';
 import { esc, fmtDate, rfc822, stripHtml, isHexColor } from './util.js';
+import { codeThemeCss } from './hl.js';
+import { gravatarHash } from './md5.js';
+
+// Gravatar 头像源：国内优先（实测 weavatar ≈23ms、cravatar ≈88ms；官方源国内不可达）
+const GRAVATAR_SRC = {
+  weavatar: 'https://weavatar.com/avatar/',
+  cravatar: 'https://cravatar.cn/avatar/',
+  sepcc: 'https://cdn.sep.cc/avatar/',
+  gravatar: 'https://www.gravatar.com/avatar/',
+  secure: 'https://secure.gravatar.com/avatar/',
+};
+// 头像地址：邮箱 MD5（不泄露邮箱原文）+ 默认头像 mp（神秘人）
+function avatarUrl(s, email, size = 80) {
+  if (!email) return '';
+  const base = GRAVATAR_SRC[s.get('gravatar_source')] || GRAVATAR_SRC.weavatar;
+  return `${base}${gravatarHash(email)}?s=${size}&d=mp`;
+}
 
 const ACCENT = '#2563eb';
 export function accentOf(s) { return isHexColor(s.get('accent')) ? s.get('accent') : ACCENT; }
@@ -104,9 +121,11 @@ img{max-width:100%}
 .art-body a{text-decoration:underline;text-underline-offset:3px}
 .art-body img{border-radius:10px;margin:6px 0;border:1px solid var(--line)}
 .art-body hr{border:none;border-top:1px dashed var(--line);margin:2em 0}
-.art-body pre{background:var(--code-bg);color:var(--code-text);padding:16px 18px;border-radius:12px;overflow:auto;font-size:14px;line-height:1.65}
+.art-body pre{margin:1.2em 0;background:var(--code-bg);color:var(--code-text);border-radius:12px;overflow:auto}
 .art-body code{font-family:var(--font-code);background:var(--inline-code-bg);border-radius:5px;padding:1.5px 6px;font-size:.9em}
 .art-body pre code{background:none;color:inherit;padding:0;font-size:14px}
+/* 高亮代码块：配色由后台选择的主题 CSS 提供（见 codeThemeCss），此处只管布局 */
+.art-body pre code.hljs{display:block;padding:16px 18px;font-family:var(--font-code);font-size:14px;line-height:1.65;overflow:auto}
 .art-body table{border-collapse:collapse;margin:1.2em 0;width:100%;font-size:15px}
 .art-body th,.art-body td{border:1px solid var(--line);padding:8px 12px}
 .art-body th{background:var(--tint)}
@@ -120,8 +139,10 @@ img{max-width:100%}
 .comments h2{margin:0 0 18px;font-size:20px}
 .cmt{border-top:1px dashed var(--line);padding:16px 0}
 .cmt-top{display:flex;align-items:center;gap:10px;margin-bottom:6px}
-.avatar{width:34px;height:34px;border-radius:50%;background:var(--accent);color:var(--on-accent);display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;flex:none}
+.avatar{width:34px;height:34px;border-radius:50%;background:var(--accent);color:var(--on-accent);display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;flex:none;position:relative;overflow:hidden}
 .avatar.admin{background:var(--admin)}
+/* Gravatar 头像图片：盖在首字母色块上，加载失败被 onerror 移除后自动露出首字母 */
+.avatar .avt{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:50%}
 .cmt-who b{font-size:14.5px}
 .tag-mini{font-size:11px;background:var(--admin-soft);color:var(--admin-text);padding:1px 8px;border-radius:999px}
 .cmt-time{font-size:12px;color:var(--muted)}
@@ -133,6 +154,10 @@ img{max-width:100%}
 .cform input{flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;outline:none}
 .cform textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;min-height:110px;resize:vertical;outline:none;font-family:inherit}
 .cform input:focus,.cform textarea:focus{border-color:var(--accent)}
+.cap-row{align-items:center;gap:10px;margin-bottom:6px}
+.cap-img{width:150px;height:48px;flex:none;border:1px solid var(--line);border-radius:9px;cursor:pointer;background:var(--card);display:block}
+.cap-row input{flex:1;min-width:120px;max-width:220px}
+.cap-tip{font-size:12.5px;color:var(--muted);margin:0 0 12px}
 .btn{display:inline-block;border:none;background:var(--accent);color:var(--on-accent);padding:9px 22px;border-radius:9px;font-size:14.5px;cursor:pointer}
 .btn:hover{opacity:.9;text-decoration:none}
 .hp-field{position:absolute!important;left:-9999px!important;width:1px;height:1px;overflow:hidden}
@@ -190,7 +215,7 @@ export function layout(s, o) {
 <meta name="description" content="${esc(desc)}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="alternate" type="application/rss+xml" title="${esc(title)}" href="/rss.xml">
-<style>:root{--accent:${accent}}${THEME_VARS}${FRONT_CSS}</style>
+<style>:root{--accent:${accent}}${THEME_VARS}${FRONT_CSS}${codeThemeCss(s.get('code_theme'))}</style>
 ${themeLink(s)}
 ${o.bodySlug ? '<script src="/js/site.js" defer></script>' : ''}
 </head>
@@ -305,20 +330,25 @@ export function renderArticle(s, post, extra) {
 }
 
 // ---------- 评论区 ----------
-function commentNode(c, level) {
+function commentNode(c, level, s) {
   const child = c.children && c.children.length
-    ? `<div class="cmt-child">${c.children.map((x) => commentNode(x, level + 1)).join('')}</div>` : '';
+    ? `<div class="cmt-child">${c.children.map((x) => commentNode(x, level + 1, s)).join('')}</div>` : '';
   const who = c.is_admin ? '<span class="tag-mini">博主</span>' : '';
   const body = c.content.split('\n').map(esc).join('<br>');
   const avatarCls = c.is_admin ? ' avatar admin' : '';
   const initial = esc((c.author || '匿').trim().slice(0, 1));
+  // Gravatar 头像：按邮箱 MD5 取图；加载失败自动移除，回退为首字母色块
+  const av = avatarUrl(s, c.email, 80);
+  const avatarHtml = `<span class="avatar${avatarCls}">${initial}${
+    av ? `<img class="avt" src="${esc(av)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''
+  }</span>`;
   // 网址选填：填了合法 http(s) 地址，昵称即可点击跳转（nofollow，防垃圾链接权重传递）
   const web = /^https?:\/\/[^\s]+$/i.test(String(c.website || '').trim()) ? String(c.website).trim() : '';
   const name = web
     ? `<a href="${esc(web)}" target="_blank" rel="noopener nofollow ugc" style="color:inherit;text-decoration:underline">${esc(c.author)}</a>`
     : esc(c.author);
   return `<div class="cmt">
-    <div class="cmt-top"><span class="avatar${avatarCls}">${initial}</span>
+    <div class="cmt-top">${avatarHtml}
       <div><span class="cmt-who"><b>${name}</b> ${who}</span><br>
       <span class="cmt-time">${fmtDate(c.created_at, true)}</span></div></div>
     <div class="cmt-body">${body}</div>
@@ -336,15 +366,20 @@ export function renderComments(s, post, comments, cfg) {
   }
   const auditNote = cfg.audit ? '<p class="cmsg ok" style="display:none" id="cmsg-ok">提交成功，审核通过后将在这里显示。</p>' : '';
   const bad = '<p class="cmsg bad" style="display:none" id="cmsg-bad"></p>';
-  const list = roots.length ? roots.map((c) => commentNode(c, 0)).join('') : '<p style="color:var(--muted)">暂无评论</p>';
+  const list = roots.length ? roots.map((c) => commentNode(c, 0, s)).join('') : '<p style="color:var(--muted)">暂无评论</p>';
   const form = `<div class="cform">
     <form id="cform" data-post="${esc(post.slug)}" novalidate>
       <div class="row">
         <input name="author" placeholder="昵称 *" maxlength="40" required>
-        <input name="email" type="email" placeholder="邮箱（选填，仅用于博主回复联系）" maxlength="120">
+        <input name="email" type="email" placeholder="邮箱 *（用于显示头像，不公开）" maxlength="120" required>
         <input name="website" type="url" placeholder="网址（选填，展示在昵称上）" maxlength="200">
       </div>
       <textarea name="content" placeholder="写下你的想法…（3–2000 字，纯文本）" required></textarea>
+      ${cfg.captcha === false ? '' : `<div class="row cap-row">
+        <img id="capimg" class="cap-img" src="/api/captcha" alt="算术验证码" title="点击换一张">
+        <input name="captcha" placeholder="图片算式的答案 *" maxlength="6" autocomplete="off" required>
+      </div>
+      <p class="cap-tip">看不清？点击图片换一道题。</p>`}
       <div class="hp-field" aria-hidden="true"><input name="company" tabindex="-1" autocomplete="off"></div>
       <p style="margin:12px 0 0"><button class="btn" type="submit">发表评论</button>
       ${cfg.audit ? '<span style="color:var(--muted);font-size:13px;margin-left:10px">评论将先经审核后显示</span>' : ''}</p>
@@ -456,13 +491,15 @@ h1{font-size:30px;line-height:1.4;margin:0 0 6px}
 .art-body a{color:var(--accent);text-decoration:underline;text-underline-offset:3px}
 .art-body img{max-width:100%;border-radius:10px;margin:6px 0;border:1px solid var(--line)}
 .art-body hr{border:none;border-top:1px dashed var(--line);margin:2em 0}
-.art-body pre{background:var(--code-bg);color:var(--code-text);padding:16px 18px;border-radius:12px;overflow:auto;font-size:14px;line-height:1.65}
+.art-body pre{margin:1.2em 0;background:var(--code-bg);color:var(--code-text);border-radius:12px;overflow:auto}
 .art-body code{font-family:var(--font-code);background:var(--inline-code-bg);border-radius:5px;padding:1.5px 6px;font-size:.9em}
 .art-body pre code{background:none;color:inherit;padding:0;font-size:14px}
+/* 高亮代码块：配色由后台选择的主题 CSS 提供（见 codeThemeCss），此处只管布局 */
+.art-body pre code.hljs{display:block;padding:16px 18px;font-family:var(--font-code);font-size:14px;line-height:1.65;overflow:auto}
 .art-body table{border-collapse:collapse;margin:1.2em 0;width:100%;font-size:15px}
 .art-body th,.art-body td{border:1px solid var(--line);padding:8px 12px}
 .art-body th{background:var(--tint)}
-.art-body{font-size:16.5px}</style>
+.art-body{font-size:16.5px}${codeThemeCss(s.get('code_theme'))}</style>
 ${themeLink(s, origin)}</head>
 <body><div class="wrap"><h1>${esc(post.title || '（无标题）')}</h1>
 <div class="meta">${esc(s.get('author_name'))} · ${fmtDate(new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 19).replace('T', ' '), true)} · 实时预览</div>

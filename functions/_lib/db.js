@@ -244,7 +244,7 @@ export async function getComment(db, id) {
 // 文章已过审评论（含博主回复）
 export async function commentsForPost(db, postId) {
   const r = await db.prepare(
-    `SELECT id,parent_id,author,website,content,is_admin,created_at FROM comments
+    `SELECT id,parent_id,author,email,website,content,is_admin,created_at FROM comments
      WHERE post_id=? AND status='approved' ORDER BY id ASC`).bind(postId).all();
   return r.results || [];
 }

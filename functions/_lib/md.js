@@ -8,6 +8,8 @@
 const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC_MAP[c]);
 
+import { highlight, normalizeLang } from './hl.js';
+
 const SAFE_PROTO = /^(https?:|mailto:|tel:|#|\/)/i;
 const ESC_CHARS = '\\`*_[]{}()#+-.!|>~';
 
@@ -178,7 +180,12 @@ export function render(md) {
       const buf = [];
       while (i < lines.length && !lines[i].trim().startsWith(fence)) buf.push(lines[i++]);
       i++; // 跳过闭合行（若无闭合则吞到末尾）
-      html += `<pre><code${lang ? ` class="language-${esc(lang)}"` : ''}>${esc(buf.join('\n'))}</code></pre>\n`;
+      // 结构保持 <pre><code class="language-x">：与 WordPress / Typecho 输出一致，文章互搬不异常
+      const norm = normalizeLang(lang);
+      const cls = ['hljs'];
+      if (norm) cls.push('language-' + esc(norm));
+      else if (lang) cls.push('language-' + esc(lang));
+      html += `<pre><code class="${cls.join(' ')}">${highlight(buf.join('\n'), lang)}</code></pre>\n`;
       continue;
     }
 

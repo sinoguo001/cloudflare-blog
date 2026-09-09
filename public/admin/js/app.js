@@ -909,7 +909,33 @@ async function viewSettings() {
         <div class="sec-title">评论设置</div>
         <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><input type="checkbox" id="s-allow"> 允许读者发表评论</label>
         <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="s-audit"> 评论先审后发（推荐开启，防垃圾）</label>
-        <p class="hint" style="margin-bottom:0">评论内置在系统内，无需外挂 Disqus / Waline。后台可直接审核、回复与删除。</p>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="s-captcha"> 评论启用算术验证码（推荐开启，防机器人批量留言）</label>
+        <p class="hint" style="margin:8px 0 0">关闭后评论表单将不再显示验证码，仅在确认被误伤时再关。</p>
+        <p class="hint" style="margin-bottom:0">评论内置在系统内，无需外挂 Disqus / Waline。读者邮箱为必填（用于显示头像，不会公开），后台可直接审核、回复与删除。</p>
+      </div>
+      <div class="card">
+        <div class="sec-title">代码高亮与评论头像</div>
+        <div class="field"><label>代码高亮配色</label>
+          <select class="inp" id="s-code_theme">
+            <option value="github">GitHub 浅色（默认，与 WordPress / Typecho 观感一致）</option>
+            <option value="github-dark">GitHub 深色</option>
+            <option value="atom-one-light">Atom One Light 浅色</option>
+            <option value="atom-one-dark">Atom One Dark 深色</option>
+            <option value="xcode">Xcode 浅色</option>
+            <option value="monokai">Monokai 深色</option>
+            <option value="vs2015">Visual Studio 深色</option>
+          </select>
+        </div>
+        <div class="field"><label>评论头像源（Gravatar）</label>
+          <select class="inp" id="s-gravatar_source">
+            <option value="weavatar">WeAvatar 国内镜像（推荐，国内最快）</option>
+            <option value="cravatar">Cravatar 国内镜像（文派）</option>
+            <option value="sepcc">cdn.sep.cc</option>
+            <option value="gravatar">Gravatar 官方（国内通常无法访问）</option>
+            <option value="secure">Gravatar 官方 secure 源</option>
+          </select>
+        </div>
+        <p class="hint" style="margin-bottom:0">头像按邮箱 MD5 取值，邮箱原文不会出现在页面上。代码块输出标准 &lt;pre&gt;&lt;code class="language-x"&gt; 结构，从 WordPress / Typecho 迁过来的文章可直接正常显示。</p>
       </div>
       <div class="card">
         <div class="sec-title">对外订阅与收录</div>
@@ -945,8 +971,11 @@ async function viewSettings() {
   set('s-accent', s.accent || '#2563eb'); set('s-per_page', s.per_page || '8');
   set('s-footer_text', s.footer_text);
   set('s-beian', s.beian);
+  set('s-code_theme', s.code_theme || 'github');
+  set('s-gravatar_source', s.gravatar_source || 'weavatar');
   v.querySelector('#s-allow').checked = s.allow_comments !== '0';
   v.querySelector('#s-audit').checked = s.comment_audit !== '0';
+  v.querySelector('#s-captcha').checked = s.captcha !== '0';
 
   v.querySelector('#set-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -962,8 +991,11 @@ async function viewSettings() {
       per_page: v.querySelector('#s-per_page').value,
       footer_text: v.querySelector('#s-footer_text').value,
       beian: v.querySelector('#s-beian').value.trim(),
+      code_theme: v.querySelector('#s-code_theme').value,
+      gravatar_source: v.querySelector('#s-gravatar_source').value,
       allow_comments: v.querySelector('#s-allow').checked,
       comment_audit: v.querySelector('#s-audit').checked,
+      captcha: v.querySelector('#s-captcha').checked,
     };
     if (pw) body.new_password = pw;
     try {

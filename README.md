@@ -71,6 +71,13 @@
 
 **方式 A（命令行）**
 
+> 📄 **先准备配置文件**：仓库里只提供模板 `wrangler.example.toml`（刻意不带 `wrangler.toml`，以免锁死网页绑定管理，详见文末"绑定锁"坑）。命令行部署前先复制一份：
+> ```bash
+> cp wrangler.example.toml wrangler.toml     # Windows：copy wrangler.example.toml wrangler.toml
+> ```
+> 然后打开生成的 `wrangler.toml`，取消 `[[d1_databases]]`、`[[r2_buckets]]` 两段注释，把 `database_id` 换成下一步输出的真实 ID。
+> 若改用方式 B（Git 集成），**不要**把模板改名提交上去。
+
 ```bash
 # 1) 登录（弹出浏览器授权一次）
 npx wrangler login
@@ -111,7 +118,7 @@ npx wrangler pages dev public                                # http://127.0.0.1:
 
 ```
 cloudflare-blog/
-├── wrangler.toml            # 仅「方式 A 命令行」需要；Git 部署请勿提交（会锁死网页绑定，见免本地部署第 5 步）
+├── wrangler.example.toml    # 命令行部署的配置模板（复制为 wrangler.toml 并填 database_id 后用）；Git 部署不要提交 wrangler.toml，否则会锁死网页绑定
 ├── migrations/0001_init.sql # 数据库建表 + 默认设置（命令行迁移用）
 ├── migrations/d1-console.sql # 去注释压缩版（D1 网页 Console 粘贴用，见免本地部署"建表坑"）
 ├── themes-example/          # 示例主题（可整个拖入后台安装）
@@ -280,7 +287,7 @@ my-theme/
 2. **Cloudflare**：dash.cloudflare.com 注册；
 3. 建 **D1** 数据库（命名随意，如 `blog-db`）→ 打开该库 **Console**，把 `migrations/d1-console.sql` 全文粘贴执行（⚠️ 不要用 `0001_init.sql` 原文直接粘贴，原因见下方"建表坑"警示）；建 **R2** 桶（如 `blog-assets`）；
 4. **Pages** → Create project → Connect to Git → 授权并选择仓库 → 框架预设 **None**、构建命令**留空**、输出目录 **`public`** → Save and Deploy（首次部署可能失败，属正常）；
-5. **删除仓库里的 `wrangler.toml`**（打开该文件 → 右上角垃圾桶 → Commit）。⚠️ 此文件在 Git 部署模式下**没有作用还会锁死网页绑定**——只要它在，Bindings 页就提示“此项目的绑定在通过 wrangler.toml 进行管理”、无法手动添加（详见下方“绑定锁”坑）。删除不影响构建（输出目录 `public` 已存在 Pages 项目设置里）；
+5. **确认仓库里没有 `wrangler.toml`**（仓库自带的是模板 `wrangler.example.toml`，无需处理；若确实存在 `wrangler.toml`，打开它 → 右上角垃圾桶 → Commit）。⚠️ 此文件在 Git 部署模式下**没有作用还会锁死网页绑定**——只要它在，Bindings 页就提示“此项目的绑定在通过 wrangler.toml 进行管理”、无法手动添加（详见下方“绑定锁”坑）。删除不影响构建（输出目录 `public` 已存在 Pages 项目设置里）；
 6. 项目 **Settings → Functions → Bindings**：添加 D1 绑定（变量名 **`DB`**）、R2 绑定（变量名 **`BLOG`**）；**Settings → Variables and Secrets**：添加加密变量 **`AUTH_SECRET`**（随机长串）；
 7. **Deployments** 里对最新一次点 Retry（重新部署，让绑定生效），随后打开 `https://<项目名>.pages.dev/admin` 完成初始化向导即可。
 

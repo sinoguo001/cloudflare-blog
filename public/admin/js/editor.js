@@ -105,7 +105,11 @@ function blockLines(el) {
     case 'pre': {
       let txt = el.textContent || '';
       txt = txt.replace(/^\n+|\n+$/g, '');
-      return ['```', txt, '```'];
+      // 保留语言标识：<pre><code class="hljs language-js"> → ```js（否则保存后高亮失效）
+      const codeEl = el.querySelector('code');
+      const cls = codeEl ? String(codeEl.className || '') : '';
+      const m = /(?:^|\s)language-([A-Za-z0-9_+-]+)/.exec(cls);
+      return ['```' + (m ? m[1] : ''), txt, '```'];
     }
     case 'hr': return ['---'];
     case 'ul': case 'ol': {
@@ -238,7 +242,7 @@ export class Editor {
       [B('bold', '<b>B</b>', 'bold'), B('italic', '<i>I</i>', 'italic'), B('strike', '<s>S</s>', 'strikeThrough')],
       [B('quote', '❝ 引用', 'block')],
       [B('ul', '• 列表', 'insertUnorderedList'), B('ol', '1. 列表', 'insertOrderedList')],
-      [B('code', '&lt;/&gt; 行内码', 'inlineCode'), B('codeblock', '{ } 代码块', 'codeBlock')],
+      [B('code', '&lt;/&gt; 行内码', 'inlineCode'), B('codeblock', '{ } 高亮代码', 'codeBlock')],
       [B('link', '🔗 链接', 'link'), B('unlink', '🔓 取消链接', 'unlink')],
       [B('img', '🖼 图片', 'image')],
       [B('table', '▦ 表格', 'table')],
@@ -349,15 +353,43 @@ export class Editor {
     document.execCommand('insertHTML', false, '<code>' + esc(txt) + '</code>');
   }
 
-  // 代码块
+  // 高亮代码块：语言下拉选择，输出标准 <pre><code class="language-x">（与 WordPress / Typecho 通用）
   async _codeBlockDialog() {
+    // 可选语言（与服务端高亮器 hl.js 的支持范围一致）
+    const LANGS = [
+      ['', '纯文本（不高亮）'],
+      ['javascript', 'JavaScript / JS'],
+      ['typescript', 'TypeScript / TS'],
+      ['python', 'Python'],
+      ['bash', 'Bash / Shell'],
+      ['html', 'HTML / XML'],
+      ['css', 'CSS / SCSS'],
+      ['json', 'JSON'],
+      ['yaml', 'YAML'],
+      ['sql', 'SQL'],
+      ['java', 'Java'],
+      ['c', 'C'],
+      ['cpp', 'C++'],
+      ['csharp', 'C#'],
+      ['go', 'Go'],
+      ['rust', 'Rust'],
+      ['php', 'PHP'],
+      ['markdown', 'Markdown'],
+      ['diff', 'Diff 差异'],
+      ['ini', 'INI / TOML / 配置文件'],
+    ];
+    const opts = LANGS.map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+    // 若已选中文字，直接带入代码区
+    let preset = '';
+    try { preset = selText(); } catch (e) { preset = ''; }
     let lang = '', code = '';
     const res = await dialog({
-      title: '插入代码块',
-      bodyHtml: `<div class="field"><label>语言标识（可留空，如 js / python / bash）</label>
-        <input class="inp" id="dlg-cblang" style="width:100%"></div>
+      title: '插入高亮代码块',
+      bodyHtml: `<div class="field"><label>代码语言（决定高亮配色）</label>
+        <select class="inp" id="dlg-cblang" style="width:100%">${opts}</select></div>
         <div class="field" style="margin-top:12px"><label>代码内容（可留空，插入后直接在代码区内输入）</label>
-        <textarea class="inp" id="dlg-cbcode" rows="8" style="width:100%;resize:vertical;font-family:Consolas,Menlo,monospace" placeholder="在这里粘贴代码…"></textarea></div>`,
+        <textarea class="inp" id="dlg-cbcode" rows="9" style="width:100%;resize:vertical;font-family:Consolas,Menlo,monospace" placeholder="在这里粘贴代码…（缩进与换行会原样保留）">${preset.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea></div>
+        <p class="hint" style="margin-bottom:0">小技巧：先选中正文里的代码再点本按钮，会自动带入。语言标识与 WordPress / Typecho 通用，文章互搬不会错乱。</p>`,
       actions: [{ val: 'ok', label: '插入', cls: 'p' }, { val: 'cancel', label: '取消', cls: 'g' }],
       onSubmit: (b) => {
         lang = String((b.querySelector('#dlg-cblang') || {}).value || '').trim();
@@ -368,7 +400,8 @@ export class Editor {
     if (res !== 'ok') return;
     const pre = document.createElement('pre');
     const c = document.createElement('code');
-    if (lang) c.className = 'language-' + lang.replace(/[^A-Za-z0-9_+\-]/g, '');
+    if (lang) c.className = 'hljs language-' + lang.replace(/[^A-Za-z0-9_+\-]/g, '');
+    else c.className = 'hljs';
     c.textContent = code || ' ';
     pre.appendChild(c);
     this.we.focus();
