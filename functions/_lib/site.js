@@ -424,17 +424,23 @@ export async function rssXml(env, s, origin) {
   const items = data.items.map((p) => {
     const body = (p.content_html || '').replace(/\]\]>/g, ']]&gt;');
     const cat = p.category ? `<category>${esc(p.category.name)}</category>` : '';
+    // pdate / excerpt 为页面美化用（XSL 展示），RSS 阅读器与验证器忽略未知元素
+    const pdate = p.published_at ? fmtDate(p.published_at) : '';
+    const excerpt = p.excerpt || stripHtml(body).slice(0, 220);
     return `<item>
 <title>${esc(p.title)}</title>
 <link>${origin}/post/${esc(p.slug)}</link>
 <guid isPermaLink="false">${origin}/post/${esc(p.slug)}</guid>
 <pubDate>${rfc822(p.published_at)}</pubDate>
+<pdate>${esc(pdate)}</pdate>
+<excerpt>${esc(excerpt)}</excerpt>
 <description><![CDATA[${body}]]></description>
 ${cat}
 </item>`;
   }).join('\n');
   const now = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
   return `<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="/rss.xsl"?>
 <rss version="2.0"><channel>
 <title>${esc(s.get('site_title'))}</title>
 <link>${origin}/</link>
@@ -456,6 +462,7 @@ export async function sitemapXml(env, s, origin) {
   const data = await db.listPosts(env.DB, { status: 'published', per: 1000 });
   for (const p of data.items) rows.push(u('/post/' + esc(p.slug), (p.published_at || '').slice(0, 10)));
   return `<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="/sitemap.xsl"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${rows.join('\n')}
 </urlset>`;

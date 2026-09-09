@@ -11,6 +11,7 @@ import * as site from './_lib/site.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
+import * as feedXsl from './_lib/feed-xsl.js';
 
 // 携带 Set-Cookie 的 JSON 响应
 const jset = (data, cookie, status = 200) => {
@@ -100,6 +101,13 @@ async function handle(ctx) {
   if (path === '/sitemap.xml') {
     const s = await db.settingsMap(env.DB);
     return new Response(await site.sitemapXml(env, s, url.origin), { headers: { 'content-type': 'application/xml; charset=utf-8' } });
+  }
+  // RSS / Sitemap 的美化样式表（text/xsl：浏览器才按样式表处理）
+  if (path === '/rss.xsl') {
+    return new Response(feedXsl.RSS_XSL, { headers: { 'content-type': 'text/xsl; charset=utf-8', 'cache-control': 'public, max-age=86400' } });
+  }
+  if (path === '/sitemap.xsl') {
+    return new Response(feedXsl.SITEMAP_XSL, { headers: { 'content-type': 'text/xsl; charset=utf-8', 'cache-control': 'public, max-age=86400' } });
   }
 
   // ---- 其余全部交给前台渲染 ----
