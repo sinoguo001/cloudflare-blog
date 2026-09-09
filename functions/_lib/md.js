@@ -246,7 +246,10 @@ export function render(md) {
       endItem();
       html += ordered ? '<ol>\n' : '<ul>\n';
       for (const it of items) {
-        const inner = render(it.lines.join('\n').replace(/\n{3,}/g, '\n\n')).trim();
+        const raw = it.lines.join('\n').replace(/\n{3,}/g, '\n\n');
+        // 单行列表项直接走行内渲染，不再套 <p>：否则每项多出段落外边距，列表松散且末项拖尾
+        const tight = !raw.includes('\n') && !BLOCK_START(raw);
+        const inner = (tight ? inline(raw) : render(raw)).trim();
         if (it.task != null) {
           const chk = `<label><input type="checkbox" disabled${it.task ? ' checked' : ''}> ${inner}</label>`;
           html += `<li class="task">${chk}</li>\n`;

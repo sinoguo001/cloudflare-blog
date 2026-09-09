@@ -72,13 +72,59 @@ function inlineMd(node) {
   }
 }
 
+// 可出现在段落内部的块级标签（浏览器常把列表/表格等塞进外层 div，必须递归展开，
+// 否则会被当行内文本拼接，导致列表序号与换行丢失）
+const BLOCKY = new Set([
+  'p', 'div', 'ul', 'ol', 'li', 'pre', 'blockquote', 'table',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'figure',
+]);
+
 function splitBr(el) {
-  const segs = [[]];
+  const out = [];
+  let buf = [];
+  const flush = () => {
+    const s = buf.map(inlineMd).join('').replace(/\n+$/, '').trim();
+    if (s) out.push(s);
+    buf = [];
+  };
   for (const c of el.childNodes) {
-    if (c.nodeType === Node.ELEMENT_NODE && c.nodeName.toLowerCase() === 'br') segs.push([]);
-    else segs[segs.length - 1].push(c);
+    const isEl = c.nodeType === Node.ELEMENT_NODE;
+    const t = isEl ? c.nodeName.toLowerCase() : '';
+    if (t === 'br') { flush(); continue; }
+    if (BLOCKY.has(t)) {
+      flush();
+      const rows = blockLines(c);
+      // 前后各补一个空行：保证它与相邻文字是独立块（否则列表可能并入上一段）。
+      // li 例外——列表项之间必须紧邻，补空行会把一个列表拆成多个。
+      if (rows.length) { if (t === 'li') out.push(...rows); else out.push('', ...rows, ''); }
+      continue;
+    }
+    buf.push(c);
   }
-  return segs.filter((s) => s.length).map((nodes) => nodes.map(inlineMd).join('')).filter((s) => s.trim());
+  flush();
+  return out;
+}
+
+// 单个 <li> -> markdown 行（marker 形如 "- " 或 "1. "），子列表缩进两格
+function liLines(li, marker) {
+  const buf = [];
+  const nests = [];
+  for (const c of li.childNodes) {
+    if (c.nodeType === Node.ELEMENT_NODE && ['ul', 'ol'].includes(c.nodeName.toLowerCase())) {
+      nests.push(c);
+    } else if (c.nodeType === Node.ELEMENT_NODE && ['p', 'div'].includes(c.nodeName.toLowerCase())) {
+      buf.push(inlineMd(c).trim());
+    } else {
+      buf.push(inlineMd(c));
+    }
+  }
+  const head = buf.join('').trim();
+  if (!head && !nests.length) return [];
+  const out = [marker + head];
+  for (const n of nests) {
+    for (const line of blockLines(n)) out.push('  ' + line);
+  }
+  return out;
 }
 
 // 块级元素 -> markdown 行数组
@@ -118,30 +164,14 @@ function blockLines(el) {
       let idx = 1;
       for (const li of kids) {
         if (li.nodeType !== Node.ELEMENT_NODE || li.nodeName.toLowerCase() !== 'li') continue;
-        const buf = [];
-        const nests = [];
-        for (const c of li.childNodes) {
-          if (c.nodeType === Node.ELEMENT_NODE && ['ul', 'ol'].includes(c.nodeName.toLowerCase())) {
-            nests.push(c);
-          } else if (c.nodeType === Node.ELEMENT_NODE && ['p', 'div'].includes(c.nodeName.toLowerCase())) {
-            buf.push(inlineMd(c).trim());
-          } else {
-            buf.push(inlineMd(c));
-          }
-        }
-        const marker = ordered ? idx + '. ' : '- ';
-        const head = buf.join('').trim();
-        if (ordered) idx++;
-        if (!head && !nests.length) continue;
-        out.push(marker + head);
-        for (const n of nests) {
-          for (const line of blockLines(n)) out.push('  ' + line);
-        }
+        const marker = ordered ? idx++ + '. ' : '- ';
+        out.push(...liLines(li, marker));
       }
       return out;
     }
+    // 脱离 ul/ol 的孤立 li（粘贴或浏览器拆分所致）：按无序列表输出，避免整段内容丢失
     case 'li':
-      return []; // li 只在其 ul/ol 内部处理
+      return liLines(el, '- ');
     case 'table': {
       const rows = [...el.querySelectorAll('tr')];
       if (!rows.length) return [];
@@ -155,8 +185,6 @@ function blockLines(el) {
       for (const tr of rows.slice(1)) out.push(toRow(tr));
       return out;
     }
-    case 'li':
-      return []; // li 只在其 ul/ol 内部处理
     default:
       return [...kids].flatMap(blockLines);
   }
