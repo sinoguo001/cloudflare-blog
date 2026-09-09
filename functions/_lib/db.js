@@ -21,13 +21,16 @@ export async function setSetting(db, k, v) {
 export const isInstalled = async (db) => !!((await getSetting(db, 'admin_username')));
 
 // ---------- 唯一别名 ----------
-async function uniqueSlug(db, table, base) {
+async function uniqueSlug(db, table, base, excludeId) {
+  // excludeId：更新时排除自己，否则编辑已发布文章会把 slug 追加成 post-2-2、post-2-2-2…
+  const q = excludeId
+    ? (s) => db.prepare(`SELECT 1 FROM ${table} WHERE slug=? AND id<>?`).bind(s, excludeId).first()
+    : (s) => db.prepare(`SELECT 1 FROM ${table} WHERE slug=?`).bind(s).first();
   let slug = base || '';
-  const seen = await db.prepare(`SELECT 1 FROM ${table} WHERE slug=?`).bind(slug).first();
-  if (!seen) return slug;
+  if (!(await q(slug))) return slug;
   for (let i = 2; i < 1000; i++) {
     const s = `${base}-${i}`;
-    if (!(await db.prepare(`SELECT 1 FROM ${table} WHERE slug=?`).bind(s).first())) return s;
+    if (!(await q(s))) return s;
   }
   return `${base}-${Date.now()}`;
 }

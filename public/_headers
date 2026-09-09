@@ -1,0 +1,5 @@
+# 后台每次部署后立即生效：js 更新时浏览器必须拿到新文件（no-cache = 每次回源校验，文件没变时仍走 304）
+/admin
+  Cache-Control: no-cache
+/admin/*
+  Cache-Control: no-cache
