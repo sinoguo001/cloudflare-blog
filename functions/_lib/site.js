@@ -249,7 +249,8 @@ export function layout(s, o) {
 <link rel="alternate" type="application/rss+xml" title="${esc(title)}" href="/rss.xml">
 <style>:root{--accent:${accent}}${THEME_VARS}${FRONT_CSS}${codeThemeCss(s.get('code_theme'))}</style>
 ${themeLink(s)}
-${o.bodySlug ? '<script src="/js/site.js" defer></script>' : ''}
+<!-- 全站加载：文章页用它上报阅读量，所有页面用它上报 PV（后台是独立静态页，不走这里） -->
+<script src="/js/site.js" defer></script>
 </head>
 <body data-slug="${o.bodySlug || ''}">
 <header class="hd"><div class="wrap hd-in">

@@ -3,7 +3,7 @@
 // 负责：/api/* 接口、/media/* R2 图片代理、前台页面 SSR、
 //       rss.xml / sitemap.xml / robots.txt、后台静态资源(经 ASSETS)
 // ============================================================
-import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, stripHtml, wantsFeedHtml } from './_lib/util.js';
+import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard } from './_lib/util.js';
 import { render } from './_lib/md.js';
 import { CODE_THEMES } from './_lib/hl.js';
 import * as db from './_lib/db.js';
@@ -340,6 +340,29 @@ async function api(ctx, url, seg, method) {
     return json({ ok: true });
   }
 
+  // --- 站点访问上报（公开）：全站 PV / UV，按天聚合 ---
+  // 与 /api/view 的区别：view 只统计文章阅读量（每篇独立，用于热门文章），
+  // hit 统计整站页面浏览（首页、分类、标签、归档、搜索、文章页都算），刷新也计一次 PV。
+  if (seg[0] === 'hit' && method === 'POST' && seg.length === 1) {
+    // 先过防刷：蜘蛛与脚本请求直接放行返回，不写库、也不下发 Cookie（省掉全部 D1 写入）
+    if (hitGuard(request)) return json({ ok: true });
+    const day = bnNow().slice(0, 10);
+    let vid = readCookie(request, 'blog_vid');
+    let cookie = '';
+    if (!vid) {
+      vid = newVisitorId();
+      // 首次访问才下发；HttpOnly 防 JS 读取，1 年后自动失效
+      cookie = `blog_vid=${vid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`;
+    }
+    try {
+      await db.recordHit(dbx, day, String(vid).slice(0, 40));
+    } catch (e) {
+      // 统计挂了也不能影响正常浏览：静默忽略
+      console.error('pv error:', e);
+    }
+    return jset({ ok: true }, cookie);
+  }
+
   // --- 读者提交评论（公开） ---
   if (seg[0] === 'comments' && method === 'POST' && seg.length === 1) {
     const b = (await readJson(request)) || {};
@@ -541,7 +564,7 @@ async function api(ctx, url, seg, method) {
   if (seg[0] === 'dashboard' && method === 'GET' && seg.length === 1) {
     const monthStart = bnNow().slice(0, 8) + '01'; // 本月 1 号 00:00（北京时间字符串可直接比大小）
     const nOf = (r) => (r && r.n) || 0;
-    const [st, pending, recent, cmts, top, mPosts, mCmts, words, views] = await Promise.all([
+    const [st, pending, recent, cmts, top, mPosts, mCmts, words, views, pv] = await Promise.all([
       db.stats(dbx),
       db.listComments(dbx, { status: 'pending', limit: 5 }),
       db.listPosts(dbx, { status: 'all', page: 1, per: 6 }),
@@ -553,6 +576,8 @@ async function api(ctx, url, seg, method) {
       // 字数按 Markdown 源码统计：SQLite 的 length() 对文本返回字符数（不是字节），中文不会被放大 3 倍
       dbx.prepare(`SELECT COALESCE(SUM(LENGTH(content_md)),0) n FROM posts`).first(),
       dbx.prepare(`SELECT COALESCE(SUM(view_count),0) n FROM posts`).first(),
+      // 访问统计表可能尚未建立（老库），失败要给出 null 而不是让整个仪表盘 500
+      db.pvSummary(dbx, 7).catch(() => null),
     ]);
     // 裁剪字段：正文等大字段不下发，省流量也省前端解析
     const tc = (c) => ({
@@ -570,6 +595,8 @@ async function api(ctx, url, seg, method) {
       })),
       recent_comments: cmts.map(tc),
       top_posts: (top.results || []).map((r) => ({ id: r.id, title: r.title, slug: r.slug, views: r.view_count || 0 })),
+      // pv 为 null = 访问统计不可用（表还没建或查询失败），前端显示「未开启」
+      pv: pv || null,
       generated_at: bnNow(),
     });
   }

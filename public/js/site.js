@@ -1,6 +1,26 @@
-// 前台轻量脚本：阅读量 +1、评论异步提交
+// 前台轻量脚本：访问量上报（PV/UV + 文章阅读量）、评论异步提交
 (function () {
   'use strict';
+
+  // ---- 站点 PV 上报：所有页面（首页 / 分类 / 标签 / 归档 / 搜索 / 文章）都计一次 ----
+  // 用 sendBeacon：不阻塞渲染、页面关闭时也发得出去；不支持时回退 fetch。
+  // 统计口径：刷新也算一次 PV；UV 由服务端按 blog_vid Cookie 当天去重。
+  (function hit() {
+    var body = JSON.stringify({ p: location.pathname || '/' });
+    try {
+      if (navigator.sendBeacon) {
+        if (navigator.sendBeacon('/api/hit', new Blob([body], { type: 'application/json' }))) return;
+      }
+    } catch (e) { /* 落到下面的 fetch */ }
+    fetch('/api/hit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: body,
+      keepalive: true,
+    }).catch(function () {});
+  })();
+
+  // ---- 文章阅读量：只在文章详情页累加（用于热门文章排序） ----
   var slug = document.body && document.body.dataset.slug;
   if (slug) {
     fetch('/api/view', {
@@ -9,6 +29,7 @@
       body: JSON.stringify({ slug: slug }),
     }).catch(function () {});
   }
+
   var form = document.getElementById('cform');
   if (!form) return;
   // 验证码：点击图片换一张（加时间戳防缓存）

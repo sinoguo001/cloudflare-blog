@@ -37,14 +37,20 @@ const statCard = (label, num, sub, tone) => `
     <div class="dstat-s">${sub}</div>
   </div>`;
 
-function countsHtml(c) {
+function countsHtml(c, pv) {
+  const hasPv = !!(pv && pv.trend);
   const avgView = c.published ? Math.round((c.views || 0) / c.published) : 0;
   const avgWord = c.posts ? Math.round((c.words || 0) / c.posts) : 0;
   const pendTxt = c.pending > 0 ? `<b class="warn-txt">${c.pending} 条待审核</b>` : '无待审核';
+  // 访问量：有 PV 数据看 PV（今日 + 今日访客），没有就退回文章阅读量合计
+  const visitNum = hasPv ? fmtNum(pv.total_pv) : fmtNum(c.views);
+  const visitSub = hasPv
+    ? `今日 ${fmtNum(pv.today_pv)} · 今日访客 ${fmtNum(pv.today_uv)}`
+    : `文章阅读合计 · 篇均 ${fmtNum(avgView)} 次`;
   return `<div class="dash-stats">
     ${statCard('文章总数', fmtNum(c.posts), `已发布 ${fmtNum(c.published)} · 草稿 ${fmtNum(c.drafts)}`, 't-blue')}
     ${statCard('评论总数', fmtNum(c.comments), pendTxt, c.pending > 0 ? 't-warn' : 't-green')}
-    ${statCard('网站访问量', fmtNum(c.views), `篇均阅读 ${fmtNum(avgView)} 次`, 't-violet')}
+    ${statCard(hasPv ? '网站访问量（PV）' : '网站访问量', visitNum, visitSub, 't-violet')}
     ${statCard('博客总字数', fmtWords(c.words), `篇均 ${fmtNum(avgWord)} 字`, 't-ink')}
   </div>
   <div class="dash-mini">
@@ -53,6 +59,35 @@ function countsHtml(c) {
     <span>本月新增文章 <b>${fmtNum(c.month_posts)}</b></span>
     <span>本月新增评论 <b>${fmtNum(c.month_comments)}</b></span>
     <span>草稿 <b>${fmtNum(c.drafts)}</b></span>
+    ${hasPv
+      ? `<span>累计访客 <b>${fmtNum(pv.total_uv)}</b></span><span>文章阅读合计 <b>${fmtNum(c.views)}</b></span>`
+      : ''}
+  </div>`;
+}
+
+// 最近 7 天 PV 趋势：纯 CSS 柱状图，无第三方库
+function trendHtml(pv) {
+  if (!pv || !pv.trend) {
+    return `<div class="card">
+      <div class="sec-title">最近 7 天访问趋势</div>
+      <div class="empty-note">访问统计尚未开启：前台脚本上传后，有人浏览页面即开始记录。</div>
+    </div>`;
+  }
+  const t = pv.trend;
+  const max = Math.max(1, ...t.map((x) => x.pv));
+  const bars = t.map((x) => {
+    const h = Math.max(2, Math.round((x.pv / max) * 100));
+    const zero = x.pv === 0;
+    return `<div class="pv-col">
+      <span class="pv-n">${x.pv || ''}</span>
+      <div class="pv-track"><i class="${zero ? 'zero' : ''}" style="height:${h}%"></i></div>
+      <span class="pv-d">${x.day.slice(5)}</span>
+    </div>`;
+  }).join('');
+  return `<div class="card">
+    <div class="sec-title">最近 7 天访问趋势<small>PV 按天统计，刷新计一次；UV 为当日独立访客</small></div>
+    <div class="pv-chart">${bars}</div>
+    <div class="hint">今日 ${fmtNum(pv.today_pv)} PV · ${fmtNum(pv.today_uv)} UV · 累计 ${fmtNum(pv.total_pv)} PV</div>
   </div>`;
 }
 
@@ -117,7 +152,8 @@ export function dashboardHtml(d, username) {
     </div>
   </div>
 
-  ${countsHtml(c)}
+  ${countsHtml(c, d.pv)}
+  ${trendHtml(d.pv)}
   ${pendBox}
 
   <div class="grid2">

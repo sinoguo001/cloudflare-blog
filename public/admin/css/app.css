@@ -132,6 +132,15 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .loading{text-align:center;color:var(--mut);padding:40px}
 .cover-prev img{max-height:150px;border-radius:10px;border:1px solid var(--line)}
 .pager-line{display:flex;gap:8px;align-items:center;margin-top:14px}
+/* 访问趋势（纯 CSS 柱状图） */
+.pv-chart{display:flex;align-items:flex-end;gap:10px;height:132px;margin:8px 0 10px}
+.pv-col{flex:1;display:flex;flex-direction:column;align-items:center;height:100%;min-width:0}
+.pv-n{font-size:11.5px;color:var(--mut);height:16px;line-height:16px}
+.pv-track{flex:1;width:100%;max-width:46px;display:flex;align-items:flex-end;background:#f4f6fb;border-radius:6px;overflow:hidden}
+.pv-track i{display:block;width:100%;background:var(--ac);border-radius:6px 6px 0 0;min-height:2px;transition:height .3s}
+.pv-track i.zero{background:#e3e7ef}
+.pv-d{font-size:11.5px;color:var(--mut);margin-top:6px;white-space:nowrap}
+
 /* 仪表盘 */
 .dash-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:12px}
 .dstat{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px 18px;border-left:4px solid var(--ac);position:relative;overflow:hidden}

@@ -285,6 +285,76 @@ export async function stats(db) {
     comments: v(cmAll), pending: v(cmPending) };
 }
 
+// ---------- 站点访问统计（PV / UV，按天聚合） ----------
+// 设计取舍：
+// - 只按「天」聚合，不记每个路径：每天至多 1 行，写得少、查得快，也够仪表盘用
+//   （文章维度的热度仍由 posts.view_count 承担，两套口径互不干扰）。
+// - 表由代码首次写入时自动建立（CREATE TABLE IF NOT EXISTS），不要求手工跑 migration；
+//   D1 支持在 Worker 里执行 DDL，失败也不影响浏览（调用方已 try/catch）。
+const PV_DAILY = `CREATE TABLE IF NOT EXISTS pv_daily(
+  day TEXT PRIMARY KEY, pv INTEGER NOT NULL DEFAULT 0, uv INTEGER NOT NULL DEFAULT 0)`;
+// 访客明细仅用于「当天 UV 去重」，保留 60 天后清理
+const PV_VISITOR = `CREATE TABLE IF NOT EXISTS pv_visitor(
+  day TEXT NOT NULL, vid TEXT NOT NULL, PRIMARY KEY(day,vid))`;
+
+let pvReady = false; // 同一 isolate 内只建一次，避免每个请求都跑 DDL
+export async function ensurePvTables(db) {
+  if (pvReady) return;
+  await db.prepare(PV_DAILY).run();
+  await db.prepare(PV_VISITOR).run();
+  pvReady = true;
+}
+
+// day 形如 '2026-09-10'（北京时间），返回前 n 天的同一格式字符串
+function shiftDay(day, n) {
+  const t = Date.parse(day + 'T00:00:00+08:00') - n * 86400e3;
+  return new Date(t + 8 * 3600e3).toISOString().slice(0, 10);
+}
+
+// 记一次访问；返回 1 表示当天新访客（UV +1），0 表示回访（只涨 PV）
+export async function recordHit(db, day, vid) {
+  await ensurePvTables(db);
+  // 先查一次当天是否见过这个访客，而不是依赖 run() 返回的 meta.changes：
+  // 各运行时对 changes 的语义不完全一致，写死依赖它一旦不成立，UV 会静默永远为 0。
+  const seen = await db.prepare('SELECT 1 FROM pv_visitor WHERE day=? AND vid=?').bind(day, vid).first();
+  const isNew = seen ? 0 : 1;
+  if (isNew) await db.prepare('INSERT OR IGNORE INTO pv_visitor(day,vid) VALUES(?,?)').bind(day, vid).run();
+  await db.prepare(
+    `INSERT INTO pv_daily(day,pv,uv) VALUES(?,1,?)
+     ON CONFLICT(day) DO UPDATE SET pv=pv+1, uv=uv+excluded.uv`
+  ).bind(day, isNew).run();
+  // 5% 概率顺手清理过期明细：既不会每次访问都多一条 DELETE，长期又能把表收住
+  if (Math.random() < 0.05) {
+    await db.prepare('DELETE FROM pv_visitor WHERE day<?').bind(shiftDay(day, 60)).run();
+  }
+  return isNew;
+}
+
+// 仪表盘用：累计 PV/UV、今日 PV/UV、最近 n 天趋势（无记录的日期补 0）
+export async function pvSummary(db, days = 7) {
+  await ensurePvTables(db);
+  const today = bnNow().slice(0, 10);
+  const [tot, rows] = await Promise.all([
+    db.prepare('SELECT COALESCE(SUM(pv),0) pv, COALESCE(SUM(uv),0) uv FROM pv_daily').first(),
+    db.prepare('SELECT day,pv,uv FROM pv_daily ORDER BY day DESC LIMIT ?').bind(days).all(),
+  ]);
+  const list = (rows && rows.results) || [];
+  const todayRow = list.find((x) => x.day === today) || { pv: 0, uv: 0 };
+  const trend = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = shiftDay(today, i);
+    const r = list.find((x) => x.day === d);
+    trend.push({ day: d, pv: r ? r.pv : 0, uv: r ? r.uv : 0 });
+  }
+  return {
+    total_pv: (tot && tot.pv) || 0,
+    total_uv: (tot && tot.uv) || 0,
+    today_pv: todayRow.pv || 0,
+    today_uv: todayRow.uv || 0,
+    trend,
+  };
+}
+
 // ---------- 归档 / 全量导出（备份用） ----------
 export async function archivePosts(db) {
   const r = await db.prepare(
@@ -301,13 +371,17 @@ export async function dumpAll(db) {
     posts: await g('SELECT * FROM posts'),
     post_tags: await g('SELECT * FROM post_tags'),
     comments: await g('SELECT * FROM comments'),
+    // 访问统计只备份按天汇总（pv_daily），访客明细 pv_visitor 是去重用的临时数据，不进备份
+    pv_daily: await g('SELECT * FROM pv_daily').catch(() => []),
   };
 }
 // 恢复：先清空再按原 id 回填（自动续接自增序列）
 export async function restoreAll(db, data) {
+  // 访问统计表可能还没建（老库），先确保存在再清空，否则 DELETE 会报 no such table
+  await ensurePvTables(db).catch(() => {});
   const clear = [
     'DELETE FROM post_tags', 'DELETE FROM comments', 'DELETE FROM posts',
-    'DELETE FROM categories', 'DELETE FROM tags',
+    'DELETE FROM categories', 'DELETE FROM tags', 'DELETE FROM pv_daily',
     "DELETE FROM settings WHERE key NOT IN ('admin_username','admin_pass_salt','admin_pass_hash','admin_pass_iter')",
   ];
   const stmts = clear.map((s) => db.prepare(s));
@@ -325,6 +399,7 @@ export async function restoreAll(db, data) {
   if (data.posts) await run(data.posts, 'posts');
   if (data.post_tags) await run(data.post_tags, 'post_tags');
   if (data.comments) await run(data.comments, 'comments');
+  if (data.pv_daily) await run(data.pv_daily, 'pv_daily');
   for (let i = 0; i < chunk.length; i += 40) await db.batch(chunk.slice(i, i + 40));
   return chunk.length;
 }
