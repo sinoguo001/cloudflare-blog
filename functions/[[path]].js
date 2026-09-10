@@ -3,7 +3,7 @@
 // 负责：/api/* 接口、/media/* R2 图片代理、前台页面 SSR、
 //       rss.xml / sitemap.xml / robots.txt、后台静态资源(经 ASSETS)
 // ============================================================
-import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, stripHtml } from './_lib/util.js';
+import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, stripHtml, wantsFeedHtml } from './_lib/util.js';
 import { render } from './_lib/md.js';
 import { CODE_THEMES } from './_lib/hl.js';
 import * as db from './_lib/db.js';
@@ -97,20 +97,21 @@ async function handle(ctx) {
   if (path === '/robots.txt') {
     return new Response(site.robotsTxt(url.origin), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
   }
-  const accept = String(request.headers.get('accept') || '');
-  const ua = String(request.headers.get('user-agent') || '');
+  // 判别函数见 util.wantsFeedHtml（浏览器 Accept 普遍含 application/xml，不能用它反推阅读器）
   const fmt = url.searchParams.get('format');
-  const wantsXmlType = /application\/(?:rss|atom)\+xml|application\/xml|text\/xml/i.test(accept);
-  const wantHtml = fmt ? fmt === 'html' : (/text\/html/i.test(accept) && !wantsXmlType && /Mozilla/i.test(ua));
+  const wantHtml = wantsFeedHtml(request.headers.get('accept'), request.headers.get('user-agent'), fmt);
+  // Vary 必须带：否则 CDN 可能把给浏览器的 HTML 缓存后返回给阅读器。
+  // 不设 max-age：Cloudflare 缓存 key 默认忽略 query，若缓存了 HTML，?format=xml 也会命中它。
+  const feedHdr = (type) => ({ 'content-type': type, 'vary': 'Accept, User-Agent' });
   if (path === '/rss.xml' || path === '/feed.xml') {
     const s = await db.settingsMap(env.DB);
-    if (wantHtml) return new Response(await site.rssHtml(env, s, url.origin), { headers: { 'content-type': 'text/html; charset=utf-8' } });
-    return new Response(await site.rssXml(env, s, url.origin), { headers: { 'content-type': 'application/rss+xml; charset=utf-8' } });
+    if (wantHtml) return new Response(await site.rssHtml(env, s, url.origin), { headers: feedHdr('text/html; charset=utf-8') });
+    return new Response(await site.rssXml(env, s, url.origin), { headers: feedHdr('application/rss+xml; charset=utf-8') });
   }
   if (path === '/sitemap.xml') {
     const s = await db.settingsMap(env.DB);
-    if (wantHtml) return new Response(await site.sitemapHtml(env, s, url.origin), { headers: { 'content-type': 'text/html; charset=utf-8' } });
-    return new Response(await site.sitemapXml(env, s, url.origin), { headers: { 'content-type': 'application/xml; charset=utf-8' } });
+    if (wantHtml) return new Response(await site.sitemapHtml(env, s, url.origin), { headers: feedHdr('text/html; charset=utf-8') });
+    return new Response(await site.sitemapXml(env, s, url.origin), { headers: feedHdr('application/xml; charset=utf-8') });
   }
 
   // ---- 其余全部交给前台渲染 ----
