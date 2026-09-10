@@ -68,8 +68,8 @@ img{max-width:100%}
 .hd-search input:focus{border-color:var(--accent)}
 /* 主区 */
 .main{padding:26px 0 60px}
-.hero{padding:26px 0 8px}
-.hero h1{margin:0 0 6px;font-size:34px;letter-spacing:.5px}
+.hero{padding:24px 0 4px}
+.hero h1{margin:0 0 12px;font-size:20px;letter-spacing:.3px;font-weight:700;color:var(--text)}
 .hero p{margin:0;color:var(--muted)}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 6px}
 .chip{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:4px 14px;font-size:13px;color:var(--text)}
@@ -86,7 +86,7 @@ img{max-width:100%}
 .pc-title{margin:0 0 8px;font-size:21px;line-height:1.45}
 .pc-title a{color:var(--text)}
 .pc-title a:hover{color:var(--accent)}
-.pc-excerpt{margin:0 0 10px;color:var(--text-soft);font-size:15px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pc-excerpt{margin:0 0 10px;color:var(--text-soft);font-size:15px;line-height:1.75;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
 .pc-tags{display:flex;gap:6px;flex-wrap:wrap}
 .tag-chip{font-size:12px;background:var(--accent-soft);color:var(--accent);padding:2px 10px;border-radius:999px}
 .tag-chip:hover{text-decoration:none;background:var(--accent);color:var(--on-accent)}
@@ -282,7 +282,7 @@ function postCard(p) {
   const cover = p.cover_key
     ? `<div class="pc-cover"><a href="/post/${esc(p.slug)}"><img src="/media/${esc(p.cover_key)}" alt="" loading="lazy"></a></div>` : '';
   const cat = p.category ? `<a href="/category/${esc(p.category.slug)}">${esc(p.category.name)}</a>` : '';
-  const excerpt = p.excerpt || stripHtml(p.content_html).slice(0, 180);
+  const excerpt = p.excerpt || stripHtml(p.content_html).slice(0, 260);
   const tags = (p.tags || []).map((t) => `<a class="tag-chip" href="/tag/${esc(t.slug)}">${esc(t.name)}</a>`).join('');
   return `<article class="pc${cover ? '' : ' no-cover'}"><div>
     <div class="pc-meta">
@@ -314,7 +314,7 @@ function pagination(page, pages, base, pageSize) {
 export function renderHome(s, data, page) {
   const items = data.items.map(postCard).join('');
   const content = `
-    <section class="hero"><h1>${esc(s.get('site_subtitle'))}</h1></section>
+    <section class="hero"><h1>最新文章</h1></section>
     ${catChips(data.categories)}
     ${items ? `<div class="plist">${items}</div>` + pagination(page, data.pages, '/', 1)
       : `<div class="empty">还没有发布文章</div>`}
