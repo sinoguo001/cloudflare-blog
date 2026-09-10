@@ -132,6 +132,13 @@ const topItem = (p, i) => `
 export function dashboardHtml(d, username) {
   const c = d.counts || {};
   const pend = d.pending || [];
+  // 副标题按实际数据生成：没数据时整段不显示，避免"含待审核"之类的空承诺
+  const rc = d.recent_comments || [];
+  const rcPending = rc.filter((x) => x.status === 'pending').length;
+  const rcNote = rc.length ? `最新 ${rc.length} 条${rcPending ? ` · 含 ${rcPending} 条待审核` : ''}` : '';
+  const rp = d.recent_posts || [];
+  const rpDraft = rp.filter((p) => p.status !== 'published').length;
+  const rpNote = rp.length ? `最新 ${rp.length} 篇${rpDraft ? ` · 含 ${rpDraft} 篇草稿` : ''}` : '';
   const pendBox = pend.length
     ? `<div class="card dash-warn">
         <div class="dash-warn-h">
@@ -159,9 +166,9 @@ export function dashboardHtml(d, username) {
   <div class="grid2">
     <div>
       <div class="card">
-        <div class="sec-title">最近文章<small>按发布时间排序，含草稿</small></div>
-        ${(d.recent_posts || []).length
-          ? d.recent_posts.map(postItem).join('') + '<div class="dash-more"><a href="#/posts">查看全部文章 →</a></div>'
+        <div class="sec-title">最近文章${rpNote ? `<small>${rpNote}</small>` : ''}</div>
+        ${rp.length
+          ? rp.map(postItem).join('') + '<div class="dash-more"><a href="#/posts">查看全部文章 →</a></div>'
           : '<div class="empty-note">还没有文章，点右上角「写文章」开始创作。</div>'}
       </div>
       <div class="card">
@@ -173,9 +180,9 @@ export function dashboardHtml(d, username) {
     </div>
     <div>
       <div class="card">
-        <div class="sec-title">最新评论<small>最近 6 条，含待审核</small></div>
-        ${(d.recent_comments || []).length
-          ? d.recent_comments.map(commentItem).join('') + '<div class="dash-more"><a href="#/comments">去评论管理 →</a></div>'
+        <div class="sec-title">最新评论${rcNote ? `<small>${rcNote}</small>` : ''}</div>
+        ${rc.length
+          ? rc.map(commentItem).join('') + '<div class="dash-more"><a href="#/comments">去评论管理 →</a></div>'
           : '<div class="empty-note">还没有收到评论</div>'}
       </div>
       <div class="card">
@@ -190,7 +197,7 @@ export function dashboardHtml(d, username) {
           <a class="btn g" href="/rss.xml" target="_blank" rel="noopener">RSS 订阅 ↗</a>
           <a class="btn g" href="/sitemap.xml" target="_blank" rel="noopener">站点地图 ↗</a>
         </div>
-        <div class="hint" style="margin-top:10px">提示：总字数按 Markdown 源码统计，访问量随文章页打开次数累加。</div>
+        <div class="hint" style="margin-top:10px">提示：总字数按 Markdown 源码统计；访问量为整站 PV（已过滤蜘蛛与异常请求），文章阅读量单独统计、用于热门排序。</div>
       </div>
     </div>
   </div>`;

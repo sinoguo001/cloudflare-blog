@@ -43,7 +43,7 @@ function viewLogin() {
   pageTitle('登录');
   app.innerHTML = `
   <div class="auth-wrap"><div class="auth-card">
-    <h1><span class="brand-mark">博</span>博客管理后台</h1>
+    <h1><span class="brand-mark">云</span>博客管理后台</h1>
     <p class="sub">请输入管理员账号登录</p>
     <form id="lg">
       <div class="field"><label>用户名</label><input class="inp" name="username" autocomplete="username" required></div>
@@ -118,7 +118,7 @@ function viewSetup() {
 function shell(contentHtml) {
   app.innerHTML = `
   <header class="topbar"><div class="tb-in">
-    <a class="tb-brand" href="#/dashboard"><span class="brand-mark">博</span>博客后台</a>
+    <a class="tb-brand" href="#/dashboard"><span class="brand-mark">云</span>博客后台</a>
     <nav class="tb-nav" id="tb-nav">
       <a href="#/dashboard" data-nav="dashboard">仪表盘</a>
       <a href="#/posts" data-nav="posts">文章</a>
