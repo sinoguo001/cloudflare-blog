@@ -535,6 +535,45 @@ async function api(ctx, url, seg, method) {
   // --- 统计 ---
   if (seg[0] === 'stats' && method === 'GET' && seg.length === 1) return json(await db.stats(dbx));
 
+  // --- 仪表盘（后台首页）---
+  // 一次拿齐：总览数字 + 待审评论 + 最近文章 / 最近评论 / 热门文章。
+  // 所有查询并行发起，避免串行往返把 D1 延迟叠加起来。
+  if (seg[0] === 'dashboard' && method === 'GET' && seg.length === 1) {
+    const monthStart = bnNow().slice(0, 8) + '01'; // 本月 1 号 00:00（北京时间字符串可直接比大小）
+    const nOf = (r) => (r && r.n) || 0;
+    const [st, pending, recent, cmts, top, mPosts, mCmts, words, views] = await Promise.all([
+      db.stats(dbx),
+      db.listComments(dbx, { status: 'pending', limit: 5 }),
+      db.listPosts(dbx, { status: 'all', page: 1, per: 6 }),
+      db.listComments(dbx, { status: 'all', limit: 6 }),
+      dbx.prepare(`SELECT id,title,slug,view_count FROM posts WHERE status='published'
+                   ORDER BY view_count DESC, id DESC LIMIT 5`).all(),
+      dbx.prepare(`SELECT COUNT(*) n FROM posts WHERE created_at>=?`).bind(monthStart).first(),
+      dbx.prepare(`SELECT COUNT(*) n FROM comments WHERE created_at>=?`).bind(monthStart).first(),
+      // 字数按 Markdown 源码统计：SQLite 的 length() 对文本返回字符数（不是字节），中文不会被放大 3 倍
+      dbx.prepare(`SELECT COALESCE(SUM(LENGTH(content_md)),0) n FROM posts`).first(),
+      dbx.prepare(`SELECT COALESCE(SUM(view_count),0) n FROM posts`).first(),
+    ]);
+    // 裁剪字段：正文等大字段不下发，省流量也省前端解析
+    const tc = (c) => ({
+      id: c.id, author: c.author, content: c.content, status: c.status,
+      is_admin: c.is_admin, created_at: c.created_at,
+      post_title: c.post_title, post_slug: c.post_slug,
+    });
+    return json({
+      counts: { ...st, views: nOf(views), words: nOf(words), month_posts: nOf(mPosts), month_comments: nOf(mCmts) },
+      pending: pending.map(tc),
+      recent_posts: recent.items.map((p) => ({
+        id: p.id, title: p.title, slug: p.slug, status: p.status,
+        published_at: p.published_at, updated_at: p.updated_at,
+        views: p.view_count || 0, comments: p.comment_count || 0,
+      })),
+      recent_comments: cmts.map(tc),
+      top_posts: (top.results || []).map((r) => ({ id: r.id, title: r.title, slug: r.slug, views: r.view_count || 0 })),
+      generated_at: bnNow(),
+    });
+  }
+
   // --- 预览（返回完整 HTML 供编辑器 iframe 展示） ---
   if (seg[0] === 'preview' && method === 'POST' && seg.length === 1) {
     const b = (await readJson(request)) || {};

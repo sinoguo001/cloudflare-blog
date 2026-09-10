@@ -4,6 +4,7 @@
 import { API } from './api.js';
 import { esc, el, toast, dialog, confirmDanger, fmtSize, fmtTime } from './ui.js';
 import { Editor } from './editor.js';
+import { dashboardHtml, bindDashboard } from './dashboard.js';
 
 const app = document.getElementById('app');
 let state = { installed: true, authed: false, username: '' };
@@ -59,7 +60,7 @@ function viewLogin() {
       const fd = new FormData(ev.target);
       await API.post('/auth/login', { username: fd.get('username'), password: fd.get('password') });
       toast('登录成功');
-      location.hash = '#/posts';
+      location.hash = '#/dashboard';
       await boot();
     } catch (e) { errEl.textContent = e.message; }
   });
@@ -107,7 +108,7 @@ function viewSetup() {
     try {
       await API.post('/setup', Object.fromEntries(fd.entries()));
       toast('初始化完成，欢迎使用');
-      location.hash = '#/posts';
+      location.hash = '#/dashboard';
       await boot();
     } catch (e) { errEl.textContent = e.message; }
   });
@@ -117,8 +118,9 @@ function viewSetup() {
 function shell(contentHtml) {
   app.innerHTML = `
   <header class="topbar"><div class="tb-in">
-    <a class="tb-brand" href="#/posts"><span class="brand-mark">博</span>博客后台</a>
+    <a class="tb-brand" href="#/dashboard"><span class="brand-mark">博</span>博客后台</a>
     <nav class="tb-nav" id="tb-nav">
+      <a href="#/dashboard" data-nav="dashboard">仪表盘</a>
       <a href="#/posts" data-nav="posts">文章</a>
       <a href="#/comments" data-nav="comments">评论<span class="badge" id="badge-pending" style="display:none"></span></a>
       <a href="#/categories" data-nav="categories">分类与标签</a>
@@ -132,8 +134,8 @@ function shell(contentHtml) {
     </nav>
   </div></header>
   <main class="main" id="view">${contentHtml}</main>`;
-  // 顶部导航高亮
-  const seg = (location.hash.replace('#/', '') || 'posts').split('/')[0];
+  // 顶部导航高亮（未指定 hash 时默认落在仪表盘）
+  const seg = (location.hash.replace('#/', '') || 'dashboard').split('/')[0];
   document.querySelectorAll('#tb-nav a[data-nav]').forEach((a) => {
     a.classList.toggle('on', a.dataset.nav === seg && seg !== 'logout');
   });
@@ -152,6 +154,24 @@ async function logout() {
   try { await API.post('/auth/logout'); } catch (e) { /* ignore */ }
   location.hash = '#/login';
   await boot();
+}
+
+// ================= 仪表盘（后台首页） =================
+async function viewDashboard() {
+  pageTitle('仪表盘');
+  showLoading();
+  const load = async () => {
+    try {
+      const d = await API.get('/dashboard');
+      shell(dashboardHtml(d, state.username));
+      bindDashboard(view(), load);
+      statsBadge();
+    } catch (e) {
+      if (e.code === 401) throw e;
+      shell(`<div class="empty-note">仪表盘加载失败：${esc(e.message)}</div>`);
+    }
+  };
+  await load();
 }
 
 // ================= 文章列表 =================
@@ -1091,7 +1111,11 @@ async function router() {
   const hash = location.hash.replace(/^#\/?/, '');
   const seg = hash.split('/');
   try {
-    if (hash === 'login' || hash === '') { if (!state.authed) viewLogin(); else { listTab = 'all'; await viewPosts(); } return; }
+    if (hash === 'login' || hash === '' || hash === 'dashboard') {
+      if (!state.authed) { viewLogin(); return; }
+      await viewDashboard();
+      return;
+    }
     if (seg[0] === 'posts' && seg.length === 1) { await viewPosts(); return; }
     if (seg[0] === 'posts' && seg[1] === 'new') { await viewEditor(null); return; }
     if (seg[0] === 'posts' && /^\d+$/.test(seg[1] || '')) { await viewEditor(parseInt(seg[1], 10)); return; }
@@ -1102,7 +1126,7 @@ async function router() {
     if (seg[0] === 'backup') { await viewBackup(); return; }
     if (seg[0] === 'settings') { await viewSettings(); return; }
     if (seg[0] === 'logout') { await logout(); return; }
-    go('#/posts');
+    go('#/dashboard');
   } catch (e) {
     if (e.code === 401) return;
     showLoading();
