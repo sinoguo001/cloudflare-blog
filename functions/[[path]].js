@@ -172,7 +172,7 @@ async function front(ctx, url, seg, method, path) {
       const cards = cats.map((c) => `<div class="cat-card"><h3><a href="/category/${esc(c.slug)}">${esc(c.name)}</a></h3>
         ${c.description ? `<p>${esc(c.description)}</p>` : ''}<span class="cnt">${c.count || 0} 篇文章</span></div>`).join('');
       return html(site.renderListPage(s, { head: '全部分类', active: 'cat', title: '分类',
-        itemsHtml: '', empty: '还没有分类', extra: `<div class="cat-grid">${cards}</div>` }));
+        itemsHtml: '', empty: '还没有分类', extra: cards ? `<div class="cat-grid">${cards}</div>` : '' }));
     }
     const slug = seg[1];
     let page = 1;

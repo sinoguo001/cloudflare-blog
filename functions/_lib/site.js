@@ -327,7 +327,7 @@ export function renderListPage(s, o) {
   return layout(s, {
     active: o.active, q: o.q, title: o.title,
     content: `<section class="page-head"><h1>${o.head}</h1>${o.desc ? `<p class="desc">${o.desc}</p>` : ''}${o.extra || ''}</section>
-    ${o.itemsHtml ? `<div class="plist">${o.itemsHtml}</div>` : `<div class="empty">${o.empty || '暂无内容'}</div>`}
+    ${o.itemsHtml ? `<div class="plist">${o.itemsHtml}</div>` : (o.extra ? '' : `<div class="empty">${o.empty || '暂无内容'}</div>`)}
     ${pagination(o.page, o.pages, o.base, o.pageSize)}`,
   });
 }
@@ -434,7 +434,8 @@ export function archiveContent(s, posts) {
     years[y][d].push(p);
   }
   const yearsArr = Object.keys(years).sort((a, b) => b - a);
-  if (!yearsArr.length) return '<div class="empty">还没有发布文章</div>';
+  // 无文章时返回空串：空态交给 renderListPage 统一渲染（否则归档页会同时出现列表和「还没有发布文章」）
+  if (!yearsArr.length) return '';
   return yearsArr.map((y) => `
     <section class="arc-y"><h2>${y}</h2>
       ${Object.keys(years[y]).sort((a, b) => b - a).map((m) => `
