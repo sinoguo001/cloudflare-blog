@@ -43,7 +43,7 @@ async function handle(ctx) {
   // ---- 后台静态资源与根静态文件 ----
   // （/media、/backup、robots/rss/sitemap 等动态路径需排除，避免被扩展名规则截胡）
   const isDynamicExt = seg[0] === 'media' || seg[0] === 'backup' || seg[0] === 'backups' || seg[0] === 'theme-assets'
-    || ['rss.xml', 'feed.xml', 'sitemap.xml', 'robots.txt'].includes(path.slice(1));
+    || ['rss.xml', 'feed.xml', 'sitemap.xml', 'robots.txt'].includes(path.slice(1)) || path === '/favicon.svg';
   if (seg[0] === 'admin' || (STATIC_EXT.test(path) && !isDynamicExt) || path === '/favicon.ico') {
     const target = new URL(request.url);
     if (seg[0] === 'admin' && seg.length === 1) {
@@ -97,6 +97,14 @@ async function handle(ctx) {
   if (path === '/robots.txt') {
     return new Response(site.robotsTxt(url.origin), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
   }
+  // 动态 favicon：与页头 logo 同源（同字同色），改站点名或主题色自动跟随；
+  // 后台若上传了自定义 favicon / logo，页面 link 会直接指向图片，不再走这里。
+  if (path === '/favicon.svg') {
+    const s = await db.settingsMap(env.DB);
+    return new Response(site.faviconSvg(s), {
+      headers: { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'public, max-age=3600' },
+    });
+  }
   // 判别函数见 util.wantsFeedHtml（浏览器 Accept 普遍含 application/xml，不能用它反推阅读器）
   const fmt = url.searchParams.get('format');
   const wantHtml = wantsFeedHtml(request.headers.get('accept'), request.headers.get('user-agent'), fmt);
@@ -141,7 +149,7 @@ async function front(ctx, url, seg, method, path) {
   if (seg[0] === 'post' && seg[1] && seg.length === 2) {
     const slug = seg[1];
     const post = await db.getPost(env.DB, { slug });
-    if (!post || (post.status !== 'published' && !user)) return html(site.render404(), 404);
+    if (!post || (post.status !== 'published' && !user)) return html(site.render404(s), 404);
     if (post.status !== 'published' && user) {
       post.content_html = `<div class="empty" style="padding:14px;margin-bottom:14px">此文章为<b>草稿</b>，仅你可见 · <a href="/admin#/posts/${post.id}">回后台编辑</a></div>` + post.content_html;
     }
@@ -171,7 +179,7 @@ async function front(ctx, url, seg, method, path) {
     if (seg[2] === 'page' && seg[3]) page = pageNum(seg[3]);
     const cats = await db.listCategories(env.DB);
     const cat = cats.find((c) => c.slug === slug);
-    if (!cat) return html(site.render404(), 404);
+    if (!cat) return html(site.render404(s), 404);
     const data = await db.listPosts(env.DB, { status: 'published', cat: slug, page, per });
     const itemsHtml = data.items.map((p) => {
       const cover = p.cover_key ? `<div class="pc-cover"><a href="/post/${esc(p.slug)}"><img src="/media/${esc(p.cover_key)}" alt="" loading="lazy"></a></div>` : '';
@@ -202,7 +210,7 @@ async function front(ctx, url, seg, method, path) {
     if (seg[2] === 'page' && seg[3]) page = pageNum(seg[3]);
     const tags = await db.listTags(env.DB);
     const tag = tags.find((t) => t.slug === slug);
-    if (!tag) return html(site.render404(), 404);
+    if (!tag) return html(site.render404(s), 404);
     const data = await db.listPosts(env.DB, { status: 'published', tag: slug, page, per });
     const itemsHtml = data.items.map((p) => `<article class="pc no-cover"><div>
       <div class="pc-meta"><time>${esc(p.published_at || '').slice(0, 10)}</time><span class="dot">·</span><span>${p.view_count || 0} 阅读</span></div>
@@ -221,6 +229,13 @@ async function front(ctx, url, seg, method, path) {
       head: '文章归档', active: 'arc', title: '归档',
       itemsHtml: '', empty: '还没有发布文章', extra: site.archiveContent(s, posts),
     }));
+  }
+
+  // 分类总览 /categories、标签总览 /tags（导航栏指向这两个地址，此前缺失导致 404）
+  if ((seg[0] === 'categories' || seg[0] === 'tags') && seg.length === 1) {
+    const isCat = seg[0] === 'categories';
+    const list = isCat ? await db.listCategories(env.DB) : await db.listTags(env.DB);
+    return html(isCat ? site.renderCategories(s, list) : site.renderTags(s, list));
   }
 
   // 搜索
@@ -243,7 +258,7 @@ async function front(ctx, url, seg, method, path) {
   }
 
   // 404
-  return html(site.render404(), 404);
+  return html(site.render404(s), 404);
 }
 
 // ============ API ============
@@ -552,6 +567,10 @@ async function api(ctx, url, seg, method) {
     for (const k of Object.keys(allowed)) {
       if (b[k] != null) await db.setSetting(dbx, k, String(b[k]).slice(0, allowed[k]));
     }
+    // 图标地址：只接受站内相对路径或 http(s)，挡掉 javascript: 等伪协议；传空串表示清除
+    const safeUrl = (v) => (/^(https?:\/\/|\/)/i.test(String(v || '').trim()) ? String(v).trim().slice(0, 300) : '');
+    if (b.logo_image != null) await db.setSetting(dbx, 'logo_image', safeUrl(b.logo_image));
+    if (b.favicon_image != null) await db.setSetting(dbx, 'favicon_image', safeUrl(b.favicon_image));
     if (b.per_page != null) await db.setSetting(dbx, 'per_page', String(Math.min(20, Math.max(1, parseInt(b.per_page, 10) || 8))));
     if (b.allow_comments != null) await db.setSetting(dbx, 'allow_comments', b.allow_comments ? '1' : '0');
     if (b.comment_audit != null) await db.setSetting(dbx, 'comment_audit', b.comment_audit ? '1' : '0');

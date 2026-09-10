@@ -58,6 +58,7 @@ img{max-width:100%}
 .hd-in{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding:14px 0}
 .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:20px;color:var(--text);margin-right:auto}
 .brand-mark{width:34px;height:34px;border-radius:9px;background:var(--accent);color:var(--on-accent);display:inline-flex;align-items:center;justify-content:center;font-weight:800}
+.brand-img{height:36px;width:auto;max-width:170px;object-fit:contain;display:block}
 .brand small{display:block;font-weight:400;font-size:12px;color:var(--muted);line-height:1.2}
 .nav{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
 .nav a{padding:6px 12px;border-radius:8px;color:var(--text);font-size:15px}
@@ -196,6 +197,37 @@ img{max-width:100%}
 }
 `;
 
+// ---------- 站点标识（logo / favicon）----------
+// 图标字符：站点标题首字，取不到时回退品牌字「云」，保证各页面（含 404）永远一致。
+export function brandChar(s) {
+  return (String(s.get('site_title') || '').trim()[0] || '云');
+}
+// 页头标识：设了 logo_image 用图片，否则用文字方块（按钮式方形 + 首字）
+function brandMark(s) {
+  const img = String(s.get('logo_image') || '').trim();
+  return img ? `<img class="brand-img" src="${esc(img)}" alt="">` : `<span class="brand-mark">${esc(brandChar(s))}</span>`;
+}
+// 自定义图标地址：favicon 优先用 favicon_image，没设则复用 logo_image，都没设则用动态 /favicon.svg
+export function faviconHref(s) {
+  return String(s.get('favicon_image') || s.get('logo_image') || '/favicon.svg').trim();
+}
+export function faviconMime(href) {
+  return /\.svg(\?|$)/i.test(href) ? 'image/svg+xml'
+    : /\.png(\?|$)/i.test(href) ? 'image/png'
+    : /\.jpe?g(\?|$)/i.test(href) ? 'image/jpeg'
+    : /\.webp(\?|$)/i.test(href) ? 'image/webp'
+    : /\.ico(\?|$)/i.test(href) ? 'image/x-icon' : '';
+}
+// 动态 favicon：与页头 .brand-mark 同源（同色、同字），改站点名或主题色自动跟随
+export function faviconSvg(s) {
+  const ch = esc(brandChar(s));
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<rect width="64" height="64" rx="14" fill="${accentOf(s)}"/>
+<text x="32" y="33" text-anchor="middle" dominant-baseline="central" font-size="38" font-weight="700"
+ fill="#fff" font-family="system-ui,-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">${ch}</text>
+</svg>`;
+}
+
 // ---------- 页面骨架 ----------
 export function layout(s, o) {
   const title = s.get('site_title');
@@ -213,7 +245,7 @@ export function layout(s, o) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${o.title ? esc(o.title) + ' · ' + esc(title) : esc(title)}</title>
 <meta name="description" content="${esc(desc)}">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="${esc(faviconHref(s))}"${faviconMime(faviconHref(s)) ? ` type="${faviconMime(faviconHref(s))}"` : ''}>
 <link rel="alternate" type="application/rss+xml" title="${esc(title)}" href="/rss.xml">
 <style>:root{--accent:${accent}}${THEME_VARS}${FRONT_CSS}${codeThemeCss(s.get('code_theme'))}</style>
 ${themeLink(s)}
@@ -221,7 +253,7 @@ ${o.bodySlug ? '<script src="/js/site.js" defer></script>' : ''}
 </head>
 <body data-slug="${o.bodySlug || ''}">
 <header class="hd"><div class="wrap hd-in">
-  <a class="brand" href="/"><span class="brand-mark">${esc((title || '博').trim().slice(0, 1))}</span>
+  <a class="brand" href="/">${brandMark(s)}
     <span>${esc(title)}<small>${esc(s.get('site_subtitle'))}</small></span></a>
   <nav class="nav">
     ${nav('/', '首页', 'home')}
@@ -242,9 +274,9 @@ ${o.bodySlug ? '<script src="/js/site.js" defer></script>' : ''}
 }
 
 // ---------- 通用片段 ----------
-function catChips(list) {
+function catChips(list, base = '/category') {
   if (!list.length) return '';
-  return `<div class="chips">${list.map((c) => `<a class="chip" href="/category/${esc(c.slug)}">${esc(c.name)}<b> ${c.count || 0}</b></a>`).join('')}</div>`;
+  return `<div class="chips">${list.map((c) => `<a class="chip" href="${base}/${esc(c.slug)}">${esc(c.name)}<b> ${c.count || 0}</b></a>`).join('')}</div>`;
 }
 function postCard(p) {
   const cover = p.cover_key
@@ -412,8 +444,34 @@ export function archiveContent(s, posts) {
     </section>`).join('');
 }
 
-export function render404() {
-  return layout(new Map(), {
+// ---------- 分类 / 标签总览页 ----------
+// 导航栏「分类」「标签」指向 /categories 与 /tags，此前这两个页面根本不存在（点进去是 404，
+// 页头还因拿不到设置而退化成兜底字）——现在补齐。
+export function renderCategories(s, list) {
+  return layout(s, {
+    title: '全部分类', active: 'cat',
+    desc: `${String(s.get('site_title') || '').trim()} 的全部分类`,
+    content: `<section class="article">
+      <h1 style="margin:0 0 6px">全部分类</h1>
+      <p style="color:var(--muted);margin:0 0 18px">共 ${list.length} 个分类</p>
+      ${list.length ? catChips(list, '/category') : '<p style="color:var(--muted)">还没有创建分类。</p>'}
+    </section>`,
+  });
+}
+export function renderTags(s, list) {
+  return layout(s, {
+    title: '全部标签', active: 'tags',
+    desc: `${String(s.get('site_title') || '').trim()} 的全部标签`,
+    content: `<section class="article">
+      <h1 style="margin:0 0 6px">全部标签</h1>
+      <p style="color:var(--muted);margin:0 0 18px">共 ${list.length} 个标签</p>
+      ${list.length ? catChips(list, '/tag') : '<p style="color:var(--muted)">还没有创建标签。</p>'}
+    </section>`,
+  });
+}
+
+export function render404(s) {
+  return layout(s || new Map(), {
     content: `<section class="empty" style="margin-top:60px"><h1 style="font-size:40px">404</h1><p>页面不存在或已被删除。</p><a href="/">← 返回首页</a></section>`,
   });
 }
@@ -585,7 +643,7 @@ ${items}
 
 export async function sitemapXml(env, s, origin) {
   const u = (loc, lastmod) => `  <url><loc>${origin}${esc(loc)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ''}</url>`;
-  const rows = [u('/', ''), u('/archive', '')];
+  const rows = [u('/', ''), u('/archive', ''), u('/categories', ''), u('/tags', '')];
   const cats = await db.listCategories(env.DB);
   for (const c of cats) rows.push(u('/category/' + esc(c.slug), ''));
   const tags = await db.listTags(env.DB);

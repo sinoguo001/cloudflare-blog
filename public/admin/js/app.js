@@ -69,6 +69,7 @@ function viewSetup() {
   pageTitle('初始化');
   app.innerHTML = `
   <div class="auth-wrap"><div class="auth-card">
+    <div id="setup-logo" style="width:44px;height:44px;border-radius:11px;background:#2563eb;color:#fff;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;margin:0 auto 12px">云</div>
     <h1>欢迎使用博客系统</h1>
     <p class="sub">首次部署：填写站点信息并创建管理员账号（仅本次可用）</p>
     <form id="st">
@@ -87,6 +88,16 @@ function viewSetup() {
       <p class="form-err" id="st-err"></p>
     </form>
   </div></div>`;
+  const logoEl = app.querySelector('#setup-logo');
+  const titleIn = app.querySelector('#st [name="site_title"]');
+  const accentIn = app.querySelector('#st [name="accent"]');
+  const syncLogo = () => {
+    logoEl.textContent = (titleIn.value || '').trim()[0] || '云';
+    logoEl.style.background = accentIn.value || '#2563eb';
+  };
+  titleIn.addEventListener('input', syncLogo);
+  accentIn.addEventListener('input', syncLogo);
+  syncLogo();
   app.querySelector('#st').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const errEl = app.querySelector('#st-err');
@@ -913,6 +924,28 @@ async function viewSettings() {
     </div>
     <div>
       <div class="card">
+        <div class="sec-title">站点图标 <small>页头 Logo 与浏览器标签图标（favicon）</small></div>
+        <div class="field">
+          <label>页头 Logo（建议高度 ≥ 72px 的 PNG / WebP，透明底更佳）</label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span id="logo-prev" style="width:38px;height:38px;border-radius:9px;background:var(--accent);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
+            <input class="inp" id="s-logo_image" placeholder="留空则使用默认：站点名称首字方块" style="flex:1;min-width:190px">
+            <label class="btn" style="cursor:pointer;margin:0">上传<input type="file" id="logo-file" accept="image/*" hidden></label>
+            <button class="btn" type="button" id="logo-clear">清除</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>浏览器标签图标 Favicon（建议正方形，≥ 64×64）</label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span id="fav-prev" style="width:38px;height:38px;border-radius:9px;background:var(--accent);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
+            <input class="inp" id="s-favicon_image" placeholder="留空则自动沿用 Logo，再无则用默认首字图标" style="flex:1;min-width:190px">
+            <label class="btn" style="cursor:pointer;margin:0">上传<input type="file" id="fav-file" accept="image/*" hidden></label>
+            <button class="btn" type="button" id="fav-clear">清除</button>
+          </div>
+        </div>
+        <p class="hint" style="margin-bottom:0">上传的图片存入 R2，地址会自动填入左侧输入框，<b>需点下方「保存全部设置」才生效</b>。两者都留空时，页头与标签页图标会显示默认的首字方块（改站点名称或主题色会自动跟随）。</p>
+      </div>
+      <div class="card">
         <div class="sec-title">评论设置</div>
         <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><input type="checkbox" id="s-allow"> 允许读者发表评论</label>
         <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="s-audit"> 评论先审后发（推荐开启，防垃圾）</label>
@@ -983,6 +1016,42 @@ async function viewSettings() {
   v.querySelector('#s-allow').checked = s.allow_comments !== '0';
   v.querySelector('#s-audit').checked = s.comment_audit !== '0';
   v.querySelector('#s-captcha').checked = s.captcha !== '0';
+  set('s-logo_image', s.logo_image); set('s-favicon_image', s.favicon_image);
+
+  // ---- 站点图标：预览 / 上传 / 清除 ----
+  const logoIn = v.querySelector('#s-logo_image');
+  const favIn = v.querySelector('#s-favicon_image');
+  const setIconPrev = (el, url, ch) => {
+    if (!el) return;
+    el.innerHTML = url ? `<img src="${esc(url)}" alt="" style="width:100%;height:100%;object-fit:contain">` : esc(ch);
+  };
+  const refreshIcons = () => {
+    const ch = (v.querySelector('#s-site_title').value || '').trim()[0] || '云';
+    setIconPrev(v.querySelector('#logo-prev'), logoIn.value.trim(), ch);
+    setIconPrev(v.querySelector('#fav-prev'), favIn.value.trim() || logoIn.value.trim(), ch);
+  };
+  [logoIn, favIn].forEach((el) => el.addEventListener('input', refreshIcons));
+  v.querySelector('#s-site_title').addEventListener('input', refreshIcons);
+  const bindIconUpload = (fileSel, inputSel) => {
+    const f = v.querySelector(fileSel);
+    f.addEventListener('change', async () => {
+      const file = f.files && f.files[0];
+      if (!file) return;
+      try {
+        const d = await API.upload(file);
+        v.querySelector(inputSel).value = d.url || ('/media/' + d.key);
+        const pct = d._webp ? Math.max(0, Math.round((1 - d._webp.to / d._webp.from) * 100)) : 0;
+        toast(pct ? `已上传，转 WebP 省 ${pct}%` : '已上传');
+        refreshIcons();
+      } catch (e) { toast(e.message, 'bad'); }
+      f.value = '';
+    });
+  };
+  bindIconUpload('#logo-file', '#s-logo_image');
+  bindIconUpload('#fav-file', '#s-favicon_image');
+  v.querySelector('#logo-clear').addEventListener('click', () => { logoIn.value = ''; refreshIcons(); });
+  v.querySelector('#fav-clear').addEventListener('click', () => { favIn.value = ''; refreshIcons(); });
+  refreshIcons();
 
   v.querySelector('#set-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -1003,6 +1072,8 @@ async function viewSettings() {
       allow_comments: v.querySelector('#s-allow').checked,
       comment_audit: v.querySelector('#s-audit').checked,
       captcha: v.querySelector('#s-captcha').checked,
+      logo_image: logoIn.value.trim(),
+      favicon_image: favIn.value.trim(),
     };
     if (pw) body.new_password = pw;
     try {
