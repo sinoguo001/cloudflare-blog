@@ -3,7 +3,7 @@
 // 路由入口在 functions/[[path]].js，本文件只负责拼 HTML。
 // ============================================================
 import * as db from './db.js';
-import { esc, fmtDate, rfc822, stripHtml, isHexColor } from './util.js';
+import { esc, fmtDate, rfc822, stripHtml, isHexColor, bnNow } from './util.js';
 import { codeThemeCss } from './hl.js';
 import { gravatarHash } from './md5.js';
 
@@ -418,29 +418,160 @@ export function render404() {
   });
 }
 
-// ---------- RSS / sitemap ----------
+// ============================================================
+// RSS / Sitemap
+// 阅读器与搜索引擎拿标准 XML（rssXml / sitemapXml）；
+// 浏览器直接打开 URL 时拿排版好的 HTML（rssHtml / sitemapHtml，
+// 由 [[path]].js 按 Accept / UA 判别）。Chrome 2026-11 起移除浏览器端
+// XSLT，故不再依赖 xml-stylesheet，改为服务端直接拼页面。
+// ============================================================
+
+const FEED_CSS = `
+:root{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;padding:36px 18px;background:#eef1f6;color:#1f2937;
+  font:15px/1.75 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif}
+.page{max-width:880px;margin:0 auto}
+.card{background:#fff;border:1px solid #e6e9ef;border-radius:18px;box-shadow:0 2px 14px rgba(20,30,55,.05);overflow:hidden}
+header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:26px 30px 20px;border-bottom:1px solid #eef0f4}
+h1{margin:0;font-size:22px;font-weight:700;letter-spacing:.2px}
+.ico{margin-right:9px}
+.sub{margin:4px 0 0;color:#6b7280;font-size:13.5px}
+.go{white-space:nowrap;flex:none;text-decoration:none;color:#2563eb;font-size:13.5px;border:1px solid #dbe4f6;background:#f6f8ff;padding:5px 13px;border-radius:999px;margin-top:2px}
+.go:hover{background:#e8eefe}
+.bar{padding:11px 30px;background:#fafbfd;color:#6b7280;font-size:13px;border-bottom:1px solid #f0f2f6}
+.bar b{color:#2563eb;font-weight:700}
+.items{padding:8px 14px}
+.it{display:block;padding:17px 16px;border-bottom:1px solid #f2f4f8;text-decoration:none}
+.it:last-child{border-bottom:none}
+.it:hover{background:#f8faff}
+.it .t{font-size:16.5px;font-weight:650;color:#1f2937;line-height:1.55;text-decoration:none}
+.it:hover .t{color:#2563eb}
+.it .m{margin-top:5px;color:#818a97;font-size:13.5px;line-height:1.7;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.it time{color:#2563eb;font-size:12.5px;margin-right:10px}
+table{width:100%;border-collapse:collapse}
+th{font-size:12.5px;color:#8a93a0;font-weight:600;text-align:left;padding:13px 30px 8px;letter-spacing:.4px}
+td{padding:10px 30px;border-top:1px solid #f2f4f8;vertical-align:middle}
+tbody tr:hover{background:#f8faff}
+td.path{font-size:14.5px;word-break:break-all}
+td.path a{color:#1f2937;text-decoration:none}
+td.path a:hover{color:#2563eb}
+td.path .host{color:#a3abb6;font-size:12.5px;margin-right:6px}
+td.time{color:#818a97;font-size:13px;white-space:nowrap}
+.tag{display:inline-block;font-size:11.5px;padding:1px 9px;border-radius:999px;margin-right:13px;white-space:nowrap;background:#eef2ff;color:#2563eb}
+.tag.h{background:#eefdf3;color:#0a9a5f}
+.tag.c{background:#fef3f2;color:#d6453d}
+.tag.a{background:#fdf5ec;color:#d97706}
+.tag.t{background:#f3eefe;color:#7c4dd3}
+.empty{padding:30px;color:#9aa1ac;text-align:center}
+footer{padding:16px 30px 22px;color:#9aa1ac;font-size:12.5px}
+footer a{color:#2563eb;text-decoration:none}
+@media (max-width:640px){body{padding:16px 10px}.items{padding:8px 6px}.it{padding:15px 12px}th,td{padding-left:16px;padding-right:16px}}
+`;
+
+// RSS / Sitemap 页面共用骨架
+function feedLayout({ icon, title, sub, home, bar, body, foot }) {
+  return `<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(title)}</title>
+<style>${FEED_CSS}</style>
+</head><body>
+<div class="page"><div class="card">
+<header>
+  <div>
+    <h1><span class="ico">${icon}</span>${esc(title)}</h1>
+    ${sub ? `<div class="sub">${esc(sub)}</div>` : ''}
+  </div>
+  <a class="go" href="${home}">返回博客 ↗</a>
+</header>
+${bar ? `<div class="bar">${bar}</div>` : ''}
+${body}
+<footer>${foot}</footer>
+</div></div>
+</body></html>`;
+}
+
+// 浏览器直接打开 /rss.xml 时展示的排版页
+export async function rssHtml(env, s, origin) {
+  const data = await db.listPosts(env.DB, { status: 'published', per: 50 });
+  const now = bnNow(); // UTC+8 'YYYY-MM-DD HH:MM:SS'
+  const siteTitle = s.get('site_title') || '云尚博客';
+  const items = data.items.map((p) => {
+    const body = p.content_html || '';
+    const ex = esc((p.excerpt || stripHtml(body).slice(0, 220)) || '（无摘要）');
+    const d = p.published_at ? fmtDate(p.published_at) : '';
+    return `<a class="it" href="${origin}/post/${esc(p.slug)}">
+  <span class="t">${esc(p.title)}</span>
+  <div class="m">${d ? `<time>${d}</time>` : ''}${ex}</div>
+</a>`;
+  }).join('\n');
+  return feedLayout({
+    icon: '📡',
+    title: `RSS 订阅 · ${siteTitle}`,
+    sub: s.get('site_subtitle') || '',
+    home: origin + '/',
+    bar: `最近 <b>${data.items.length}</b> 篇文章 · 更新于 ${esc(now.slice(0, 10))}`,
+    body: items ? `<div class="items">${items}</div>` : '<div class="empty">还没有文章</div>',
+    foot: `此页面由服务器直接生成，仅供浏览器阅读；订阅器请使用原始地址。
+<a href="${origin}/rss.xml?format=xml">RSS 源</a> · <a href="${origin}/sitemap.xml">站点地图</a> · <a href="${origin}">回到首页</a>`,
+  });
+}
+
+// 浏览器直接打开 /sitemap.xml 时展示的排版页
+export async function sitemapHtml(env, s, origin) {
+  const tag = (text, cls) => `<span class="tag${cls ? ' ' + cls : ''}">${esc(text)}</span>`;
+  const u = (path, type, cls, mod) => {
+    const loc = origin + path;
+    let host = '';
+    try { host = new URL(loc).host; } catch (e) { /* 忽略 */ }
+    return `<tr>
+  <td>${tag(type, cls)}</td>
+  <td class="path"><a href="${esc(loc)}"><span class="host">${esc(host)}</span>${esc(path)}</a></td>
+  <td class="time">${mod ? esc(mod) : ''}</td>
+</tr>`;
+  };
+  const rows = [];
+  rows.push(u('/', '首页', 'h', ''));
+  rows.push(u('/archive', '归档', '', ''));
+  const cats = await db.listCategories(env.DB);
+  for (const c of cats) rows.push(u('/category/' + c.slug, '分类', 'c', ''));
+  const tags = await db.listTags(env.DB);
+  for (const t of tags) rows.push(u('/tag/' + t.slug, '标签', 't', ''));
+  const data = await db.listPosts(env.DB, { status: 'published', per: 1000 });
+  for (const p of data.items) rows.push(u('/post/' + p.slug, '文章', 'a', (p.published_at || '').slice(0, 10)));
+  return feedLayout({
+    icon: '🗺️',
+    title: '站点地图',
+    sub: '本站全部页面入口 · XML Sitemap 供搜索引擎抓取，此页仅供浏览',
+    home: origin + '/',
+    bar: `共 <b>${rows.length}</b> 个链接`,
+    body: rows.length
+      ? `<table><thead><tr><th></th><th>页面</th><th>最后更新</th></tr></thead><tbody>${rows.join('\n')}</tbody></table>`
+      : '<div class="empty">暂无内容</div>',
+    foot: `此页面由服务器直接生成，仅供浏览器阅读；搜索引擎请使用原始地址。
+<a href="${origin}/sitemap.xml?format=xml">Sitemap 源</a> · <a href="${origin}/rss.xml">RSS 订阅</a> · <a href="${origin}">回到首页</a>`,
+  });
+}
+
+// ---------- XML（给阅读器与搜索引擎的标准数据）----------
 export async function rssXml(env, s, origin) {
   const data = await db.listPosts(env.DB, { status: 'published', per: 50 });
   const items = data.items.map((p) => {
     const body = (p.content_html || '').replace(/\]\]>/g, ']]&gt;');
     const cat = p.category ? `<category>${esc(p.category.name)}</category>` : '';
-    // pdate / excerpt 为页面美化用（XSL 展示），RSS 阅读器与验证器忽略未知元素
-    const pdate = p.published_at ? fmtDate(p.published_at) : '';
-    const excerpt = p.excerpt || stripHtml(body).slice(0, 220);
     return `<item>
 <title>${esc(p.title)}</title>
 <link>${origin}/post/${esc(p.slug)}</link>
 <guid isPermaLink="false">${origin}/post/${esc(p.slug)}</guid>
 <pubDate>${rfc822(p.published_at)}</pubDate>
-<pdate>${esc(pdate)}</pdate>
-<excerpt>${esc(excerpt)}</excerpt>
 <description><![CDATA[${body}]]></description>
 ${cat}
 </item>`;
   }).join('\n');
-  const now = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
+  const now = bnNow();
   return `<?xml version="1.0" encoding="UTF-8"?>
-<?xml-stylesheet type="text/xsl" href="/rss.xsl"?>
 <rss version="2.0"><channel>
 <title>${esc(s.get('site_title'))}</title>
 <link>${origin}/</link>
@@ -462,7 +593,6 @@ export async function sitemapXml(env, s, origin) {
   const data = await db.listPosts(env.DB, { status: 'published', per: 1000 });
   for (const p of data.items) rows.push(u('/post/' + esc(p.slug), (p.published_at || '').slice(0, 10)));
   return `<?xml version="1.0" encoding="UTF-8"?>
-<?xml-stylesheet type="text/xsl" href="/sitemap.xsl"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${rows.join('\n')}
 </urlset>`;

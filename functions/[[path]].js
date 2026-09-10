@@ -11,7 +11,6 @@ import * as site from './_lib/site.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
-import * as feedXsl from './_lib/feed-xsl.js';
 
 // 携带 Set-Cookie 的 JSON 响应
 const jset = (data, cookie, status = 200) => {
@@ -91,23 +90,27 @@ async function handle(ctx) {
   }
 
   // ---- robots / rss / sitemap ----
+  // RSS / Sitemap 双形态：
+  // - 浏览器直接打开（Accept 带 text/html 且 UA 为浏览器）→ 返回排版好的 HTML 页（rssHtml/sitemapHtml）；
+  // - RSS 阅读器 / 搜索引擎 → 返回标准 XML（rssXml/sitemapXml）。
+  // ?format=xml|html 可强制指定，作为逃生舱（个别抓取器若误判可用）。
   if (path === '/robots.txt') {
     return new Response(site.robotsTxt(url.origin), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
   }
+  const accept = String(request.headers.get('accept') || '');
+  const ua = String(request.headers.get('user-agent') || '');
+  const fmt = url.searchParams.get('format');
+  const wantsXmlType = /application\/(?:rss|atom)\+xml|application\/xml|text\/xml/i.test(accept);
+  const wantHtml = fmt ? fmt === 'html' : (/text\/html/i.test(accept) && !wantsXmlType && /Mozilla/i.test(ua));
   if (path === '/rss.xml' || path === '/feed.xml') {
     const s = await db.settingsMap(env.DB);
+    if (wantHtml) return new Response(await site.rssHtml(env, s, url.origin), { headers: { 'content-type': 'text/html; charset=utf-8' } });
     return new Response(await site.rssXml(env, s, url.origin), { headers: { 'content-type': 'application/rss+xml; charset=utf-8' } });
   }
   if (path === '/sitemap.xml') {
     const s = await db.settingsMap(env.DB);
+    if (wantHtml) return new Response(await site.sitemapHtml(env, s, url.origin), { headers: { 'content-type': 'text/html; charset=utf-8' } });
     return new Response(await site.sitemapXml(env, s, url.origin), { headers: { 'content-type': 'application/xml; charset=utf-8' } });
-  }
-  // RSS / Sitemap 的美化样式表（text/xsl：浏览器才按样式表处理）
-  if (path === '/rss.xsl') {
-    return new Response(feedXsl.RSS_XSL, { headers: { 'content-type': 'text/xsl; charset=utf-8', 'cache-control': 'public, max-age=86400' } });
-  }
-  if (path === '/sitemap.xsl') {
-    return new Response(feedXsl.SITEMAP_XSL, { headers: { 'content-type': 'text/xsl; charset=utf-8', 'cache-control': 'public, max-age=86400' } });
   }
 
   // ---- 其余全部交给前台渲染 ----
