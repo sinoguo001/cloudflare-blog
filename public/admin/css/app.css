@@ -160,7 +160,10 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .dstat-s .warn-txt{color:var(--warn)}
 .dash-mini{display:flex;flex-wrap:wrap;gap:8px 18px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:11px 18px;margin-bottom:16px;color:var(--mut);font-size:13px}
 .dash-mini b{color:var(--text);font-weight:700}
-.dash-warn{border-color:#fecaca;background:#fffbfb}
+/* 有待处理项时：整条在 白 ↔ 粉红 之间交替闪烁；无待处理项时走 .dash-calm，保持白底不动 */
+@keyframes dashBlinkWarn{0%,100%{background:#fff;border-color:#fecaca}50%{background:#ffe3ee;border-color:#f9a8d4}}
+@keyframes dashBlinkLink{0%,100%{background:#fff;border-color:#fed7aa}50%{background:#ffe3ee;border-color:#f9a8d4}}
+.dash-warn{border-color:#fecaca;background:#fffbfb;animation:dashBlinkWarn 1.6s ease-in-out infinite}
 .dash-warn-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
 .dash-warn-h b{color:var(--bad)}
 .dash-warn-h .btn{margin-left:auto}
@@ -207,8 +210,14 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .lk-apply{margin-top:6px;font-size:13px;color:var(--mut);background:#f8f9fb;border-radius:8px;padding:6px 10px}
 .lk-ops{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
 /* 仪表盘里的友链申请提醒：与评论待审（红）区分开，用橙色 */
-.dash-warn-link{border-color:#fed7aa;background:#fffcf6}
+.dash-warn-link{border-color:#fed7aa;background:#fffcf6;animation:dashBlinkLink 1.6s ease-in-out infinite}
 .dash-warn-link .dash-warn-h b{color:#b45309}
+/* 关掉动画偏好：不闪，但仍给粉底，保证提醒效果不丢 */
+@media (prefers-reduced-motion:reduce){
+  .dash-warn,.dash-warn-link{animation:none;background:#ffe9f1}
+  .dash-warn{border-color:#f9a8d4}
+  .dash-warn-link{border-color:#f9a8d4}
+}
 .dash-mini a{color:inherit;text-decoration:underline}
 
 /* 分类自定义别名（slug）：名称与别名分行排布，两个输入框不挤在一起 */
