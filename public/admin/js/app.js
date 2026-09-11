@@ -1240,6 +1240,16 @@ async function viewSettings(tabArg) {
       <p class="hint">示例：<b id="pm-prev">/post/hello-world</b></p>
       <p class="hint" style="margin-bottom:0">可用变量：<code>{slug}</code> 别名、<code>{id}</code> 文章 ID、<code>{year}</code> <code>{month}</code> <code>{day}</code> 发布日期、<code>{category}</code> 分类别名；必须含 <code>{slug}</code> 或 <code>{id}</code>，结尾写 <code>.html</code> 即为伪静态。改格式后<b>旧地址自动 301 跳转</b>到新地址，已收录的链接不会失效；含日期或分类的规则会随文章改发布日期 / 改分类而变化。</p>
     </div>
+
+    <div class="card">
+      <div class="sec-title">版权说明 <small>显示在文章正文下方</small></div>
+      <div class="field"><label>版权说明内容</label>
+        <textarea class="txa" id="s-copyright" placeholder="如：本文为原创内容，转载请注明出处与作者。"></textarea>
+      </div>
+      <p class="hint">可用变量：<code>{title}</code> 文章标题、<code>{url}</code> 完整地址、<code>{link}</code> 相对地址、<code>{author}</code> 作者、<code>{date}</code> 发布日期、<code>{year}</code> 年份、<code>{site}</code> 站点名、<code>{siteUrl}</code> 站点地址、<code>{category}</code> 分类名；支持换行。</p>
+      <p class="hint">预览：<b id="cp-prev">（未填写，文章页不显示版权内容）</b></p>
+      <p class="hint" style="margin-bottom:0">内容按<b>纯文本</b>渲染（不解析 HTML），换行直接生效，无需重新编辑文章。<b>留空则文章页不显示任何版权内容。</b></p>
+    </div>
   </div>
 
   <div class="set-pane" data-pane="comment">
@@ -1306,6 +1316,7 @@ async function viewSettings(tabArg) {
   set('s-accent', s.accent || '#2563eb'); set('s-per_page', s.per_page || '8');
   set('s-footer_text', s.footer_text);
   set('s-beian', s.beian);
+  set('s-copyright', s.copyright);
   set('s-code_theme', s.code_theme || 'github');
   set('s-gravatar_source', s.gravatar_source || 'weavatar');
   v.querySelector('#s-allow').checked = s.allow_comments !== '0';
@@ -1347,8 +1358,25 @@ async function viewSettings(tabArg) {
   pmCus.addEventListener('input', pmSync);
   const curPm = String(s.permalink || '/post/{slug}');
   if (PM_PRESETS.includes(curPm)) pmSel.value = curPm;
-  else { pmSel.value = '__custom'; pmCus.value = curPm; }
+  else {   pmSel.value = '__custom'; pmCus.value = curPm; }
   pmSync();
+
+  // ---- 版权说明：实时预览（变量用示例值替换，与服务端 copyrightHtml 同一口径） ----
+  const cpIn = v.querySelector('#s-copyright');
+  const cpPrev = v.querySelector('#cp-prev');
+  const CP_SAMPLE = {
+    title: '示例文章标题', url: 'https://example.com/post/hello-world', link: '/post/hello-world',
+    author: '云尚', date: '2026-09-11', year: '2026',
+    site: '示例站点', siteUrl: 'https://example.com', category: '技术',
+  };
+  const cpSync = () => {
+    const t = String(cpIn.value || '').trim();
+    cpPrev.textContent = t
+      ? t.replace(/\{(title|url|link|author|date|year|site|siteUrl|category)\}/g, (m, k) => CP_SAMPLE[k] || m)
+      : '（未填写，文章页不显示版权内容）';
+  };
+  cpIn.addEventListener('input', cpSync);
+  cpSync();
 
   // ---- 站点图标：预览 / 上传 / 清除 ----
   const logoIn = v.querySelector('#s-logo_image');
@@ -1407,6 +1435,7 @@ async function viewSettings(tabArg) {
       per_page: v.querySelector('#s-per_page').value,
       footer_text: v.querySelector('#s-footer_text').value,
       beian: v.querySelector('#s-beian').value.trim(),
+      copyright: v.querySelector('#s-copyright').value,
       code_theme: v.querySelector('#s-code_theme').value,
       gravatar_source: v.querySelector('#s-gravatar_source').value,
       allow_comments: v.querySelector('#s-allow').checked,

@@ -248,7 +248,7 @@ async function front(ctx, url, seg, method, path) {
 
   // 文章页：按「永久链接」规则解析（放在所有固定路由之后，保证 /archive、/search 等
   // 系统路径永远优先；命中不了再兜底旧地址 /post/:slug(.html) 并 301 到当前规范地址）
-  const pr = await permalinkRoute(env, s, path, user);
+  const pr = await permalinkRoute(env, s, path, user, url.origin);
   if (pr) return pr;
 
   // 404
@@ -262,7 +262,7 @@ const redirect301 = (loc) => new Response(null, {
 // 路径可能是百分号编码（中文别名）；解码失败就按原样匹配，不能让异常变成 500
 const safeDecode = (p) => { try { return decodeURIComponent(p); } catch (e) { return p; } };
 
-async function permalinkRoute(env, s, path, user) {
+async function permalinkRoute(env, s, path, user, origin) {
   const p0 = safeDecode(path);
   const { re, keys } = permalinkRegex(permalinkOf(s));
   const m = re.exec(p0);
@@ -298,7 +298,7 @@ async function permalinkRoute(env, s, path, user) {
       captcha: s.get('captcha') !== '0',   // 未设置即默认开启
     }),
   ]);
-  return html(site.renderArticle(s, post, { siblings, comments, cfg }));
+  return html(site.renderArticle(s, post, { siblings, comments, cfg, origin }));
 }
 
 // ============ API ============
@@ -704,7 +704,9 @@ async function api(ctx, url, seg, method) {
   }
 
   // --- 设置 ---
-  if (seg[0] === 'settings' && seg.length === 1) {
+  // /api/settings/read 是后台读取设置的地址（与写入用的 /api/settings 同一份数据）；
+  // 之前只认 seg.length===1，读设置会落到 404，设置页所有输入框都是空的。
+  if (seg[0] === 'settings' && (seg.length === 1 || (seg[1] === 'read' && seg.length === 2))) {
     if (method === 'GET') {
       const all = await db.allSettings(dbx);
       delete all.admin_pass_hash;
@@ -712,7 +714,7 @@ async function api(ctx, url, seg, method) {
       delete all.admin_pass_iter;
       return json(all);
     }
-    if (method === 'PATCH') {
+    if (method === 'PATCH' && seg.length === 1) {
     const b = (await readJson(request)) || {};
     // 永久链接先校验再写：不合法直接拒，避免落一半字段；空串表示恢复默认
     if (b.permalink != null) {
@@ -720,7 +722,7 @@ async function api(ctx, url, seg, method) {
       if (!pm) return err('永久链接格式不合法：需以 / 开头且包含 {slug} 或 {id}，可用变量 {year} {month} {day} {category}');
       await db.setSetting(dbx, 'permalink', pm);
     }
-    const allowed = { site_title: 60, site_subtitle: 80, author_name: 30, footer_text: 500, seo_desc: 200, beian: 100 };
+    const allowed = { site_title: 60, site_subtitle: 80, author_name: 30, footer_text: 500, seo_desc: 200, beian: 100, copyright: 600 };
     // 代码高亮主题与头像源：取值受限，避免写入任意值
     if (b.code_theme != null) {
       const t = String(b.code_theme).slice(0, 30);

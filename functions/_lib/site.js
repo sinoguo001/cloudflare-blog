@@ -105,6 +105,8 @@ img{max-width:100%}
 .art-meta{font-size:13.5px;color:var(--muted);display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding-bottom:16px;border-bottom:1px solid var(--line);margin-bottom:20px}
 .art-cover{margin-bottom:22px}
 .art-cover img{border-radius:12px;border:1px solid var(--line)}
+.art-cp{margin-top:22px;padding:13px 16px;background:var(--tint);border-left:3px solid var(--accent);border-radius:0 10px 10px 0;font-size:13.5px;line-height:1.85;color:var(--muted);word-break:break-word}
+.art-cp a{color:var(--accent)}
 /* 正文排版 */
 .art-body{font-size:16.5px}
 .art-body h2{font-size:23px;margin:1.6em 0 .6em;padding-left:11px;border-left:4px solid var(--accent)}
@@ -370,6 +372,29 @@ export function renderListPage(s, o) {
   });
 }
 
+// ---------- 文章版权说明 ----------
+// 后台「文章设置 → 版权说明」留空则整块不渲染；填了才在正文下方显示。
+// 内容为纯文本模板：先替换变量、再整体转义（不支持 HTML，防注入），换行转 <br>。
+export function copyrightHtml(s, post, origin) {
+  const tpl = String(s.get('copyright') || '').trim();
+  if (!tpl) return '';
+  const rel = postUrl(s, post);
+  const map = {
+    title: post.title || '',
+    url: (origin || '') + rel,
+    link: rel,
+    author: s.get('author_name') || '',
+    date: (post.published_at || '').slice(0, 10),
+    year: (post.published_at || '').slice(0, 4),
+    site: s.get('site_title') || '',
+    siteUrl: origin || '',
+    category: post.category ? post.category.name : '',
+  };
+  const text = tpl.replace(/\{(title|url|link|author|date|year|site|siteUrl|category)\}/g,
+    (m, k) => (map[k] || m));
+  return `<div class="art-cp">${text.split('\n').map(esc).join('<br>')}</div>`;
+}
+
 export function renderArticle(s, post, extra) {
   const cover = post.cover_key
     ? `<div class="art-cover"><img src="/media/${esc(post.cover_key)}" alt="${esc(post.title)}"></div>` : '';
@@ -393,6 +418,7 @@ export function renderArticle(s, post, extra) {
       ${cover}
       <div class="art-body">${post.content_html}</div>
       ${tags ? `<div class="pc-tags" style="margin-top:18px">${tags}</div>` : ''}
+      ${copyrightHtml(s, post, extra.origin)}
     </article>
     ${pnHtml}
     ${renderComments(s, post, extra.comments, extra.cfg)}`;
