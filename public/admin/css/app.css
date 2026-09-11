@@ -208,9 +208,13 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .dash-warn-link .dash-warn-h b{color:#b45309}
 .dash-mini a{color:inherit;text-decoration:underline}
 
-/* 分类自定义别名（slug） */
-.cat-add-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+/* 分类自定义别名（slug）：名称与别名分行排布，两个输入框不挤在一起 */
+.cat-add-row{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-top:4px}
 .cat-add-row .inp{flex:1 1 150px;min-width:0}
 .cat-add-row .btn{flex:none}
-.cat-tip{margin:0 0 12px}
+.cat-f-name{margin-bottom:18px}
+.cat-f-slug{margin-bottom:12px}
+.cat-f-slug>label{margin-bottom:7px}
+.cat-tip{margin:8px 0 0}
+.cat-dlg-slug{margin-top:12px}
 .cat-slug{color:var(--ac);font-family:ui-monospace,Consolas,Menlo,monospace;font-size:12.5px}

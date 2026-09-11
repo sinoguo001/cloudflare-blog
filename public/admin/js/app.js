@@ -683,13 +683,17 @@ async function viewCategories() {
     <div class="card">
       <div class="sec-title">分类 <small>文章分类（一篇文章一个分类）</small></div>
       <form id="cat-add">
-        <div class="cat-add-row">
+        <div class="field cat-f-name">
+          <label>名称</label>
           <input class="inp" name="name" id="cat-new-name" placeholder="新分类名称，如：技术笔记" required>
-          <input class="inp" name="slug" id="cat-new-slug" placeholder="别名（选填），如 tech-notes">
-          <button class="btn p" type="submit">新建</button>
         </div>
-        <div class="hint cat-tip">访问地址 <b id="cat-new-prev">/category/…</b> · 别名只能用小写英文字母、数字和 -；
-          中文名称请手动填一个英文别名，留空会自动生成一串随机字符，不利于收录。</div>
+        <div class="field cat-f-slug">
+          <label>别名（网址用，选填）</label>
+          <input class="inp" name="slug" id="cat-new-slug" placeholder="如 tech-notes">
+          <div class="hint cat-tip">访问地址 <b id="cat-new-prev">/category/…</b> · 别名只能用小写英文字母、数字和 -；
+            中文名称请手动填一个英文别名，留空会自动生成一串随机字符，不利于收录。</div>
+        </div>
+        <div class="cat-add-row"><button class="btn p" type="submit">新建</button></div>
       </form>
       <div id="cat-list"></div>
     </div>
@@ -761,7 +765,7 @@ async function viewCategories() {
     const dlgP = dialog({
       title: '编辑分类',
       bodyHtml: `<div class="field"><label>名称</label><input class="inp" id="cn" value="${eb.dataset.n}"></div>
-        <div class="field"><label>别名（网址用）</label><input class="inp" id="cs" value="${eb.dataset.s}" placeholder="如 tech-notes">
+        <div class="field cat-dlg-slug"><label>别名（网址用）</label><input class="inp" id="cs" value="${eb.dataset.s}" placeholder="如 tech-notes">
           <div class="hint" style="margin:6px 0 0">访问地址 <b id="cs-prev">/category/${esc(oldSlug)}</b></div>
         </div>
         <div class="field"><label>描述</label><textarea class="txa" id="cd" style="min-height:70px">${eb.dataset.d}</textarea></div>
