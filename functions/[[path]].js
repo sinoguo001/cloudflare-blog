@@ -475,7 +475,9 @@ async function api(ctx, url, seg, method) {
   if (seg[0] === 'backup' || seg[0] === 'backups') {
     if (method === 'POST' && seg.length === 1) {
       const data = await db.dumpAll(dbx);
-      const key = `backups/backup-${bnNow().replace(/[-: ]/g, '')}.json`;
+      // 文件名只精确到秒：同一秒内连点两次备份会生成同名文件互相覆盖，补 4 位随机后缀避免
+      const rnd = Math.random().toString(36).slice(2, 6);
+      const key = `backups/backup-${bnNow().replace(/[-: ]/g, '')}-${rnd}.json`;
       await env.BLOG.put(key, JSON.stringify(data, null, 2), { httpMetadata: { contentType: 'application/json' }, customMetadata: { ct: 'application/json' } });
       const all = (await env.BLOG.list({ prefix: 'backups/' })).objects || [];
       const old = all.sort((a, b) => b.uploaded - a.uploaded).slice(20);
@@ -490,6 +492,19 @@ async function api(ctx, url, seg, method) {
       const obj = await env.BLOG.get('backups/' + seg[1]);
       if (!obj) return err('备份不存在', 404);
       return new Response(obj.body, { headers: { 'content-type': 'application/json', 'content-disposition': `attachment; filename="${seg[1]}"` } });
+    }
+    // DELETE /api/backup/:name —— 从 R2 删除指定备份
+    if (method === 'DELETE' && seg.length === 2) {
+      const name = String(seg[1] || '');
+      // 只允许 backups/ 下的单层文件名：挡住 `../`、`a/b` 这类穿越写法，
+      // 否则传 `../media/xxx` 就能删掉图片库里的文件
+      if (!/^[A-Za-z0-9._-]+\.json$/.test(name)) return err('备份文件名不合法', 400);
+      const key = 'backups/' + name;
+      // head 只取元信息不下载正文，备份文件可能有几 MB
+      const exist = env.BLOG.head ? await env.BLOG.head(key) : await env.BLOG.get(key);
+      if (!exist) return err('备份不存在或已被删除', 404);
+      await env.BLOG.delete(key);
+      return json({ ok: true, deleted: name });
     }
     if (seg[1] === 'restore' && method === 'POST' && seg.length === 2) {
       const b = (await readJson(request)) || {};

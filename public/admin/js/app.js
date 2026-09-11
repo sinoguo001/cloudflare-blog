@@ -1051,7 +1051,8 @@ async function viewBackup() {
       items.map((it) => `<tr><td><code>${esc(it.name)}</code></td><td>${fmtSize(it.size)}</td>
         <td>${fmtTime(String(it.uploaded).slice(0, 19).replace('T', ' '))}</td>
         <td><button class="btn sm g" data-dl="${esc(it.name)}">下载</button>
-        <button class="btn sm d" data-restore="${esc(it.name)}">恢复</button></td></tr>`).join('')}
+        <button class="btn sm d" data-restore="${esc(it.name)}">恢复</button>
+        <button class="btn sm g" data-delbk="${esc(it.name)}">删除</button></td></tr>`).join('')}
       </tbody></table></div>`;
     listBox.querySelectorAll('button[data-dl]').forEach((b) => b.addEventListener('click', () => {
       window.open('/api/backup/' + b.dataset.dl, '_blank');
@@ -1064,6 +1065,23 @@ async function viewBackup() {
         toast('恢复完成，共写入 ' + (r.restored || 0) + ' 条记录');
         load();
       } catch (e) { toast(e.message, 'bad'); }
+    }));
+    // 从 R2 删除备份：只删这份备份文件，不动站点现有数据
+    listBox.querySelectorAll('button[data-delbk]').forEach((b) => b.addEventListener('click', async () => {
+      const name = b.dataset.delbk;
+      if (!(await confirmDanger(
+        `确定删除备份「${name}」？\n\n该备份文件将从 R2 存储中永久移除，无法通过本系统找回。\n当前站点的数据不会受影响。`,
+        '删除备份'))) return;
+      const btn = b;
+      btn.disabled = true;
+      try {
+        await API.del('/backup/' + encodeURIComponent(name));
+        toast('已删除备份 ' + name);
+        load();
+      } catch (e) {
+        btn.disabled = false;
+        toast(e.message, 'bad');
+      }
     }));
   };
   const load = async () => {
