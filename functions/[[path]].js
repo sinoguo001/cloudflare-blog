@@ -231,6 +231,13 @@ async function front(ctx, url, seg, method, path) {
     }));
   }
 
+  // 友情链接 /links：已通过的友链 + 读者申请表单
+  if (seg[0] === 'links' && seg.length === 1) {
+    // 建表失败（极端情况）也不能让页面 500，退化成空列表
+    const links = await db.listLinks(env.DB, { status: 'approved' }).catch(() => []);
+    return html(site.renderLinks(s, { links, captcha: s.get('captcha') !== '0' }));
+  }
+
   // 分类总览 /categories、标签总览 /tags（导航栏指向这两个地址，此前缺失导致 404）
   if ((seg[0] === 'categories' || seg[0] === 'tags') && seg.length === 1) {
     const isCat = seg[0] === 'categories';
@@ -395,6 +402,34 @@ async function api(ctx, url, seg, method) {
     });
     // 验证码一次性：用掉即作废（前端随后会自动换一张新图）
     return capOn ? jset({ ok: true, pending: audit }, clearCaptchaCookie()) : json({ ok: true, pending: audit });
+  }
+
+  // --- 读者申请友链（公开） ---
+  // 与评论同一套防刷：蜜罐 + 算术验证码 + 同 IP 频控；进来一律 pending，前台不展示。
+  if (seg[0] === 'link-apply' && method === 'POST' && seg.length === 1) {
+    const b = (await readJson(request)) || {};
+    if (b.company) return json({ ok: true }); // 蜜罐命中：静默放行，不让机器人察觉
+    const name = String(b.name || '').trim().slice(0, 40);
+    const url = String(b.url || '').trim().slice(0, 300);
+    const description = String(b.description || '').trim().slice(0, 120);
+    const logo = String(b.logo || '').trim().slice(0, 300);
+    const contact = String(b.contact || '').trim().slice(0, 80);
+    const reason = String(b.reason || '').trim().slice(0, 300);
+    if (!name) return err('请填写站点名称');
+    if (!url) return err('请填写站点地址');
+    // 只放行 http(s)：这些地址会原样写进 <a href>，必须挡掉 javascript: 等伪协议
+    if (!/^https?:\/\/[^\s]+$/i.test(url)) return err('网址需以 http:// 或 https:// 开头');
+    if (logo && !/^https?:\/\/[^\s]+$/i.test(logo)) return err('图标地址需以 http:// 或 https:// 开头');
+    const capOn = (await db.getSetting(dbx, 'captcha')) !== '0';
+    if (capOn && !(await checkCaptcha(env, request, b.captcha))) {
+      return err('验证码不正确或已过期，请点击图片换一张');
+    }
+    const ip = request.headers.get('CF-Connecting-IP') || '';
+    if ((await db.recentLinkApplies(dbx, ip, 3600)) >= 3) return err('申请过于频繁，请稍后再试', 429);
+    // 同网址去重（忽略末尾斜杠）：已在列表里或已提交过申请都不再收
+    if (await db.findLinkByUrl(dbx, url)) return err('该站点已在友链列表或已提交过申请');
+    await db.addLink(dbx, { name, url, description, logo, contact, reason, status: 'pending', source: 'apply', ip });
+    return capOn ? jset({ ok: true }, clearCaptchaCookie()) : json({ ok: true });
   }
 
   // ================= 以下全部需登录 =================
@@ -564,7 +599,7 @@ async function api(ctx, url, seg, method) {
   if (seg[0] === 'dashboard' && method === 'GET' && seg.length === 1) {
     const monthStart = bnNow().slice(0, 8) + '01'; // 本月 1 号 00:00（北京时间字符串可直接比大小）
     const nOf = (r) => (r && r.n) || 0;
-    const [st, pending, recent, cmts, top, mPosts, mCmts, words, views, pv] = await Promise.all([
+    const [st, pending, recent, cmts, top, mPosts, mCmts, words, views, pv, linkCnt, linkPending] = await Promise.all([
       db.stats(dbx),
       db.listComments(dbx, { status: 'pending', limit: 5 }),
       db.listPosts(dbx, { status: 'all', page: 1, per: 6 }),
@@ -578,6 +613,9 @@ async function api(ctx, url, seg, method) {
       dbx.prepare(`SELECT COALESCE(SUM(view_count),0) n FROM posts`).first(),
       // 访问统计表可能尚未建立（老库），失败要给出 null 而不是让整个仪表盘 500
       db.pvSummary(dbx, 7).catch(() => null),
+      // 友链表同理：老库还没建时不能拖垮整个仪表盘
+      db.countLinksByStatus(dbx).catch(() => ({ pending: 0, approved: 0, rejected: 0 })),
+      db.listLinks(dbx, { status: 'pending' }).then((l) => l.slice(0, 5)).catch(() => []),
     ]);
     // 裁剪字段：正文等大字段不下发，省流量也省前端解析
     const tc = (c) => ({
@@ -597,6 +635,12 @@ async function api(ctx, url, seg, method) {
       top_posts: (top.results || []).map((r) => ({ id: r.id, title: r.title, slug: r.slug, views: r.view_count || 0 })),
       // pv 为 null = 访问统计不可用（表还没建或查询失败），前端显示「未开启」
       pv: pv || null,
+      // 友链：待审数量 + 最近几条待审申请（仪表盘直接给出提醒与处理入口）
+      links: { pending: (linkCnt && linkCnt.pending) || 0, approved: (linkCnt && linkCnt.approved) || 0,
+        pending_list: (linkPending || []).map((l) => ({
+          id: l.id, name: l.name, url: l.url, description: l.description,
+          contact: l.contact, reason: l.reason, created_at: l.created_at,
+        })) },
       generated_at: bnNow(),
     });
   }
@@ -650,6 +694,63 @@ async function api(ctx, url, seg, method) {
     }
     return json({ ok: true });
   }
+  }
+
+  // --- 友链管理 ---
+  if (seg[0] === 'links') {
+    if (method === 'GET' && seg.length === 1) {
+      const status = url.searchParams.get('status') || 'all';
+      const [items, counts] = await Promise.all([
+        db.listLinks(dbx, { status }),
+        db.countLinksByStatus(dbx),
+      ]);
+      return json({ items, counts });
+    }
+    if (method === 'POST' && seg.length === 1) {
+      const b = (await readJson(request)) || {};
+      const name = String(b.name || '').trim().slice(0, 40);
+      const url = String(b.url || '').trim().slice(0, 300);
+      if (!name) return err('请填写站点名称');
+      if (!url) return err('请填写站点地址');
+      if (!/^https?:\/\/[^\s]+$/i.test(url)) return err('网址需以 http:// 或 https:// 开头');
+      const logo = String(b.logo || '').trim().slice(0, 300);
+      if (logo && !/^https?:\/\/[^\s]+$/i.test(logo)) return err('图标地址需以 http:// 或 https:// 开头');
+      const id = await db.addLink(dbx, {
+        name, url, logo,
+        description: String(b.description || '').trim().slice(0, 120),
+        contact: String(b.contact || '').trim().slice(0, 80),
+        reason: String(b.reason || '').trim().slice(0, 300),
+        sort: Math.max(0, Math.min(9999, parseInt(b.sort, 10) || 0)),
+        status: db.LINK_STATUS.includes(b.status) ? b.status : 'approved', // 博主自己加的，默认直接展示
+        source: 'admin',
+      });
+      return json({ ok: true, id });
+    }
+    if (seg.length === 2 && /^\d+$/.test(seg[1])) {
+      const id = parseInt(seg[1], 10);
+      if (method === 'PATCH') {
+        const b = (await readJson(request)) || {};
+        const patch = {};
+        if (b.status != null) {
+          if (!db.LINK_STATUS.includes(b.status)) return err('状态值不合法');
+          patch.status = b.status;
+        }
+        ['name', 'url', 'description', 'logo', 'contact', 'reason'].forEach((k) => {
+          if (b[k] != null) patch[k] = String(b[k]).trim().slice(0, k === 'url' || k === 'logo' ? 300 : 120);
+        });
+        if (patch.url && !/^https?:\/\/[^\s]+$/i.test(patch.url)) return err('网址需以 http:// 或 https:// 开头');
+        if (patch.logo && !/^https?:\/\/[^\s]+$/i.test(patch.logo)) return err('图标地址需以 http:// 或 https:// 开头');
+        if (b.sort != null) patch.sort = Math.max(0, Math.min(9999, parseInt(b.sort, 10) || 0));
+        if (!Object.keys(patch).length) return err('没有要修改的字段');
+        await db.updateLink(dbx, id, patch);
+        return json({ ok: true });
+      }
+      if (method === 'DELETE') {
+        await db.deleteLink(dbx, id);
+        return json({ ok: true });
+      }
+    }
+    return err('接口不存在', 404);
   }
 
   // --- 分类管理 ---

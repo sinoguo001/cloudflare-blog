@@ -75,6 +75,8 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .tabs{display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap}
 .tabs button{padding:7px 16px;border-radius:999px;border:1px solid var(--line);background:#fff;cursor:pointer;font-size:13.5px;color:#374151}
 .tabs button.on{background:var(--ac);border-color:var(--ac);color:#fff}
+/* 设置页标签面板：hidden 属性要压过任何 display 规则，否则面板会全部同时显示 */
+.set-pane[hidden]{display:none!important}
 
 /* 编辑器 */
 .ed-card{background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden}
@@ -190,3 +192,18 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .stat b{font-size:24px;display:block}
 .stat span{color:var(--mut);font-size:12.5px}
 @media (max-width:760px){.grid2{grid-template-columns:1fr}.page-head h1{width:100%}}
+
+/* 友链管理 */
+.lk-item{margin-bottom:12px}
+.lk-h{display:flex;gap:12px;align-items:flex-start}
+.lk-logo{width:38px;height:38px;flex:none;border-radius:9px;background:#eef2ff;color:#2563eb;display:inline-flex;align-items:center;justify-content:center;font-weight:800;overflow:hidden}
+.lk-logo img{width:100%;height:100%;object-fit:contain}
+.lk-t{flex:1;min-width:0;word-break:break-all}
+.lk-t b{font-size:15px;margin-right:6px}
+.lk-time{flex:none;white-space:nowrap}
+.lk-apply{margin-top:6px;font-size:13px;color:var(--mut);background:#f8f9fb;border-radius:8px;padding:6px 10px}
+.lk-ops{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
+/* 仪表盘里的友链申请提醒：与评论待审（红）区分开，用橙色 */
+.dash-warn-link{border-color:#fed7aa;background:#fffcf6}
+.dash-warn-link .dash-warn-h b{color:#b45309}
+.dash-mini a{color:inherit;text-decoration:underline}

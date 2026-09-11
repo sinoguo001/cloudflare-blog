@@ -31,6 +31,11 @@ async function statsBadge() {
       elBadge.textContent = st.pending || '';
       elBadge.style.display = st.pending > 0 ? '' : 'none';
     }
+    // 待审友链申请也挂个角标（stats 接口不含友链，单独取一次计数）
+    const lr = await API.get('/links?status=pending').catch(() => null);
+    const n = (lr && lr.counts && lr.counts.pending) || 0;
+    const lk = document.getElementById('badge-links');
+    if (lk) { lk.textContent = n || ''; lk.style.display = n ? '' : 'none'; }
   } catch (e) { /* 静默 */ }
 }
 function showLoading(msg) {
@@ -123,6 +128,7 @@ function shell(contentHtml) {
       <a href="#/dashboard" data-nav="dashboard">仪表盘</a>
       <a href="#/posts" data-nav="posts">文章</a>
       <a href="#/comments" data-nav="comments">评论<span class="badge" id="badge-pending" style="display:none"></span></a>
+      <a href="#/links" data-nav="links">友链<span class="badge" id="badge-links" style="display:none"></span></a>
       <a href="#/categories" data-nav="categories">分类与标签</a>
       <a href="#/media" data-nav="media">图片库</a>
       <a href="#/themes" data-nav="themes">主题</a>
@@ -527,6 +533,144 @@ async function viewComments() {
   statsBadge();
 }
 
+// ================= 友情链接 =================
+let linkTab = 'pending';
+const LINK_ST = { pending: '待审核', approved: '已展示', rejected: '已拒绝', all: '全部' };
+// 编辑 / 新增共用弹窗：fields 为初始值，返回 null 表示取消
+async function linkDialog(l) {
+  const isNew = !l;
+  const v = l || { name: '', url: '', description: '', logo: '', contact: '', reason: '', sort: 0 };
+  const out = {};
+  const res = await dialog({
+    title: isNew ? '新增友链' : '编辑友链',
+    bodyHtml: `
+      <div class="field"><label>站点名称 *</label><input class="inp" id="lkf-name" maxlength="40" value="${esc(v.name)}"></div>
+      <div class="field"><label>站点地址 *（需以 http:// 或 https:// 开头）</label><input class="inp" id="lkf-url" maxlength="300" placeholder="https://example.com" value="${esc(v.url)}"></div>
+      <div class="field"><label>一句话简介</label><input class="inp" id="lkf-desc" maxlength="120" value="${esc(v.description || '')}"></div>
+      <div class="field"><label>图标地址（选填，正方形图片）</label><input class="inp" id="lkf-logo" maxlength="300" value="${esc(v.logo || '')}"></div>
+      <div class="field"><label>排序（数字越小越靠前）</label><input class="inp" id="lkf-sort" type="number" min="0" max="9999" style="width:140px" value="${v.sort || 0}"></div>
+      ${isNew ? '' : `<div class="field"><label>状态</label><select class="inp" id="lkf-status">
+        <option value="pending"${v.status === 'pending' ? ' selected' : ''}>待审核</option>
+        <option value="approved"${v.status === 'approved' ? ' selected' : ''}>已展示</option>
+        <option value="rejected"${v.status === 'rejected' ? ' selected' : ''}>已拒绝</option>
+      </select></div>`}
+      ${v.contact || v.reason
+        ? `<div class="hint" style="margin:6px 0 0">申请人留言：${esc(v.reason || '（无）')}${v.contact ? ` · 联系方式 ${esc(v.contact)}` : ''}</div>`
+        : ''}`,
+    actions: [{ val: 'ok', label: '保存', cls: 'p' }, { val: 'cancel', label: '取消', cls: 'g' }],
+    onSubmit: (body) => {
+      const g = (id) => body.querySelector('#' + id).value.trim();
+      out.name = g('lkf-name');
+      out.url = g('lkf-url');
+      if (!out.name) return false;
+      if (!/^https?:\/\/\S+$/i.test(out.url)) return false;
+      out.description = g('lkf-desc');
+      out.logo = g('lkf-logo');
+      out.sort = parseInt(g('lkf-sort'), 10) || 0;
+      const sel = body.querySelector('#lkf-status');
+      if (sel) out.status = sel.value;
+      return true;
+    },
+  });
+  return res === 'ok' ? out : null;
+}
+async function viewLinks() {
+  pageTitle('友链');
+  showLoading();
+  shell(`<div class="page-head"><h1>友情链接</h1>
+    <div class="spacer">
+      <a class="btn g" href="/links" target="_blank" rel="noopener">前台页面 ↗</a>
+      <button class="btn p" id="lk-new">＋ 新增友链</button>
+    </div></div>
+    <div class="tabs" id="lk-tabs">
+      <button data-t="pending">待审核</button><button data-t="approved">已展示</button><button data-t="rejected">已拒绝</button><button data-t="all">全部</button>
+    </div>
+    <div id="lk-list"><div class="loading">加载中…</div></div>`);
+
+  const load = async () => {
+    const box = view().querySelector('#lk-list');
+    box.innerHTML = '<div class="loading">加载中…</div>';
+    try {
+      const r = await API.get('/links?status=' + linkTab);
+      const cnt = r.counts || {};
+      view().querySelectorAll('#lk-tabs button').forEach((b) => {
+        const n = cnt[b.dataset.t];
+        b.classList.toggle('on', b.dataset.t === linkTab);
+        b.textContent = LINK_ST[b.dataset.t] + (n ? ` (${n})` : '');
+      });
+      if (!r.items.length) {
+        box.innerHTML = `<div class="empty-note">${linkTab === 'pending' ? '没有待审核的友链申请 🎉' : '暂无友链'}</div>`;
+        return;
+      }
+      box.innerHTML = r.items.map((l) => {
+        const ch = (String(l.name || '').trim()[0] || '?').toUpperCase();
+        const logo = l.logo
+          ? `<img src="${esc(l.logo)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+          : esc(ch);
+        const ops = [];
+        if (l.status !== 'approved') ops.push(`<button class="btn sm ok" data-o="app" data-id="${l.id}">通过</button>`);
+        if (l.status !== 'rejected') ops.push(`<button class="btn sm g" data-o="rej" data-id="${l.id}">拒绝</button>`);
+        ops.push(`<button class="btn sm v" data-o="edit" data-id="${l.id}">编辑</button>`);
+        ops.push(`<button class="btn sm d" data-o="del" data-id="${l.id}">删除</button>`);
+        const apply = (l.contact || l.reason || l.source === 'apply')
+          ? `<div class="lk-apply">${l.source === 'apply' ? '<b>读者申请</b> · ' : ''}${l.contact ? `联系方式：${esc(l.contact)} · ` : ''}${l.reason ? `留言：${esc(l.reason)}` : ''}</div>`
+          : '';
+        return `<div class="card lk-item">
+          <div class="lk-h">
+            <span class="lk-logo">${logo}</span>
+            <div class="lk-t"><b>${esc(l.name)}</b>
+              <span class="st ${l.status}">${LINK_ST[l.status] || l.status}</span>
+              <a class="hint" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.url)} ↗</a>
+              ${l.description ? `<div class="hint">${esc(l.description)}</div>` : ''}
+              ${apply}
+            </div>
+            <span class="hint lk-time">${fmtTime(l.created_at)}</span>
+          </div>
+          <div class="lk-ops">${ops.join('')}</div>
+        </div>`;
+      }).join('');
+      box.querySelectorAll('button[data-o]').forEach((b) => b.addEventListener('click', async () => {
+        const id = parseInt(b.dataset.id, 10);
+        const o = b.dataset.o;
+        try {
+          if (o === 'app') { await API.patch('/links/' + id, { status: 'approved' }); toast('已通过，前台已展示'); }
+          else if (o === 'rej') { await API.patch('/links/' + id, { status: 'rejected' }); toast('已拒绝'); }
+          else if (o === 'del') {
+            if (!(await confirmDanger('确定删除这条友链？删除后无法恢复。', '删除友链'))) return;
+            await API.del('/links/' + id);
+            toast('已删除');
+          } else if (o === 'edit') {
+            const cur = (await API.get('/links?status=all')).items.find((x) => x.id === id);
+            const d = await linkDialog(cur);
+            if (!d) return;
+            await API.patch('/links/' + id, d);
+            toast('已保存');
+          }
+          load();
+        } catch (e) { toast(e.message, 'bad'); }
+      }));
+    } catch (e) { box.innerHTML = `<div class="empty-note">${esc(e.message)}</div>`; }
+  };
+  view().querySelector('#lk-tabs').addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-t]');
+    if (!b) return;
+    linkTab = b.dataset.t;
+    load();
+  });
+  view().querySelector('#lk-new').addEventListener('click', async () => {
+    try {
+      const d = await linkDialog(null);
+      if (!d) return;
+      d.status = 'approved'; // 博主自己添加的，直接展示
+      await API.post('/links', d);
+      toast('已添加，前台立即可见');
+      linkTab = 'approved';
+      load();
+    } catch (e) { toast(e.message, 'bad'); }
+  });
+  load();
+}
+
 // ================= 分类与标签 =================
 async function viewCategories() {
   pageTitle('分类与标签');
@@ -923,48 +1067,91 @@ async function viewBackup() {
 }
 
 // ================= 设置 =================
-async function viewSettings() {
+const SETTINGS_TABS = [
+  { k: 'basic', name: '基本设置' },
+  { k: 'post', name: '文章设置' },
+  { k: 'comment', name: '评论设置' },
+  { k: 'security', name: '安全设置' },
+];
+
+async function viewSettings(tabArg) {
+  const curTab = SETTINGS_TABS.some((t) => t.k === tabArg) ? tabArg : 'basic';
   pageTitle('设置');
   showLoading();
-  const all = await API.get('/posts?status=published&per=1');
   shell(`
   <div class="page-head"><h1>站点设置</h1></div>
+  <div class="tabs" id="set-tabs">
+    ${SETTINGS_TABS.map((t) => `<button type="button" data-t="${t.k}">${t.name}</button>`).join('')}
+  </div>
   <form id="set-form">
-  <div class="grid2">
-    <div class="card">
-      <div class="sec-title">站点信息</div>
-      <div class="field"><label>站点名称</label><input class="inp" name="site_title" id="s-site_title"></div>
-      <div class="field"><label>副标题</label><input class="inp" name="site_subtitle" id="s-site_subtitle"></div>
-      <div class="field"><label>作者署名（页脚与文章署名）</label><input class="inp" name="author_name" id="s-author_name"></div>
-      <div class="field"><label>SEO 描述</label><input class="inp" name="seo_desc" id="s-seo_desc" placeholder="用于搜索引擎摘要"></div>
-      <div class="field"><label>主题色</label><input class="inp" type="color" name="accent" id="s-accent" style="width:120px;height:40px;padding:4px"></div>
-      <div class="field"><label>每页文章数</label><input class="inp" type="number" min="1" max="20" name="per_page" id="s-per_page" style="width:120px"></div>
-      <div class="field"><label>页脚自定义文字（可留空，支持换行）</label><textarea class="txa" name="footer_text" id="s-footer_text"></textarea></div>
-      <div class="field"><label>ICP 备案号（可选，如 苏ICP备xxxxxxxx号）</label><input class="inp" name="beian" id="s-beian" placeholder="填写后显示在页脚并链接工信部官网；留空则不显示"></div>
-    </div>
-    <div>
+
+  <div class="set-pane" data-pane="basic">
+    <div class="grid2">
       <div class="card">
-        <div class="sec-title">站点图标 <small>页头 Logo 与浏览器标签图标（favicon）</small></div>
-        <div class="field">
-          <label>页头 Logo（建议高度 ≥ 72px 的 PNG / WebP，透明底更佳）</label>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <span id="logo-prev" style="width:38px;height:38px;border-radius:9px;background:var(--accent);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
-            <input class="inp" id="s-logo_image" placeholder="留空则使用默认：站点名称首字方块" style="flex:1;min-width:190px">
-            <label class="btn" style="cursor:pointer;margin:0">上传<input type="file" id="logo-file" accept="image/*" hidden></label>
-            <button class="btn" type="button" id="logo-clear">清除</button>
-          </div>
-        </div>
-        <div class="field">
-          <label>浏览器标签图标 Favicon（建议正方形，≥ 64×64）</label>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <span id="fav-prev" style="width:38px;height:38px;border-radius:9px;background:var(--accent);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
-            <input class="inp" id="s-favicon_image" placeholder="留空则自动沿用 Logo，再无则用默认首字图标" style="flex:1;min-width:190px">
-            <label class="btn" style="cursor:pointer;margin:0">上传<input type="file" id="fav-file" accept="image/*" hidden></label>
-            <button class="btn" type="button" id="fav-clear">清除</button>
-          </div>
-        </div>
-        <p class="hint" style="margin-bottom:0">上传的图片存入 R2，地址会自动填入左侧输入框，<b>需点下方「保存全部设置」才生效</b>。两者都留空时，页头与标签页图标会显示默认的首字方块（改站点名称或主题色会自动跟随）。</p>
+        <div class="sec-title">站点信息</div>
+        <div class="field"><label>站点名称</label><input class="inp" name="site_title" id="s-site_title"></div>
+        <div class="field"><label>副标题</label><input class="inp" name="site_subtitle" id="s-site_subtitle"></div>
+        <div class="field"><label>作者署名（页脚与文章署名）</label><input class="inp" name="author_name" id="s-author_name"></div>
+        <div class="field"><label>SEO 描述</label><input class="inp" name="seo_desc" id="s-seo_desc" placeholder="用于搜索引擎摘要"></div>
+        <div class="field"><label>主题色</label><input class="inp" type="color" name="accent" id="s-accent" style="width:120px;height:40px;padding:4px"></div>
+        <div class="field"><label>每页文章数</label><input class="inp" type="number" min="1" max="20" name="per_page" id="s-per_page" style="width:120px"></div>
+        <div class="field"><label>页脚自定义文字（可留空，支持换行）</label><textarea class="txa" name="footer_text" id="s-footer_text"></textarea></div>
+        <div class="field"><label>ICP 备案号（可选，如 苏ICP备xxxxxxxx号）</label><input class="inp" name="beian" id="s-beian" placeholder="填写后显示在页脚并链接工信部官网；留空则不显示"></div>
       </div>
+      <div>
+        <div class="card">
+          <div class="sec-title">站点图标 <small>页头 Logo 与浏览器标签图标（favicon）</small></div>
+          <div class="field">
+            <label>页头 Logo（建议高度 ≥ 72px 的 PNG / WebP，透明底更佳）</label>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span id="logo-prev" style="width:38px;height:38px;border-radius:9px;background:var(--accent);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
+              <input class="inp" id="s-logo_image" placeholder="留空则使用默认：站点名称首字方块" style="flex:1;min-width:190px">
+              <label class="btn" style="cursor:pointer;margin:0">上传<input type="file" id="logo-file" accept="image/*" hidden></label>
+              <button class="btn" type="button" id="logo-clear">清除</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>浏览器标签图标 Favicon（建议正方形，≥ 64×64）</label>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span id="fav-prev" style="width:38px;height:38px;border-radius:9px;background:var(--accent);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
+              <input class="inp" id="s-favicon_image" placeholder="留空则自动沿用 Logo，再无则用默认首字图标" style="flex:1;min-width:190px">
+              <label class="btn" style="cursor:pointer;margin:0">上传<input type="file" id="fav-file" accept="image/*" hidden></label>
+              <button class="btn" type="button" id="fav-clear">清除</button>
+            </div>
+          </div>
+          <p class="hint" style="margin-bottom:0">上传的图片存入 R2，地址会自动填入左侧输入框，<b>需点下方「保存全部设置」才生效</b>。两者都留空时，页头与标签页图标会显示默认的首字方块（改站点名称或主题色会自动跟随）。</p>
+        </div>
+        <div class="card">
+          <div class="sec-title">对外订阅与收录</div>
+          <p class="hint" style="margin-top:0">发布文章后以下地址自动更新，无需任何操作：</p>
+          <div class="field"><label>RSS 订阅</label><input class="inp" readonly value="${esc(location.origin)}/rss.xml" onfocus="this.select()"></div>
+          <div class="field"><label>站点地图（提交给搜索引擎）</label><input class="inp" readonly value="${esc(location.origin)}/sitemap.xml" onfocus="this.select()"></div>
+          <div class="field"><label>站点主页</label><input class="inp" readonly value="${esc(location.origin)}" onfocus="this.select()"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="set-pane" data-pane="post">
+    <div class="card">
+      <div class="sec-title">代码高亮 <small>文章正文里的代码块配色</small></div>
+      <div class="field"><label>代码高亮配色</label>
+        <select class="inp" id="s-code_theme">
+          <option value="github">GitHub 浅色（默认，与 WordPress / Typecho 观感一致）</option>
+          <option value="github-dark">GitHub 深色</option>
+          <option value="atom-one-light">Atom One Light 浅色</option>
+          <option value="atom-one-dark">Atom One Dark 深色</option>
+          <option value="xcode">Xcode 浅色</option>
+          <option value="monokai">Monokai 深色</option>
+          <option value="vs2015">Visual Studio 深色</option>
+        </select>
+      </div>
+      <p class="hint" style="margin-bottom:0">切换配色<b>立即对所有文章生效</b>，已发布的文章无需重新编辑保存。代码块输出标准 &lt;pre&gt;&lt;code class="language-x"&gt; 结构，从 WordPress / Typecho 迁移过来的文章可直接正常显示。支持 21 种语言，在代码块开头写语言名即可（如 \`\`\`js）。</p>
+    </div>
+  </div>
+
+  <div class="set-pane" data-pane="comment">
+    <div class="grid2">
       <div class="card">
         <div class="sec-title">评论设置</div>
         <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><input type="checkbox" id="s-allow"> 允许读者发表评论</label>
@@ -974,19 +1161,8 @@ async function viewSettings() {
         <p class="hint" style="margin-bottom:0">评论内置在系统内，无需外挂 Disqus / Waline。读者邮箱为必填（用于显示头像，不会公开），后台可直接审核、回复与删除。</p>
       </div>
       <div class="card">
-        <div class="sec-title">代码高亮与评论头像</div>
-        <div class="field"><label>代码高亮配色</label>
-          <select class="inp" id="s-code_theme">
-            <option value="github">GitHub 浅色（默认，与 WordPress / Typecho 观感一致）</option>
-            <option value="github-dark">GitHub 深色</option>
-            <option value="atom-one-light">Atom One Light 浅色</option>
-            <option value="atom-one-dark">Atom One Dark 深色</option>
-            <option value="xcode">Xcode 浅色</option>
-            <option value="monokai">Monokai 深色</option>
-            <option value="vs2015">Visual Studio 深色</option>
-          </select>
-        </div>
-        <div class="field"><label>评论头像源（Gravatar）</label>
+        <div class="sec-title">评论头像 <small>Gravatar 全球通用头像</small></div>
+        <div class="field"><label>头像源</label>
           <select class="inp" id="s-gravatar_source">
             <option value="weavatar">WeAvatar 国内镜像（推荐，国内最快）</option>
             <option value="cravatar">Cravatar 国内镜像（文派）</option>
@@ -995,34 +1171,41 @@ async function viewSettings() {
             <option value="secure">Gravatar 官方 secure 源</option>
           </select>
         </div>
-        <p class="hint" style="margin-bottom:0">头像按邮箱 MD5 取值，邮箱原文不会出现在页面上。代码块输出标准 &lt;pre&gt;&lt;code class="language-x"&gt; 结构，从 WordPress / Typecho 迁过来的文章可直接正常显示。</p>
-      </div>
-      <div class="card">
-        <div class="sec-title">对外订阅与收录</div>
-        <p class="hint" style="margin-top:0">发布文章后以下地址自动更新，无需任何操作：</p>
-        <div class="field"><label>RSS 订阅</label><input class="inp" readonly value="${esc(location.origin)}/rss.xml" onfocus="this.select()"></div>
-        <div class="field"><label>站点地图（提交给搜索引擎）</label><input class="inp" readonly value="${esc(location.origin)}/sitemap.xml" onfocus="this.select()"></div>
-        <div class="field"><label>站点主页</label><input class="inp" readonly value="${esc(location.origin)}" onfocus="this.select()"></div>
-      </div>
-      <div class="card">
-        <div class="sec-title">修改登录密码</div>
-        <div style="display:flex;gap:10px">
-          <div class="field" style="flex:1"><label>新密码（留空则不修改）</label><input class="inp" type="password" name="new_password" id="s-pw" autocomplete="new-password"></div>
-          <div class="field" style="flex:1"><label>确认新密码</label><input class="inp" type="password" id="s-pw2" autocomplete="new-password"></div>
-        </div>
+        <p class="hint" style="margin-bottom:0">头像按邮箱 MD5 取值，<b>邮箱原文不会出现在页面上</b>，也不随接口下发给前台。若某个源取不到头像，会自动回退显示昵称首字方块。国内访问建议用 WeAvatar 或 Cravatar 镜像。</p>
       </div>
     </div>
   </div>
+
+  <div class="set-pane" data-pane="security">
+    <div class="card">
+      <div class="sec-title">修改登录密码</div>
+      <div style="display:flex;gap:10px">
+        <div class="field" style="flex:1"><label>新密码（留空则不修改，至少 6 位）</label><input class="inp" type="password" name="new_password" id="s-pw" autocomplete="new-password"></div>
+        <div class="field" style="flex:1"><label>确认新密码</label><input class="inp" type="password" id="s-pw2" autocomplete="new-password"></div>
+      </div>
+      <p class="hint" style="margin-bottom:0">密码以 <b>PBKDF2 加盐哈希</b> 存储（10 万次迭代），系统不保存明文，遗忘只能重置数据库里的管理员记录。建议定期更换、避免与其他网站相同。</p>
+    </div>
+  </div>
+
   <div class="card"><button class="btn p" type="submit">保存全部设置</button>
-    <span class="hint" style="margin-left:10px">设置即时生效：前台主题、订阅地址与页面内容将同步更新。</span></div>
+    <span class="hint" style="margin-left:10px">四个标签页的设置会一起保存；设置即时生效，前台主题、订阅地址与页面内容将同步更新。</span></div>
   </form>`);
   const v = view();
-  const data = await (async () => {
-    // 读取设置由 PATCH 不返回，这里直接读取 /api/posts 拿不到 settings —— 改用隐藏接口读取
-    return null;
-  })();
-  void data; void all;
-  // 通过独立的 settings GET 接口不可用；从已知端点补充：复用 dump? 简化：这里调用一个轻量只读接口
+
+  // ---- 标签页切换：只切显示，不销毁 DOM，未保存的输入不会丢 ----
+  const tabsEl = v.querySelector('#set-tabs');
+  const showTab = (k, syncUrl) => {
+    v.querySelectorAll('.set-pane').forEach((p) => { p.hidden = p.dataset.pane !== k; });
+    tabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === k));
+    // 用 replaceState 而非改 location.hash：后者会触发 hashchange 重新渲染整个页面
+    if (syncUrl) history.replaceState(null, '', '#/settings/' + k);
+  };
+  tabsEl.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-t]');
+    if (b) showTab(b.dataset.t, true);
+  });
+  showTab(curTab, false);
+
   const sRaw = await fetch('/api/settings/read', { credentials: 'same-origin' });
   const s = sRaw.ok ? await sRaw.json() : {};
   const set = (id, val) => { const e = v.querySelector('#' + id); if (e && val != null) e.value = val; };
@@ -1078,6 +1261,8 @@ async function viewSettings() {
     const pw = v.querySelector('#s-pw').value;
     const pw2 = v.querySelector('#s-pw2').value;
     if (pw !== pw2) { toast('两次输入的新密码不一致', 'bad'); return; }
+    // 后端要求 ≥6 位、不足会静默忽略，必须在前端拦住，否则会误以为改成功了
+    if (pw && pw.length < 6) { toast('新密码至少 6 位', 'bad'); return; }
     const body = {
       site_title: v.querySelector('#s-site_title').value,
       site_subtitle: v.querySelector('#s-site_subtitle').value,
@@ -1120,11 +1305,12 @@ async function router() {
     if (seg[0] === 'posts' && seg[1] === 'new') { await viewEditor(null); return; }
     if (seg[0] === 'posts' && /^\d+$/.test(seg[1] || '')) { await viewEditor(parseInt(seg[1], 10)); return; }
     if (seg[0] === 'comments') { await viewComments(); return; }
+    if (seg[0] === 'links') { await viewLinks(); return; }
     if (seg[0] === 'categories') { await viewCategories(); return; }
     if (seg[0] === 'media') { await viewMedia(); return; }
     if (seg[0] === 'themes') { await viewThemes(); return; }
     if (seg[0] === 'backup') { await viewBackup(); return; }
-    if (seg[0] === 'settings') { await viewSettings(); return; }
+    if (seg[0] === 'settings') { await viewSettings(seg[1]); return; }
     if (seg[0] === 'logout') { await logout(); return; }
     go('#/dashboard');
   } catch (e) {

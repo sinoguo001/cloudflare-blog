@@ -185,6 +185,24 @@ img{max-width:100%}
 .cat-card h3 a{color:var(--text)}
 .cat-card p{margin:0;color:var(--muted);font-size:13.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .cat-card .cnt{color:var(--accent);font-size:12.5px;display:block;margin-top:8px}
+/* 友情链接 */
+.link-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-top:14px}
+.link-card{display:flex;gap:12px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.link-card:hover{border-color:var(--accent);text-decoration:none}
+.link-logo{width:40px;height:40px;flex:none;border-radius:10px;background:var(--accent-soft);color:var(--accent);display:inline-flex;align-items:center;justify-content:center;font-weight:800;overflow:hidden}
+.link-logo img{width:100%;height:100%;object-fit:contain}
+.link-body{display:flex;flex-direction:column;min-width:0}
+.link-body b{font-size:15px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.link-body small{color:var(--muted);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.link-form{margin-top:8px}
+.link-form .field{margin-bottom:12px}
+.link-form label{display:block;font-size:13px;color:var(--muted);margin-bottom:5px}
+.lf-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.lf-hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+.btn-p{background:var(--accent);color:#fff;border:0;border-radius:9px;padding:9px 20px;font-size:14px;cursor:pointer}
+.btn-p:hover{filter:brightness(1.06)}
+.btn-p:disabled{opacity:.6;cursor:default}
+@media(max-width:640px){.lf-row{grid-template-columns:1fr}}
 .empty{background:var(--card);border:1px dashed var(--line);border-radius:12px;padding:34px;text-align:center;color:var(--muted);margin-top:18px}
 /* 页脚 */
 .ft{border-top:1px solid var(--line);background:var(--card);color:var(--muted);font-size:13.5px;padding:20px 0;text-align:center}
@@ -261,6 +279,7 @@ ${themeLink(s)}
     ${nav('/categories', '分类', 'cat')}
     ${nav('/tags', '标签', 'tags')}
     ${nav('/archive', '归档', 'arc')}
+    ${nav('/links', '友链', 'links')}
     ${nav('/rss.xml', 'RSS', 'rss')}
   </nav>
   <form class="hd-search" action="/search" method="get"><input name="q" placeholder="搜索文章…" value="${o.q ? esc(o.q) : ''}"></form>
@@ -472,6 +491,67 @@ export function renderTags(s, list) {
   });
 }
 
+// ---------- 友情链接 ----------
+// 只展示 status='approved' 的条目；右侧是读者申请表单（提交后由后台审核）。
+// 申请接口是公开的，靠蜜罐 + 算术验证码 + 同 IP 频控防刷（见 [[path]].js 的 /api/link-apply）。
+function linkCard(l) {
+  const ch = (String(l.name || '').trim()[0] || '?').toUpperCase();
+  // 站点图标：填了 logo 用图片，否则用名称首字方块，与页头标识同款处理
+  const logo = l.logo
+    ? `<img src="${esc(l.logo)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+    : esc(ch);
+  return `<a class="link-card" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">
+    <span class="link-logo">${logo}</span>
+    <span class="link-body"><b>${esc(l.name)}</b>
+      <small>${esc(l.description || l.url)}</small></span>
+  </a>`;
+}
+export function renderLinks(s, { links = [], captcha = true } = {}) {
+  const grid = links.length
+    ? `<div class="link-grid">${links.map(linkCard).join('')}</div>`
+    : '<p style="color:var(--muted)">还没有友情链接，欢迎在下方申请互换。</p>';
+  const capHtml = captcha
+    ? `<div class="field lf-cap">
+         <label>验证码</label>
+         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+           <input class="inp" name="captcha" id="lk-captcha" placeholder="请输入下图结果" autocomplete="off" style="flex:1;min-width:120px">
+           <img id="lk-capimg" src="/api/captcha" alt="验证码" title="点击换一张"
+                style="height:40px;border-radius:8px;border:1px solid var(--line);cursor:pointer;background:#fff">
+         </div>
+       </div>` : '';
+  return layout(s, {
+    title: '友情链接', active: 'links',
+    desc: `${String(s.get('site_title') || '').trim()} 的友情链接`,
+    content: `<section class="article">
+      <h1 style="margin:0 0 6px">友情链接</h1>
+      <p style="color:var(--muted);margin:0 0 18px">共 ${links.length} 个站点 · 想互换友链？在页面底部提交申请即可。</p>
+      ${grid}
+
+      <h2 style="margin:32px 0 6px;font-size:19px">申请添加友链</h2>
+      <p style="color:var(--muted);margin:0 0 14px">提交后由站长审核，通过后会展示在上面。请确保你的站点可以正常访问。</p>
+      <form class="link-form" id="lk-form">
+        <div class="lf-row">
+          <div class="field"><label>站点名称 *</label><input class="inp" name="name" maxlength="40" required placeholder="例如：云尚博客"></div>
+          <div class="field"><label>站点地址 *</label><input class="inp" name="url" maxlength="300" required placeholder="https://example.com"></div>
+        </div>
+        <div class="field"><label>一句话简介</label><input class="inp" name="description" maxlength="120" placeholder="选填，展示在名称下方"></div>
+        <div class="lf-row">
+          <div class="field"><label>图标地址</label><input class="inp" name="logo" maxlength="300" placeholder="选填，正方形图片地址"></div>
+          <div class="field"><label>联系方式</label><input class="inp" name="contact" maxlength="80" placeholder="选填，仅站长可见"></div>
+        </div>
+        <div class="field"><label>申请留言</label><textarea class="txa" name="reason" maxlength="300" placeholder="选填，仅站长可见"></textarea></div>
+        <!-- 蜜罐字段：正常用户看不到也不会填，机器人填了就静默丢弃 -->
+        <div class="lf-hp" aria-hidden="true"><label>公司名称</label><input class="inp" name="company" tabindex="-1" autocomplete="off"></div>
+        ${capHtml}
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <button class="btn-p" type="submit" id="lk-submit">提交申请</button>
+          <span class="hint" id="lk-msg"></span>
+        </div>
+      </form>
+    </section>`,
+  });
+}
+
 export function render404(s) {
   return layout(s || new Map(), {
     content: `<section class="empty" style="margin-top:60px"><h1 style="font-size:40px">404</h1><p>页面不存在或已被删除。</p><a href="/">← 返回首页</a></section>`,
@@ -645,7 +725,7 @@ ${items}
 
 export async function sitemapXml(env, s, origin) {
   const u = (loc, lastmod) => `  <url><loc>${origin}${esc(loc)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ''}</url>`;
-  const rows = [u('/', ''), u('/archive', ''), u('/categories', ''), u('/tags', '')];
+  const rows = [u('/', ''), u('/archive', ''), u('/categories', ''), u('/tags', ''), u('/links', '')];
   const cats = await db.listCategories(env.DB);
   for (const c of cats) rows.push(u('/category/' + esc(c.slug), ''));
   const tags = await db.listTags(env.DB);

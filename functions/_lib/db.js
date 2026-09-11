@@ -355,6 +355,90 @@ export async function pvSummary(db, days = 7) {
   };
 }
 
+// ---------- 友情链接 ----------
+// 表结构与 migrations/0004_links.sql 一致，首次读写时自动建立，无需手工跑迁移。
+export const LINK_STATUS = ['pending', 'approved', 'rejected'];
+const LINK_DDL = `CREATE TABLE IF NOT EXISTS links(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL, url TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '', logo TEXT NOT NULL DEFAULT '',
+  contact TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
+  sort INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',
+  source TEXT NOT NULL DEFAULT 'admin', ip TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`;
+
+let linkReady = false;
+export async function ensureLinkTable(db) {
+  if (linkReady) return;
+  await db.prepare(LINK_DDL).run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_links_status ON links(status, sort, id DESC)').run();
+  linkReady = true;
+}
+
+const LINK_COLS = 'id,name,url,description,logo,contact,reason,sort,status,source,created_at,updated_at';
+export async function listLinks(db, { status = 'approved' } = {}) {
+  await ensureLinkTable(db);
+  const st = status && status !== 'all'
+    ? db.prepare(`SELECT ${LINK_COLS} FROM links WHERE status=? ORDER BY sort ASC, id DESC`).bind(status)
+    : db.prepare(`SELECT ${LINK_COLS} FROM links ORDER BY sort ASC, id DESC`);
+  const r = await st.all();
+  return r.results || [];
+}
+export async function countLinksByStatus(db) {
+  await ensureLinkTable(db);
+  const r = await db.prepare(`SELECT status, COUNT(*) n FROM links GROUP BY status`).all();
+  const out = { pending: 0, approved: 0, rejected: 0 };
+  ((r && r.results) || []).forEach((x) => { if (x.status in out) out[x.status] = x.n; });
+  return out;
+}
+export async function getLink(db, id) {
+  await ensureLinkTable(db);
+  return db.prepare(`SELECT ${LINK_COLS} FROM links WHERE id=?`).bind(id).first();
+}
+// 同网址重复申请/重复添加要挡住（忽略协议与末尾斜杠差异）
+export async function findLinkByUrl(db, url) {
+  await ensureLinkTable(db);
+  const norm = String(url || '').trim().replace(/\/+$/, '');
+  const r = await db.prepare(`SELECT ${LINK_COLS} FROM links`).all();
+  return ((r && r.results) || []).find((x) => String(x.url).trim().replace(/\/+$/, '') === norm) || null;
+}
+export async function addLink(db, d) {
+  await ensureLinkTable(db);
+  const now = bnNow();
+  const r = await db.prepare(
+    `INSERT INTO links(name,url,description,logo,contact,reason,sort,status,source,ip,created_at,updated_at)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    d.name, d.url, d.description || '', d.logo || '', d.contact || '', d.reason || '',
+    d.sort || 0, d.status || 'pending', d.source || 'admin', d.ip || '', now, now,
+  ).run();
+  // D1 与本地 SQLite 返回自增 id 的位置不一致，两种都取一遍
+  return (r && r.meta && r.meta.last_row_id) || (r && r.lastInsertRowid) || 0;
+}
+export async function updateLink(db, id, patch) {
+  await ensureLinkTable(db);
+  const allow = ['name', 'url', 'description', 'logo', 'contact', 'reason', 'sort', 'status'];
+  const keys = Object.keys(patch || {}).filter((k) => allow.includes(k));
+  if (!keys.length) return 0;
+  // status 走白名单，避免把非法值写进去
+  if (keys.includes('status') && !LINK_STATUS.includes(patch.status)) return 0;
+  const sql = `UPDATE links SET ${keys.map((k) => `${k}=?`).join(',')}, updated_at=? WHERE id=?`;
+  const vals = keys.map((k) => patch[k]);
+  await db.prepare(sql).bind(...vals, bnNow(), id).run();
+  return 1;
+}
+export async function deleteLink(db, id) {
+  await ensureLinkTable(db);
+  await db.prepare('DELETE FROM links WHERE id=?').bind(id).run();
+}
+export async function recentLinkApplies(db, ip, seconds = 3600) {
+  await ensureLinkTable(db);
+  const cutoff = new Date(Date.now() + 8 * 3600e3 - seconds * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  const r = await db.prepare(`SELECT COUNT(*) n FROM links WHERE source='apply' AND ip=? AND created_at>?`)
+    .bind(ip || '-', cutoff).first();
+  return r ? r.n : 0;
+}
+
 // ---------- 归档 / 全量导出（备份用） ----------
 export async function archivePosts(db) {
   const r = await db.prepare(
@@ -373,15 +457,17 @@ export async function dumpAll(db) {
     comments: await g('SELECT * FROM comments'),
     // 访问统计只备份按天汇总（pv_daily），访客明细 pv_visitor 是去重用的临时数据，不进备份
     pv_daily: await g('SELECT * FROM pv_daily').catch(() => []),
+    links: await g('SELECT * FROM links').catch(() => []),
   };
 }
 // 恢复：先清空再按原 id 回填（自动续接自增序列）
 export async function restoreAll(db, data) {
   // 访问统计表可能还没建（老库），先确保存在再清空，否则 DELETE 会报 no such table
   await ensurePvTables(db).catch(() => {});
+  await ensureLinkTable(db).catch(() => {});
   const clear = [
     'DELETE FROM post_tags', 'DELETE FROM comments', 'DELETE FROM posts',
-    'DELETE FROM categories', 'DELETE FROM tags', 'DELETE FROM pv_daily',
+    'DELETE FROM categories', 'DELETE FROM tags', 'DELETE FROM pv_daily', 'DELETE FROM links',
     "DELETE FROM settings WHERE key NOT IN ('admin_username','admin_pass_salt','admin_pass_hash','admin_pass_iter')",
   ];
   const stmts = clear.map((s) => db.prepare(s));
@@ -400,6 +486,7 @@ export async function restoreAll(db, data) {
   if (data.post_tags) await run(data.post_tags, 'post_tags');
   if (data.comments) await run(data.comments, 'comments');
   if (data.pv_daily) await run(data.pv_daily, 'pv_daily');
+  if (data.links) await run(data.links, 'links');
   for (let i = 0; i < chunk.length; i += 40) await db.batch(chunk.slice(i, i + 40));
   return chunk.length;
 }

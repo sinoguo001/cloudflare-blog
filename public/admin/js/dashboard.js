@@ -37,7 +37,7 @@ const statCard = (label, num, sub, tone) => `
     <div class="dstat-s">${sub}</div>
   </div>`;
 
-function countsHtml(c, pv) {
+function countsHtml(c, pv, lk) {
   const hasPv = !!(pv && pv.trend);
   const avgView = c.published ? Math.round((c.views || 0) / c.published) : 0;
   const avgWord = c.posts ? Math.round((c.words || 0) / c.posts) : 0;
@@ -59,6 +59,7 @@ function countsHtml(c, pv) {
     <span>本月新增文章 <b>${fmtNum(c.month_posts)}</b></span>
     <span>本月新增评论 <b>${fmtNum(c.month_comments)}</b></span>
     <span>草稿 <b>${fmtNum(c.drafts)}</b></span>
+    <span>友链 <b>${fmtNum((lk && lk.approved) || 0)}</b>${(lk && lk.pending) ? `（<a href="#/links">${fmtNum(lk.pending)} 条待处理</a>）` : ''}</span>
     ${hasPv
       ? `<span>累计访客 <b>${fmtNum(pv.total_uv)}</b></span><span>文章阅读合计 <b>${fmtNum(c.views)}</b></span>`
       : ''}
@@ -90,6 +91,25 @@ function trendHtml(pv) {
     <div class="hint">今日 ${fmtNum(pv.today_pv)} PV · ${fmtNum(pv.today_uv)} UV · 累计 ${fmtNum(pv.total_pv)} PV</div>
   </div>`;
 }
+
+// 只放行 http(s)：这些地址要写进 href，挡掉 javascript: 等伪协议
+const safeUrl = (u) => (/^https?:\/\/\S+$/i.test(String(u || '').trim()) ? String(u).trim() : '');
+const linkPendingItem = (l) => {
+  const url = safeUrl(l.url);
+  return `
+  <div class="dc-item">
+    <div class="dc-h">
+      <b>${esc(l.name)}</b>
+      ${url ? `<a class="hint" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)} ↗</a>` : ''}
+      <span class="hint">${ago(l.created_at)}</span>
+    </div>
+    <div class="dc-body">${esc(clip(l.description || l.reason || '', 80))}${l.contact ? ` · 联系 ${esc(l.contact)}` : ''}</div>
+    <div class="dc-ops">
+      <button class="btn sm ok" data-lk="app" data-id="${l.id}">通过</button>
+      <button class="btn sm g" data-lk="rej" data-id="${l.id}">拒绝</button>
+    </div>
+  </div>`;
+};
 
 const commentItem = (c) => `
   <div class="dc-item">
@@ -149,6 +169,18 @@ export function dashboardHtml(d, username) {
       </div>`
     : `<div class="card dash-calm">暂无待审核评论，评论区很干净。</div>`;
 
+  // 友链申请提醒：有待审才出现，没有就完全不占位——没申请时不该挂着空提示
+  const lk = d.links || { pending: 0, approved: 0, pending_list: [] };
+  const lkList = lk.pending_list || [];
+  const linkBox = lk.pending
+    ? `<div class="card dash-warn dash-warn-link">
+        <div class="dash-warn-h">
+          <b>有 ${lk.pending} 条友链申请待处理${lk.pending > lkList.length ? `（仅显示最近 ${lkList.length} 条）` : ''}</b>
+          <a class="btn sm g" href="#/links">去友链管理 →</a>
+        </div>
+        ${lkList.map(linkPendingItem).join('')}
+      </div>` : '';
+
   return `
   <div class="page-head">
     <h1>仪表盘</h1>
@@ -159,9 +191,10 @@ export function dashboardHtml(d, username) {
     </div>
   </div>
 
-  ${countsHtml(c, d.pv)}
+  ${countsHtml(c, d.pv, lk)}
   ${trendHtml(d.pv)}
   ${pendBox}
+  ${linkBox}
 
   <div class="grid2">
     <div>
@@ -224,6 +257,24 @@ export function bindDashboard(root, reload) {
           if (!(await confirmDanger('彻底删除该评论？此操作不可恢复。', '删除评论'))) return;
           await API.del('/comments/' + id);
           toast('已删除');
+        }
+        if (reload) await reload();
+      } catch (e) { toast(e.message, 'bad'); }
+    });
+  });
+
+  // 友链申请：在仪表盘直接通过 / 拒绝，不用先跳去友链页
+  root.querySelectorAll('button[data-lk]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const o = btn.dataset.lk;
+      try {
+        if (o === 'app') {
+          await API.patch('/links/' + id, { status: 'approved' });
+          toast('已通过，前台已展示');
+        } else if (o === 'rej') {
+          await API.patch('/links/' + id, { status: 'rejected' });
+          toast('已拒绝');
         }
         if (reload) await reload();
       } catch (e) { toast(e.message, 'bad'); }
