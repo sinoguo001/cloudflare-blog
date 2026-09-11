@@ -199,12 +199,15 @@ export async function createCategory(db, { name, slug, description }) {
   const finalSlug = await uniqueSlug(db, 'categories', slugify(slug || name) || ('cat-' + Date.now() % 1000000));
   const r = await db.prepare('INSERT INTO categories(name,slug,description,created_at) VALUES(?,?,?,?)')
     .bind(name, finalSlug, description || '', t).run();
-  return r.meta.last_row_id;
+  return { id: r.meta.last_row_id, slug: finalSlug };
 }
 export async function updateCategory(db, id, { name, slug, description }) {
-  const finalSlug = await uniqueSlug(db, 'categories', slugify(slug || name) || ('cat-' + Date.now() % 1000000));
+  // 必须传 excludeId=id：否则保存时自己的 slug 会被判成重名，别名被追加成 xxx-2，旧链接全部失效
+  const finalSlug = await uniqueSlug(db, 'categories', slugify(slug || name) || ('cat-' + Date.now() % 1000000), id);
   await db.prepare('UPDATE categories SET name=?,slug=?,description=? WHERE id=?')
     .bind(name, finalSlug, description || '', id).run();
+  // 回传最终别名：与提交值不同说明被别的分类占了，接口据此提示用户
+  return finalSlug;
 }
 export async function deleteCategory(db, id) {
   await db.prepare('UPDATE posts SET category_id=NULL WHERE category_id=?').bind(id).run();

@@ -207,3 +207,10 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .dash-warn-link{border-color:#fed7aa;background:#fffcf6}
 .dash-warn-link .dash-warn-h b{color:#b45309}
 .dash-mini a{color:inherit;text-decoration:underline}
+
+/* 分类自定义别名（slug） */
+.cat-add-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.cat-add-row .inp{flex:1 1 150px;min-width:0}
+.cat-add-row .btn{flex:none}
+.cat-tip{margin:0 0 12px}
+.cat-slug{color:var(--ac);font-family:ui-monospace,Consolas,Menlo,monospace;font-size:12.5px}

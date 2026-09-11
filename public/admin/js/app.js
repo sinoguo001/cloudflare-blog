@@ -682,9 +682,14 @@ async function viewCategories() {
   <div class="grid2">
     <div class="card">
       <div class="sec-title">分类 <small>文章分类（一篇文章一个分类）</small></div>
-      <form id="cat-add" style="display:flex;gap:8px;margin-bottom:12px">
-        <input class="inp" name="name" placeholder="新分类名称" required style="flex:1">
-        <button class="btn p" type="submit">新建</button>
+      <form id="cat-add">
+        <div class="cat-add-row">
+          <input class="inp" name="name" id="cat-new-name" placeholder="新分类名称，如：技术笔记" required>
+          <input class="inp" name="slug" id="cat-new-slug" placeholder="别名（选填），如 tech-notes">
+          <button class="btn p" type="submit">新建</button>
+        </div>
+        <div class="hint cat-tip">访问地址 <b id="cat-new-prev">/category/…</b> · 别名只能用小写英文字母、数字和 -；
+          中文名称请手动填一个英文别名，留空会自动生成一串随机字符，不利于收录。</div>
       </form>
       <div id="cat-list"></div>
     </div>
@@ -696,7 +701,7 @@ async function viewCategories() {
   const renderCats = (list) => {
     view().querySelector('#cat-list').innerHTML = !list.length ? '<div class="empty-note">还没有分类</div>' :
       `<div class="tbl-w"><table class="tbl"><thead><tr><th>名称</th><th>文章数</th><th>操作</th></tr></thead><tbody>${
-      list.map((c) => `<tr><td><b>${esc(c.name)}</b><div class="cell-sub">/${esc(c.slug)} ${c.description ? '· ' + esc(c.description) : ''}</div></td>
+      list.map((c) => `<tr><td><b>${esc(c.name)}</b><div class="cell-sub"><a class="cat-slug" href="/category/${esc(c.slug)}" target="_blank" rel="noopener" title="在前台打开">/category/${esc(c.slug)} ↗</a>${c.description ? ' · ' + esc(c.description) : ''}</div></td>
         <td>${c.count}</td><td><button class="btn sm" data-i="${c.id}" data-n="${esc(c.name)}" data-s="${esc(c.slug)}" data-d="${esc(c.description)}" data-cat="1">编辑</button>
         <button class="btn sm d" data-del-cat="${c.id}" data-n="${esc(c.name)}">删除</button></td></tr>`).join('')}
       </tbody></table></div>`;
@@ -709,16 +714,36 @@ async function viewCategories() {
       </tbody></table></div>`;
   };
   renderCats(cats); renderTags(tags);
+  // 别名合法性：只允许小写英文/数字/-（与后端 /api/categories 的校验一致）
+  const SLUG_RE = /^[a-zA-Z0-9-]+$/;
+  const slugifyUi = (s) => String(s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const newName = view().querySelector('#cat-new-name');
+  const newSlug = view().querySelector('#cat-new-slug');
+  const newPrev = view().querySelector('#cat-new-prev');
+  const syncNewPrev = () => { newPrev.textContent = '/category/' + (slugifyUi(newSlug.value) || '…'); };
+  // 名称是纯英文时自动带出别名，省得手打；中文则不动，等用户自己填
+  newName.addEventListener('input', () => {
+    if (newSlug.value) { syncNewPrev(); return; }
+    const auto = slugifyUi(newName.value);
+    if (auto && /^[\x00-\x7F]+$/.test(newName.value)) { newSlug.value = auto; }
+    syncNewPrev();
+  });
+  newSlug.addEventListener('input', syncNewPrev);
+  syncNewPrev();
+
   view().querySelector('#cat-add').addEventListener('submit', async (ev) => {
     ev.preventDefault();
-    const name = new FormData(ev.target).get('name').trim();
-    if (!name) return;
+    const name = newName.value.trim();
+    if (!name) { toast('请输入分类名称', 'bad'); return; }
+    const slug = newSlug.value.trim();
+    if (slug && !SLUG_RE.test(slug)) { toast('别名只能用英文字母、数字和连字符 -', 'bad'); newSlug.focus(); return; }
     try {
-      await API.post('/categories', { name, description: '' });
-      toast('分类已创建');
-      const list = await API.get('/categories');
-      renderCats(list);
-      ev.target.reset();
+      const r = await API.post('/categories', { name, slug, description: '' });
+      toast(r.slug && !slug && /^cat-\d+$/.test(r.slug)
+        ? `分类已创建，但未填别名，系统自动生成了 ${r.slug}，建议编辑改成可读的英文别名`
+        : '分类已创建');
+      renderCats(await API.get('/categories'));
+      newName.value = ''; newSlug.value = ''; syncNewPrev();
     } catch (e) { toast(e.message, 'bad'); }
   });
   view().querySelector('#cat-list').addEventListener('click', async (ev) => {
@@ -731,24 +756,44 @@ async function viewCategories() {
     }
     const eb = ev.target.closest('button[data-cat]');
     if (!eb) return;
-    const res = await dialog({
+    const oldSlug = eb.dataset.s || '';
+    let payload = null;
+    const dlgP = dialog({
       title: '编辑分类',
       bodyHtml: `<div class="field"><label>名称</label><input class="inp" id="cn" value="${eb.dataset.n}"></div>
-        <div class="field"><label>别名（URL 用英文数字 -；改动后旧链接失效）</label><input class="inp" id="cs" value="${eb.dataset.s}"></div>
-        <div class="field"><label>描述</label><textarea class="txa" id="cd" style="min-height:70px">${eb.dataset.d}</textarea></div>`,
+        <div class="field"><label>别名（网址用）</label><input class="inp" id="cs" value="${eb.dataset.s}" placeholder="如 tech-notes">
+          <div class="hint" style="margin:6px 0 0">访问地址 <b id="cs-prev">/category/${esc(oldSlug)}</b></div>
+        </div>
+        <div class="field"><label>描述</label><textarea class="txa" id="cd" style="min-height:70px">${eb.dataset.d}</textarea></div>
+        <div class="hint" style="margin-bottom:0">别名只能用小写英文字母、数字和 -。
+          <b>改了之后旧地址 /category/${esc(oldSlug)} 会失效</b>，已被搜索引擎收录的链接需要重新收录。</div>`,
       actions: [{ val: 'ok', label: '保存', cls: 'p' }, { val: 'cancel', label: '取消', cls: 'g' }],
       onSubmit: (body) => {
+        // 值必须在这里取：dialog 关闭时会先把节点移除，关闭后再取就只剩空串
         const n = body.querySelector('#cn').value.trim();
-        if (!n) return false;
+        if (!n) { toast('请输入分类名称', 'bad'); return false; }
+        const s = body.querySelector('#cs').value.trim();
+        if (s && !SLUG_RE.test(s)) { toast('别名只能用英文字母、数字和连字符 -', 'bad'); return false; }
+        payload = { name: n, slug: s, description: body.querySelector('#cd').value.trim() };
+        return true;
       },
     });
-    if (res !== 'ok') return;
-    const root = document.getElementById('modal-root');
-    const mask = root.querySelector('.mask:last-of-type');
-    const g = (id) => mask ? mask.querySelector('#' + id).value.trim() : '';
+    // dialog 内部是同步插入 DOM 的，趁 Promise 还没 resolve 把实时预览绑上
+    const maskEl = document.getElementById('modal-root');
+    const dlgEl = maskEl ? maskEl.querySelector('.mask:last-of-type') : null;
+    if (dlgEl) {
+      const csEl = dlgEl.querySelector('#cs');
+      const prevEl = dlgEl.querySelector('#cs-prev');
+      if (csEl && prevEl) {
+        csEl.addEventListener('input', () => { prevEl.textContent = '/category/' + (slugifyUi(csEl.value) || '…'); });
+      }
+    }
+    const res = await dlgP;
+    if (res !== 'ok' || !payload) return;
     try {
-      await API.put('/categories/' + eb.dataset.i, { name: g('cn'), slug: g('cs'), description: g('cd') });
-      toast('已保存');
+      const r = await API.put('/categories/' + eb.dataset.i, payload);
+      if (r && r.slug && payload.slug && r.slug !== payload.slug) toast(`别名 ${payload.slug} 已被占用，已自动改为 ${r.slug}`, 'bad');
+      else toast('已保存');
       renderCats(await API.get('/categories'));
     } catch (e) { toast(e.message, 'bad'); }
   });

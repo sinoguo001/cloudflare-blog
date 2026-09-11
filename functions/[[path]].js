@@ -760,8 +760,12 @@ async function api(ctx, url, seg, method) {
       const b = (await readJson(request)) || {};
       const name = String(b.name || '').trim().slice(0, 30);
       if (!name) return err('请输入分类名称');
-      const id = await db.createCategory(dbx, { name, slug: b.slug, description: String(b.description || '').slice(0, 200) });
-      return json({ ok: true, id });
+      // 别名只放行英文/数字/-：中文名会被 slugify 洗成空串，过去会悄悄变成 cat-123456 这种随机串，
+      // 现在明确拒绝，让用户在后台自己填一个可读的别名
+      const slugRaw = b.slug == null ? '' : String(b.slug).trim().slice(0, 60);
+      if (slugRaw && !/^[a-zA-Z0-9-]+$/.test(slugRaw)) return err('别名只能用英文字母、数字和连字符 -');
+      const r = await db.createCategory(dbx, { name, slug: slugRaw, description: String(b.description || '').slice(0, 200) });
+      return json({ ok: true, id: r.id, slug: r.slug });
     }
     if (seg.length === 2 && /^\d+$/.test(seg[1])) {
       const id = parseInt(seg[1], 10);
@@ -769,8 +773,10 @@ async function api(ctx, url, seg, method) {
         const b = (await readJson(request)) || {};
         const name = String(b.name || '').trim().slice(0, 30);
         if (!name) return err('请输入分类名称');
-        await db.updateCategory(dbx, id, { name, slug: b.slug, description: String(b.description || '').slice(0, 200) });
-        return json({ ok: true });
+        const slugRaw = b.slug == null ? '' : String(b.slug).trim().slice(0, 60);
+        if (slugRaw && !/^[a-zA-Z0-9-]+$/.test(slugRaw)) return err('别名只能用英文字母、数字和连字符 -');
+        const slug = await db.updateCategory(dbx, id, { name, slug: slugRaw, description: String(b.description || '').slice(0, 200) });
+        return json({ ok: true, slug });
       }
       if (method === 'DELETE') {
         await db.deleteCategory(dbx, id);
