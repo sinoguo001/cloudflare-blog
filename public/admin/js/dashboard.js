@@ -169,7 +169,8 @@ export function dashboardHtml(d, username) {
       </div>`
     : `<div class="card dash-calm">暂无待审核评论，评论区很干净。</div>`;
 
-  // 友链申请提醒：有待审才出现，没有就完全不占位——没申请时不该挂着空提示
+  // 友链申请提醒：有待审时是橙色告警块；无待审时也给一句状态说明（与评论那条对齐），
+  // 但不写「最近 N 条」这类空承诺——没数据时只说明状态、带一个去管理的入口
   const lk = d.links || { pending: 0, approved: 0, pending_list: [] };
   const lkList = lk.pending_list || [];
   const linkBox = lk.pending
@@ -179,7 +180,8 @@ export function dashboardHtml(d, username) {
           <a class="btn sm g" href="#/links">去友链管理 →</a>
         </div>
         ${lkList.map(linkPendingItem).join('')}
-      </div>` : '';
+      </div>`
+    : `<div class="card dash-calm">暂无待处理的友链申请${lk.approved ? `，当前已有 ${fmtNum(lk.approved)} 个友链展示中` : '，友链区还很安静'}。<a href="#/links">管理友链 →</a></div>`;
 
   return `
   <div class="page-head">

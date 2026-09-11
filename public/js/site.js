@@ -39,19 +39,24 @@
     function lkRefreshCap() {
       if (lkCap) lkCap.src = '/api/captcha?t=' + Date.now();
     }
+    // kind: ok=绿 bad=红 空=中性灰
+    function lkSay(text, kind) {
+      lkMsg.textContent = text;
+      lkMsg.className = 'lf-msg' + (kind ? ' ' + kind : '');
+    }
     if (lkCap) lkCap.addEventListener('click', lkRefreshCap);
     lkForm.addEventListener('submit', function (ev) {
       ev.preventDefault();
       var name = (lkForm.name.value || '').trim();
       var url = (lkForm.url.value || '').trim();
-      if (!name) { lkMsg.textContent = '请填写站点名称'; return; }
-      if (!url) { lkMsg.textContent = '请填写站点地址'; return; }
+      if (!name) { lkSay('请填写站点名称', 'bad'); return; }
+      if (!url) { lkSay('请填写站点地址', 'bad'); return; }
       // 服务端还会再校验一次，这里只是提前给提示，避免白跑一趟
-      if (!/^https?:\/\/\S+$/i.test(url)) { lkMsg.textContent = '网址需以 http:// 或 https:// 开头'; return; }
+      if (!/^https?:\/\/\S+$/i.test(url)) { lkSay('网址需以 http:// 或 https:// 开头', 'bad'); return; }
       var captcha = lkForm.captcha ? (lkForm.captcha.value || '').trim() : '';
-      if (lkForm.captcha && !captcha) { lkMsg.textContent = '请填写图片算式的答案'; return; }
+      if (lkForm.captcha && !captcha) { lkSay('请填写图片算式的答案', 'bad'); return; }
       lkBtn.disabled = true;
-      lkMsg.textContent = '提交中…';
+      lkSay('提交中…', '');
       fetch('/api/link-apply', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -69,11 +74,11 @@
         .then(function (x) {
           lkBtn.disabled = false;
           lkRefreshCap();
-          if (!x.r.ok) { lkMsg.textContent = x.d.error || '提交失败，请稍后再试'; return; }
+          if (!x.r.ok) { lkSay(x.d.error || '提交失败，请稍后再试', 'bad'); lkRefreshCap(); return; }
           lkForm.reset();
-          lkMsg.textContent = '提交成功，等待站长审核，通过后会出现在上方列表。';
+          lkSay('提交成功，等待站长审核，通过后会出现在上方列表。', 'ok');
         })
-        .catch(function () { lkBtn.disabled = false; lkMsg.textContent = '网络错误，请稍后再试'; });
+        .catch(function () { lkBtn.disabled = false; lkSay('网络错误，请稍后再试', 'bad'); });
     });
     return;
   }

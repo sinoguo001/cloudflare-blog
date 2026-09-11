@@ -194,15 +194,30 @@ img{max-width:100%}
 .link-body{display:flex;flex-direction:column;min-width:0}
 .link-body b{font-size:15px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .link-body small{color:var(--muted);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.link-form{margin-top:8px}
-.link-form .field{margin-bottom:12px}
-.link-form label{display:block;font-size:13px;color:var(--muted);margin-bottom:5px}
-.lf-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.lf-hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
-.btn-p{background:var(--accent);color:#fff;border:0;border-radius:9px;padding:9px 20px;font-size:14px;cursor:pointer}
+/* 申请表单：前台独立样式。注意后台的 .inp / .txa 样式不会加载到前台，
+   这里不能用那套 class，否则输入框会退回浏览器默认样式（此前就是这么丑的） */
+.link-form{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px 24px 18px;margin-top:10px;box-shadow:0 1px 3px rgba(20,30,55,.03)}
+.lf-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 16px}
+.lf-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.lf-field.full,.lf-cap,.lf-foot{grid-column:1/-1}
+.lf-field>label{font-size:13px;color:var(--text-soft);font-weight:600;letter-spacing:.2px}
+.lf-field>label>i{color:var(--bad);font-style:normal;margin-left:3px}
+.lf-input{width:100%;padding:10px 13px;border:1px solid var(--line);border-radius:10px;font-size:14.5px;font-family:inherit;color:var(--text);background:#fff;outline:none;transition:border-color .15s,box-shadow .15s}
+.lf-input::placeholder{color:#9ca3af}
+.lf-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+textarea.lf-input{min-height:86px;resize:vertical;line-height:1.7}
+.lf-cap .cap-wrap{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.lf-capimg{height:42px;flex:none;border-radius:10px;border:1px solid var(--line);cursor:pointer;background:#fff;display:block}
+.lf-foot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:2px}
+.lf-msg{font-size:13.5px;color:var(--muted)}
+.lf-msg.ok{color:var(--ok)}
+.lf-msg.bad{color:var(--bad)}
+.btn-p{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 24px;font-size:14.5px;font-weight:600;cursor:pointer}
 .btn-p:hover{filter:brightness(1.06)}
 .btn-p:disabled{opacity:.6;cursor:default}
-@media(max-width:640px){.lf-row{grid-template-columns:1fr}}
+/* 蜜罐：正常用户看不到也不会填，机器人填了就静默丢弃 */
+.lf-hp{position:absolute!important;left:-9999px!important;width:1px;height:1px;overflow:hidden}
+@media(max-width:640px){.link-form{padding:16px 14px}.lf-grid{grid-template-columns:1fr}}
 .empty{background:var(--card);border:1px dashed var(--line);border-radius:12px;padding:34px;text-align:center;color:var(--muted);margin-top:18px}
 /* 页脚 */
 .ft{border-top:1px solid var(--line);background:var(--card);color:var(--muted);font-size:13.5px;padding:20px 0;text-align:center}
@@ -511,12 +526,12 @@ export function renderLinks(s, { links = [], captcha = true } = {}) {
     ? `<div class="link-grid">${links.map(linkCard).join('')}</div>`
     : '<p style="color:var(--muted)">还没有友情链接，欢迎在下方申请互换。</p>';
   const capHtml = captcha
-    ? `<div class="field lf-cap">
-         <label>验证码</label>
-         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-           <input class="inp" name="captcha" id="lk-captcha" placeholder="请输入下图结果" autocomplete="off" style="flex:1;min-width:120px">
-           <img id="lk-capimg" src="/api/captcha" alt="验证码" title="点击换一张"
-                style="height:40px;border-radius:8px;border:1px solid var(--line);cursor:pointer;background:#fff">
+    ? `<div class="lf-field lf-cap">
+         <label for="lk-captcha">验证码 <i>*</i></label>
+         <div class="cap-wrap">
+           <input class="lf-input" name="captcha" id="lk-captcha" placeholder="请输入算式结果" autocomplete="off" style="flex:1;min-width:120px;max-width:190px">
+           <img class="lf-capimg" id="lk-capimg" src="/api/captcha" alt="验证码" title="点击换一张">
+           <span class="lf-msg">看不清？点图片换一张</span>
          </div>
        </div>` : '';
   return layout(s, {
@@ -530,22 +545,38 @@ export function renderLinks(s, { links = [], captcha = true } = {}) {
       <h2 style="margin:32px 0 6px;font-size:19px">申请添加友链</h2>
       <p style="color:var(--muted);margin:0 0 14px">提交后由站长审核，通过后会展示在上面。请确保你的站点可以正常访问。</p>
       <form class="link-form" id="lk-form">
-        <div class="lf-row">
-          <div class="field"><label>站点名称 *</label><input class="inp" name="name" maxlength="40" required placeholder="例如：云尚博客"></div>
-          <div class="field"><label>站点地址 *</label><input class="inp" name="url" maxlength="300" required placeholder="https://example.com"></div>
-        </div>
-        <div class="field"><label>一句话简介</label><input class="inp" name="description" maxlength="120" placeholder="选填，展示在名称下方"></div>
-        <div class="lf-row">
-          <div class="field"><label>图标地址</label><input class="inp" name="logo" maxlength="300" placeholder="选填，正方形图片地址"></div>
-          <div class="field"><label>联系方式</label><input class="inp" name="contact" maxlength="80" placeholder="选填，仅站长可见"></div>
-        </div>
-        <div class="field"><label>申请留言</label><textarea class="txa" name="reason" maxlength="300" placeholder="选填，仅站长可见"></textarea></div>
-        <!-- 蜜罐字段：正常用户看不到也不会填，机器人填了就静默丢弃 -->
-        <div class="lf-hp" aria-hidden="true"><label>公司名称</label><input class="inp" name="company" tabindex="-1" autocomplete="off"></div>
-        ${capHtml}
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <button class="btn-p" type="submit" id="lk-submit">提交申请</button>
-          <span class="hint" id="lk-msg"></span>
+        <div class="lf-grid">
+          <div class="lf-field">
+            <label for="lk-name">站点名称 <i>*</i></label>
+            <input class="lf-input" id="lk-name" name="name" maxlength="40" required placeholder="例如：云尚博客">
+          </div>
+          <div class="lf-field">
+            <label for="lk-url">站点地址 <i>*</i></label>
+            <input class="lf-input" id="lk-url" name="url" maxlength="300" required placeholder="https://example.com">
+          </div>
+          <div class="lf-field full">
+            <label for="lk-desc">一句话简介</label>
+            <input class="lf-input" id="lk-desc" name="description" maxlength="120" placeholder="选填，展示在名称下方">
+          </div>
+          <div class="lf-field">
+            <label for="lk-logo">图标地址</label>
+            <input class="lf-input" id="lk-logo" name="logo" maxlength="300" placeholder="选填，正方形图片地址">
+          </div>
+          <div class="lf-field">
+            <label for="lk-contact">联系方式</label>
+            <input class="lf-input" id="lk-contact" name="contact" maxlength="80" placeholder="选填，仅站长可见">
+          </div>
+          <div class="lf-field full">
+            <label for="lk-reason">申请留言</label>
+            <textarea class="lf-input" id="lk-reason" name="reason" maxlength="300" placeholder="选填，仅站长可见。可以简单介绍一下你的站点"></textarea>
+          </div>
+          <!-- 蜜罐字段：正常用户看不到也不会填，机器人填了就静默丢弃 -->
+          <div class="lf-hp" aria-hidden="true"><label>公司名称</label><input name="company" tabindex="-1" autocomplete="off"></div>
+          ${capHtml}
+          <div class="lf-foot">
+            <button class="btn-p" type="submit" id="lk-submit">提交申请</button>
+            <span class="lf-msg" id="lk-msg"></span>
+          </div>
         </div>
       </form>
     </section>`,
