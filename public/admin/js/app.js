@@ -222,10 +222,12 @@ async function viewPosts() {
       const btnPub = p.status === 'published'
         ? `<button class="btn sm g" data-act="unpub" data-id="${p.id}" data-slug="${esc(p.slug)}">下线</button>`
         : `<button class="btn sm ok" data-act="pub" data-id="${p.id}">发布</button>`;
-      const viewL = p.status === 'published' ? `<a class="btn sm g" href="/post/${esc(p.slug)}" target="_blank">查看</a>` : '';
+      // url 由后端按永久链接规则算好下发；老接口没有时退回 /post/:slug
+      const purl = p.url || ('/post/' + p.slug);
+      const viewL = p.status === 'published' ? `<a class="btn sm g" href="${esc(purl)}" target="_blank" rel="noopener">查看</a>` : '';
       return `<tr>
         <td><div class="cell-title">${esc(p.title)}${st}</div>
-          <div class="cell-sub">${esc('/post/' + p.slug)} ${cat ? ' · ' + cat : ''}</div></td>
+          <div class="cell-sub">${esc(purl)} ${cat ? ' · ' + cat : ''}</div></td>
         <td>${tags || '<span class="cell-sub">无标签</span>'}</td>
         <td style="white-space:nowrap">${fmtTime(p.published_at || p.updated_at)}</td>
         <td style="white-space:nowrap">${p.view_count || 0} / ${p.comment_count || 0}</td>
@@ -397,13 +399,16 @@ async function viewEditor(id) {
       }
       dirty = false;
       if (publish) {
+        // 地址按当前永久链接规则取，别再硬拼 /post/:slug（此处只可能是已存在的文章）
+        let purl = '/post/' + slug;
+        try { purl = (await API.get('/posts/' + id)).url || purl; } catch (e) { /* 取不到就退回旧写法 */ }
         const open = await dialog({
           title: '发布成功',
-          bodyHtml: `文章地址：<a href="/post/${esc(slug)}" target="_blank">/post/${esc(slug)}</a><br>
+          bodyHtml: `文章地址：<a href="${esc(purl)}" target="_blank">${esc(purl)}</a><br>
           订阅：<a href="/rss.xml" target="_blank">/rss.xml</a> · <a href="/sitemap.xml" target="_blank">/sitemap.xml</a>`,
           actions: [{ val: 'list', label: '返回列表', cls: 'p' }, { val: 'open', label: '打开文章', cls: 'g' }],
         });
-        if (open === 'open') window.open('/post/' + slug, '_blank');
+        if (open === 'open') window.open(purl, '_blank');
         go('#/posts');
       } else {
         updateStatus('draft');
@@ -1215,6 +1220,26 @@ async function viewSettings(tabArg) {
       </div>
       <p class="hint" style="margin-bottom:0">切换配色<b>立即对所有文章生效</b>，已发布的文章无需重新编辑保存。代码块输出标准 &lt;pre&gt;&lt;code class="language-x"&gt; 结构，从 WordPress / Typecho 迁移过来的文章可直接正常显示。支持 21 种语言，在代码块开头写语言名即可（如 \`\`\`js）。</p>
     </div>
+
+    <div class="card">
+      <div class="sec-title">永久链接 <small>文章地址的格式（伪静态）</small></div>
+      <div class="field"><label>链接格式</label>
+        <select class="inp" id="s-pm-preset">
+          <option value="/post/{slug}">/post/{slug}（默认）</option>
+          <option value="/post/{slug}.html">/post/{slug}.html</option>
+          <option value="/{slug}.html">/{slug}.html</option>
+          <option value="/archives/{id}.html">/archives/{id}.html（Typecho 风格）</option>
+          <option value="/{year}/{month}/{slug}.html">/{year}/{month}/{slug}.html</option>
+          <option value="/{category}/{slug}.html">/{category}/{slug}.html</option>
+          <option value="__custom">自定义…</option>
+        </select>
+      </div>
+      <div class="field" id="pm-custom" hidden><label>自定义格式</label>
+        <input class="inp" id="s-permalink" placeholder="/{category}/{slug}.html" spellcheck="false">
+      </div>
+      <p class="hint">示例：<b id="pm-prev">/post/hello-world</b></p>
+      <p class="hint" style="margin-bottom:0">可用变量：<code>{slug}</code> 别名、<code>{id}</code> 文章 ID、<code>{year}</code> <code>{month}</code> <code>{day}</code> 发布日期、<code>{category}</code> 分类别名；必须含 <code>{slug}</code> 或 <code>{id}</code>，结尾写 <code>.html</code> 即为伪静态。改格式后<b>旧地址自动 301 跳转</b>到新地址，已收录的链接不会失效；含日期或分类的规则会随文章改发布日期 / 改分类而变化。</p>
+    </div>
   </div>
 
   <div class="set-pane" data-pane="comment">
@@ -1288,6 +1313,43 @@ async function viewSettings(tabArg) {
   v.querySelector('#s-captcha').checked = s.captcha !== '0';
   set('s-logo_image', s.logo_image); set('s-favicon_image', s.favicon_image);
 
+  // ---- 永久链接（伪静态）：预设下拉 + 自定义输入 + 实时示例 ----
+  const PM_PRESETS = ['/post/{slug}', '/post/{slug}.html', '/{slug}.html', '/archives/{id}.html',
+    '/{year}/{month}/{slug}.html', '/{category}/{slug}.html'];
+  const PM_VARS = ['slug', 'id', 'year', 'month', 'day', 'category'];
+  const PM_SAMPLE = { slug: 'hello-world', id: '12', year: '2026', month: '09', day: '11', category: 'tech' };
+  const pmSel = v.querySelector('#s-pm-preset');
+  const pmCus = v.querySelector('#s-permalink');
+  const pmCusWrap = v.querySelector('#pm-custom');
+  const pmPrev = v.querySelector('#pm-prev');
+  // 与服务端 normalizePermalink 保持一致的口径：不合法就不让提交
+  const pmValid = (raw) => {
+    let x = String(raw || '').trim();
+    if (!x) return false;
+    if (x[0] !== '/') x = '/' + x;
+    x = x.replace(/\/{2,}/g, '/').replace(/\/+$/, '');
+    if (x.length > 120) return false;
+    if (!/^[A-Za-z0-9\-_.~/{}]+$/.test(x)) return false;
+    if (!/\{(slug|id)\}/.test(x)) return false;
+    const used = [...x.matchAll(/\{([a-zA-Z]+)\}/g)].map((m) => m[1]);
+    if (used.some((k) => !PM_VARS.includes(k))) return false;
+    return new Set(used).size === used.length;
+  };
+  const pmValue = () => (pmSel.value === '__custom' ? pmCus.value.trim() : pmSel.value);
+  const pmSync = () => {
+    pmCusWrap.hidden = pmSel.value !== '__custom';
+    const val = pmValue();
+    pmPrev.textContent = pmValid(val)
+      ? val.replace(/\{(slug|id|year|month|day|category)\}/g, (_, k) => PM_SAMPLE[k])
+      : '（格式不合法，将无法保存）';
+  };
+  pmSel.addEventListener('change', pmSync);
+  pmCus.addEventListener('input', pmSync);
+  const curPm = String(s.permalink || '/post/{slug}');
+  if (PM_PRESETS.includes(curPm)) pmSel.value = curPm;
+  else { pmSel.value = '__custom'; pmCus.value = curPm; }
+  pmSync();
+
   // ---- 站点图标：预览 / 上传 / 清除 ----
   const logoIn = v.querySelector('#s-logo_image');
   const favIn = v.querySelector('#s-favicon_image');
@@ -1330,7 +1392,13 @@ async function viewSettings(tabArg) {
     if (pw !== pw2) { toast('两次输入的新密码不一致', 'bad'); return; }
     // 后端要求 ≥6 位、不足会静默忽略，必须在前端拦住，否则会误以为改成功了
     if (pw && pw.length < 6) { toast('新密码至少 6 位', 'bad'); return; }
+    const pm = pmValue();
+    if (!pmValid(pm)) {
+      toast('永久链接格式不合法：需以 / 开头且包含 {slug} 或 {id}', 'bad');
+      return;
+    }
     const body = {
+      permalink: pm,
       site_title: v.querySelector('#s-site_title').value,
       site_subtitle: v.querySelector('#s-site_subtitle').value,
       author_name: v.querySelector('#s-author_name').value,

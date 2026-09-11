@@ -167,3 +167,94 @@ export function wantsFeedHtml(accept, ua, fmt) {
   if (/application\/(?:rss|atom)\+xml/i.test(a)) return false; // 显式声明订阅类型
   return /text\/html/i.test(a) && /Mozilla/i.test(u);        // 真浏览器
 }
+
+// ---------- 永久链接（伪静态 / permalink） ----------
+// 规则形如 /post/{slug}.html，可用变量：{slug} {id} {year} {month} {day} {category}。
+// {slug} 与 {id} 至少有一个，否则多篇会撞到同一个地址、无法反查。
+export const PERMALINK_DEFAULT = '/post/{slug}';
+export const PERMALINK_VARS = ['slug', 'id', 'year', 'month', 'day', 'category'];
+// 首段是"字面量"时不能占用这些系统路径：固定路由先于永久链接匹配，占了文章就永远打不开
+const PERMALINK_RESERVED = new Set([
+  'api', 'admin', 'media', 'theme-assets', 'backup', 'backups', 'preview',
+  'category', 'categories', 'tag', 'tags', 'archive', 'search',
+  'links', 'page', 'js', 'rss.xml', 'feed.xml', 'sitemap.xml', 'robots.txt',
+  'favicon.svg', 'favicon.ico',
+]);
+
+// 规整并校验；不合法返回 ''（调用方据此保留原值或报错）
+export function normalizePermalink(v) {
+  let x = String(v == null ? '' : v).trim();
+  if (!x) return '';
+  if (x[0] !== '/') x = '/' + x;
+  x = x.replace(/\/{2,}/g, '/');                 // 去掉空段
+  if (x.length > 1) x = x.replace(/\/+$/, '');   // 去掉末尾斜杠
+  if (!x || x.length > 120) return '';
+  // 只允许路径安全字符与 {变量}：挡掉空格、中文、? # : 等会破坏 URL 的字符
+  if (!/^[A-Za-z0-9\-_.~/{}]+$/.test(x)) return '';
+  if (!/\{(slug|id)\}/.test(x)) return '';                                  // 必须能唯一定位
+  const used = [...x.matchAll(/\{([a-zA-Z]+)\}/g)].map((m) => m[1]);
+  if (used.some((k) => !PERMALINK_VARS.includes(k))) return '';             // 未知变量
+  if (new Set(used).size !== used.length) return '';                        // 同一变量出现两次
+  const first = x.split('/')[1] || '';
+  if (first && !first.includes('{') && PERMALINK_RESERVED.has(first)) return '';
+  return x;
+}
+
+// 从设置里取规则；没设过或非法则回退默认，保证前台永远能出链接
+export function permalinkOf(s) {
+  const v = s && typeof s.get === 'function' ? s.get('permalink') : '';
+  return normalizePermalink(v) || PERMALINK_DEFAULT;
+}
+
+const RE_ESC = /[.*+?^${}()|[\]\\]/g;
+// 规则 → 正则 + 变量名顺序（用于把请求路径反解回文章）
+export function permalinkRegex(pat) {
+  const keys = [];
+  let src = '';
+  const RX = /\{(slug|id|year|month|day|category)\}|[^{]+|\{/g;
+  let m;
+  while ((m = RX.exec(pat))) {
+    if (m[1]) {
+      keys.push(m[1]);
+      if (m[1] === 'id') src += '(\\d+)';
+      else if (m[1] === 'year') src += '(\\d{4})';
+      else if (m[1] === 'month' || m[1] === 'day') src += '(\\d{2})';
+      else src += '([^/]+)';
+    } else if (m[0] === '{') {
+      src += '\\{';                       // 单个左花括号（非变量）按字面处理
+    } else {
+      src += m[0].replace(RE_ESC, '\\$&');
+    }
+  }
+  return { re: new RegExp('^' + src + '$'), keys };
+}
+
+// 文章各变量的取值，用于生成链接与校验 URL 是否与文章一致
+export function permalinkVars(p) {
+  const d = String((p && (p.published_at || p.created_at)) || '').slice(0, 10);
+  return {
+    slug: String((p && p.slug) || ''),
+    id: String((p && p.id) || ''),
+    year: d.slice(0, 4),
+    month: d.slice(5, 7),
+    day: d.slice(8, 10),
+    category: (p && p.category && p.category.slug) || (p && p.cat_slug) || 'uncategorized',
+  };
+}
+
+// 生成文章的访问地址（相对路径，模板里再 esc 后写入 href）
+export function postUrl(s, p) {
+  const pat = permalinkOf(s);
+  const v = permalinkVars(p);
+  return pat.replace(/\{(slug|id|year|month|day|category)\}/g, (_, k) => v[k] || (k === 'category' ? 'uncategorized' : ''));
+}
+
+// 反解出来的变量是否与文章一致（文章改过发布时间或分类时，旧地址应 301 到新地址）
+export function permalinkVarsMatch(kv, p) {
+  const v = permalinkVars(p);
+  for (const k of Object.keys(kv)) {
+    if (kv[k] == null) continue;
+    if (String(kv[k]) !== v[k]) return false;
+  }
+  return true;
+}

@@ -112,7 +112,8 @@ export async function createPost(db, f) {
     f.status === 'published' ? (f.published_at || t) : null).run();
   const id = r.meta.last_row_id;
   let slug = slugify(f.slug) || ('post-' + id);
-  slug = await uniqueSlug(db, 'posts', slug);
+  // excludeId 必须传：INSERT 时已把 f.slug 写进去了，不排除自己就会撞上自己、被追加成 -2
+  slug = await uniqueSlug(db, 'posts', slug, id);
   if (slug !== f.slug) await db.prepare('UPDATE posts SET slug=? WHERE id=?').bind(slug, id).run();
   if (f.tags && f.tags.length) await setPostTags(db, id, f.tags);
   return id;
@@ -161,9 +162,12 @@ export async function incView(db, slug) {
 // 上一篇 / 下一篇（按发布时间）
 export async function siblings(db, post) {
   if (!post.published_at) return { prev: null, next: null };
+  // 带上 published_at 与分类别名：永久链接规则可能用到 {year} {month} {day} {category}
+  const SEL = `SELECT p.id,p.title,p.slug,p.published_at,c.slug AS cat_slug
+    FROM posts p LEFT JOIN categories c ON c.id=p.category_id`;
   const [prev, next] = await Promise.all([
-    db.prepare(`SELECT id,title,slug FROM posts WHERE status='published' AND published_at<? ORDER BY published_at DESC LIMIT 1`).bind(post.published_at).first(),
-    db.prepare(`SELECT id,title,slug FROM posts WHERE status='published' AND published_at>? ORDER BY published_at ASC LIMIT 1`).bind(post.published_at).first(),
+    db.prepare(`${SEL} WHERE p.status='published' AND p.published_at<? ORDER BY p.published_at DESC LIMIT 1`).bind(post.published_at).first(),
+    db.prepare(`${SEL} WHERE p.status='published' AND p.published_at>? ORDER BY p.published_at ASC LIMIT 1`).bind(post.published_at).first(),
   ]);
   return { prev, next };
 }
@@ -445,7 +449,10 @@ export async function recentLinkApplies(db, ip, seconds = 3600) {
 // ---------- 归档 / 全量导出（备份用） ----------
 export async function archivePosts(db) {
   const r = await db.prepare(
-    `SELECT id,title,slug,published_at FROM posts WHERE status='published' ORDER BY published_at DESC`).all();
+    // 带分类别名：永久链接用到 {category} 时归档页也要能拼出正确地址
+    `SELECT p.id,p.title,p.slug,p.published_at,c.slug AS cat_slug
+      FROM posts p LEFT JOIN categories c ON c.id=p.category_id
+      WHERE p.status='published' ORDER BY p.published_at DESC`).all();
   return r.results || [];
 }
 export async function dumpAll(db) {

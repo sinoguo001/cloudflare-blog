@@ -15,6 +15,8 @@ button{font-family:inherit}
 .auth-card h1{margin:0 0 4px;font-size:21px}
 .auth-card .sub{color:var(--mut);margin:0 0 22px;font-size:13.5px}
 .field{margin-bottom:15px}
+/* 与 .set-pane 同理：一旦有规则改过 display，hidden 属性就失效，这里兜死 */
+.field[hidden]{display:none!important}
 .field label{display:block;font-size:13px;color:#374151;margin-bottom:6px}
 .inp,.txa,select.inp{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;outline:none;background:#fff;color:var(--text);font-family:inherit}
 .inp:focus,.txa:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
@@ -36,6 +38,7 @@ button{font-family:inherit}
 .tbl td .btn.sm:last-child{margin-right:0}
 .form-err{color:var(--bad);font-size:13px;min-height:18px;margin:8px 0 0}
 .hint{color:var(--mut);font-size:12.5px}
+.hint code{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:12px;color:var(--text)}
 
 /* 顶栏布局 */
 .topbar{background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:50}

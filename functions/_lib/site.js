@@ -3,7 +3,7 @@
 // 路由入口在 functions/[[path]].js，本文件只负责拼 HTML。
 // ============================================================
 import * as db from './db.js';
-import { esc, fmtDate, rfc822, stripHtml, isHexColor, bnNow } from './util.js';
+import { esc, fmtDate, rfc822, stripHtml, isHexColor, bnNow, postUrl } from './util.js';
 import { codeThemeCss } from './hl.js';
 import { gravatarHash } from './md5.js';
 
@@ -313,9 +313,11 @@ function catChips(list, base = '/category') {
   if (!list.length) return '';
   return `<div class="chips">${list.map((c) => `<a class="chip" href="${base}/${esc(c.slug)}">${esc(c.name)}<b> ${c.count || 0}</b></a>`).join('')}</div>`;
 }
-function postCard(p) {
+// p 之后可传设置 Map s；传了就用「永久链接」规则生成地址，否则退回 /post/:slug
+function postCard(p, s) {
+  const url = esc(s ? postUrl(s, p) : '/post/' + p.slug);
   const cover = p.cover_key
-    ? `<div class="pc-cover"><a href="/post/${esc(p.slug)}"><img src="/media/${esc(p.cover_key)}" alt="" loading="lazy"></a></div>` : '';
+    ? `<div class="pc-cover"><a href="${url}"><img src="/media/${esc(p.cover_key)}" alt="" loading="lazy"></a></div>` : '';
   const cat = p.category ? `<a href="/category/${esc(p.category.slug)}">${esc(p.category.name)}</a>` : '';
   const excerpt = p.excerpt || stripHtml(p.content_html).slice(0, 260);
   const tags = (p.tags || []).map((t) => `<a class="tag-chip" href="/tag/${esc(t.slug)}">${esc(t.name)}</a>`).join('');
@@ -326,7 +328,7 @@ function postCard(p) {
       <span class="dot">·</span><span>阅读 ${p.view_count || 0}</span>
       <span class="dot">·</span><span>${p.comment_count || 0} 评论</span>
     </div>
-    <h2 class="pc-title"><a href="/post/${esc(p.slug)}">${esc(p.title)}</a></h2>
+    <h2 class="pc-title"><a href="${url}">${esc(p.title)}</a></h2>
     ${excerpt ? `<p class="pc-excerpt">${esc(excerpt)}</p>` : ''}
     ${tags ? `<div class="pc-tags">${tags}</div>` : ''}
   </div>${cover}</article>`;
@@ -347,7 +349,8 @@ function pagination(page, pages, base, pageSize) {
 
 // ---------- 各页面 ----------
 export function renderHome(s, data, page) {
-  const items = data.items.map(postCard).join('');
+  // ⚠️ 必须写成箭头函数：map 会把下标当第二个参数传进来，直接传 postCard 会把 s 顶掉
+  const items = data.items.map((p) => postCard(p, s)).join('');
   const content = `
     <section class="hero"><h1>最新文章</h1></section>
     ${catChips(data.categories)}
@@ -379,8 +382,8 @@ export function renderArticle(s, post, extra) {
   ].filter(Boolean).join('<span class="dot">·</span>');
   const pn = extra.siblings;
   const pnHtml = `<nav class="pn">
-    ${pn.prev ? `<a href="/post/${esc(pn.prev.slug)}"><small>← 上一篇</small>${esc(pn.prev.title)}</a>` : '<span></span>'}
-    ${pn.next ? `<a class="next" href="/post/${esc(pn.next.slug)}"><small>下一篇 →</small>${esc(pn.next.title)}</a>` : '<span></span>'}
+    ${pn.prev ? `<a href="${esc(postUrl(s, pn.prev))}"><small>← 上一篇</small>${esc(pn.prev.title)}</a>` : '<span></span>'}
+    ${pn.next ? `<a class="next" href="${esc(postUrl(s, pn.next))}"><small>下一篇 →</small>${esc(pn.next.title)}</a>` : '<span></span>'}
   </nav>`;
   const content = `
     <p class="crumb"><a href="/">首页</a> / ${post.category ? `<a href="/category/${esc(post.category.slug)}">${esc(post.category.name)}</a> / ` : ''}正文</p>
@@ -475,7 +478,7 @@ export function archiveContent(s, posts) {
     <section class="arc-y"><h2>${y}</h2>
       ${Object.keys(years[y]).sort((a, b) => b - a).map((m) => `
         <div class="arc-m">${m}
-          <ul>${years[y][m].map((p) => `<li><time>${(p.published_at || '').slice(0, 10)}</time><a href="/post/${esc(p.slug)}">${esc(p.title)}</a></li>`).join('')}</ul>
+          <ul>${years[y][m].map((p) => `<li><time>${(p.published_at || '').slice(0, 10)}</time><a href="${esc(postUrl(s, p))}">${esc(p.title)}</a></li>`).join('')}</ul>
         </div>`).join('')}
     </section>`).join('');
 }
@@ -673,7 +676,7 @@ export async function rssHtml(env, s, origin) {
     const body = p.content_html || '';
     const ex = esc((p.excerpt || stripHtml(body).slice(0, 220)) || '（无摘要）');
     const d = p.published_at ? fmtDate(p.published_at) : '';
-    return `<a class="it" href="${origin}/post/${esc(p.slug)}">
+    return `<a class="it" href="${origin}${esc(postUrl(s, p))}">
   <span class="t">${esc(p.title)}</span>
   <div class="m">${d ? `<time>${d}</time>` : ''}${ex}</div>
 </a>`;
@@ -711,7 +714,7 @@ export async function sitemapHtml(env, s, origin) {
   const tags = await db.listTags(env.DB);
   for (const t of tags) rows.push(u('/tag/' + t.slug, '标签', 't', ''));
   const data = await db.listPosts(env.DB, { status: 'published', per: 1000 });
-  for (const p of data.items) rows.push(u('/post/' + p.slug, '文章', 'a', (p.published_at || '').slice(0, 10)));
+  for (const p of data.items) rows.push(u(postUrl(s, p), '文章', 'a', (p.published_at || '').slice(0, 10)));
   return feedLayout({
     icon: '🗺️',
     title: '站点地图',
@@ -734,8 +737,8 @@ export async function rssXml(env, s, origin) {
     const cat = p.category ? `<category>${esc(p.category.name)}</category>` : '';
     return `<item>
 <title>${esc(p.title)}</title>
-<link>${origin}/post/${esc(p.slug)}</link>
-<guid isPermaLink="false">${origin}/post/${esc(p.slug)}</guid>
+<link>${origin}${esc(postUrl(s, p))}</link>
+<guid isPermaLink="false">${origin}${esc(postUrl(s, p))}</guid>
 <pubDate>${rfc822(p.published_at)}</pubDate>
 <description><![CDATA[${body}]]></description>
 ${cat}
@@ -762,7 +765,7 @@ export async function sitemapXml(env, s, origin) {
   const tags = await db.listTags(env.DB);
   for (const t of tags) rows.push(u('/tag/' + esc(t.slug), ''));
   const data = await db.listPosts(env.DB, { status: 'published', per: 1000 });
-  for (const p of data.items) rows.push(u('/post/' + esc(p.slug), (p.published_at || '').slice(0, 10)));
+  for (const p of data.items) rows.push(u(postUrl(s, p), (p.published_at || '').slice(0, 10)));
   return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${rows.join('\n')}

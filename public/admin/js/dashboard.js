@@ -137,14 +137,14 @@ const postItem = (p) => `
     </div>
     <div class="hint">
       ${esc(fmtTime(p.published_at || p.updated_at))} · 阅读 ${fmtNum(p.views)} · 评论 ${fmtNum(p.comments)}
-      ${p.status === 'published' ? ` · <a href="/post/${esc(p.slug)}" target="_blank" rel="noopener">查看 ↗</a>` : ''}
+      ${p.status === 'published' ? ` · <a href="${esc(p.url || ('/post/' + p.slug))}" target="_blank" rel="noopener">查看 ↗</a>` : ''}
     </div>
   </div>`;
 
 const topItem = (p, i) => `
   <div class="dt-item">
     <span class="dt-r${i < 3 ? ' hot' : ''}">${i + 1}</span>
-    <a class="dt-t" href="/post/${esc(p.slug)}" target="_blank" rel="noopener">${esc(p.title)}</a>
+    <a class="dt-t" href="${esc(p.url || ('/post/' + p.slug))}" target="_blank" rel="noopener">${esc(p.title)}</a>
     <span class="hint">${fmtNum(p.views)} 次</span>
   </div>`;
 

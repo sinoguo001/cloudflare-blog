@@ -3,7 +3,8 @@
 // 负责：/api/* 接口、/media/* R2 图片代理、前台页面 SSR、
 //       rss.xml / sitemap.xml / robots.txt、后台静态资源(经 ASSETS)
 // ============================================================
-import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard } from './_lib/util.js';
+import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard,
+  normalizePermalink, permalinkOf, permalinkRegex, postUrl, permalinkVarsMatch } from './_lib/util.js';
 import { render } from './_lib/md.js';
 import { CODE_THEMES } from './_lib/hl.js';
 import * as db from './_lib/db.js';
@@ -145,26 +146,6 @@ async function front(ctx, url, seg, method, path) {
     return html(site.renderHome(s, data, page));
   }
 
-  // 文章页 /post/:slug（草稿仅登录可见）
-  if (seg[0] === 'post' && seg[1] && seg.length === 2) {
-    const slug = seg[1];
-    const post = await db.getPost(env.DB, { slug });
-    if (!post || (post.status !== 'published' && !user)) return html(site.render404(s), 404);
-    if (post.status !== 'published' && user) {
-      post.content_html = `<div class="empty" style="padding:14px;margin-bottom:14px">此文章为<b>草稿</b>，仅你可见 · <a href="/admin#/posts/${post.id}">回后台编辑</a></div>` + post.content_html;
-    }
-    const [siblings, comments, cfg] = await Promise.all([
-      db.siblings(env.DB, post),
-      db.commentsForPost(env.DB, post.id),
-      Promise.resolve({
-        allow: s.get('allow_comments') === '1',
-        audit: s.get('comment_audit') === '1',
-        captcha: s.get('captcha') !== '0',   // 未设置即默认开启
-      }),
-    ]);
-    return html(site.renderArticle(s, post, { siblings, comments, cfg }));
-  }
-
   // 分类 /category /category/x[/page/n]
   if (seg[0] === 'category') {
     if (!seg[1]) {
@@ -182,11 +163,12 @@ async function front(ctx, url, seg, method, path) {
     if (!cat) return html(site.render404(s), 404);
     const data = await db.listPosts(env.DB, { status: 'published', cat: slug, page, per });
     const itemsHtml = data.items.map((p) => {
-      const cover = p.cover_key ? `<div class="pc-cover"><a href="/post/${esc(p.slug)}"><img src="/media/${esc(p.cover_key)}" alt="" loading="lazy"></a></div>` : '';
+      const u = esc(postUrl(s, p));   // 永久链接：随「文章设置」里的规则变化
+      const cover = p.cover_key ? `<div class="pc-cover"><a href="${u}"><img src="/media/${esc(p.cover_key)}" alt="" loading="lazy"></a></div>` : '';
       const tags = (p.tags || []).map((t) => `<a class="tag-chip" href="/tag/${esc(t.slug)}">${esc(t.name)}</a>`).join('');
       return `<article class="pc${cover ? '' : ' no-cover'}"><div>
         <div class="pc-meta"><time>${esc(p.published_at || '').slice(0, 10)}</time><span class="dot">·</span><span>阅读 ${p.view_count || 0}</span></div>
-        <h2 class="pc-title"><a href="/post/${esc(p.slug)}">${esc(p.title)}</a></h2>
+        <h2 class="pc-title"><a href="${u}">${esc(p.title)}</a></h2>
         ${p.excerpt ? `<p class="pc-excerpt">${esc(p.excerpt)}</p>` : ''}
         ${tags ? `<div class="pc-tags">${tags}</div>` : ''}</div>${cover}</article>`;
     }).join('');
@@ -214,7 +196,7 @@ async function front(ctx, url, seg, method, path) {
     const data = await db.listPosts(env.DB, { status: 'published', tag: slug, page, per });
     const itemsHtml = data.items.map((p) => `<article class="pc no-cover"><div>
       <div class="pc-meta"><time>${esc(p.published_at || '').slice(0, 10)}</time><span class="dot">·</span><span>${p.view_count || 0} 阅读</span></div>
-      <h2 class="pc-title"><a href="/post/${esc(p.slug)}">${esc(p.title)}</a></h2></div></article>`).join('');
+      <h2 class="pc-title"><a href="${esc(postUrl(s, p))}">${esc(p.title)}</a></h2></div></article>`).join('');
     const makeUrl = (n) => (n <= 1 ? `/tag/${slug}` : `/tag/${slug}/page/${n}`);
     return html(site.renderListPage(s, {
       head: `标签：${tag.name}`, active: 'tags', title: tag.name, desc: `共 ${data.total} 篇相关文章`,
@@ -254,7 +236,7 @@ async function front(ctx, url, seg, method, path) {
       total = data.total;
       itemsHtml = data.items.map((p) => `<article class="pc no-cover"><div>
         <div class="pc-meta"><time>${esc(p.published_at || '').slice(0, 10)}</time><span class="dot">·</span><span>${p.view_count || 0} 阅读</span></div>
-        <h2 class="pc-title"><a href="/post/${esc(p.slug)}">${esc(p.title)}</a></h2>
+        <h2 class="pc-title"><a href="${esc(postUrl(s, p))}">${esc(p.title)}</a></h2>
         ${p.excerpt ? `<p class="pc-excerpt">${esc(p.excerpt)}</p>` : ''}</div></article>`).join('');
     }
     return html(site.renderListPage(s, {
@@ -264,8 +246,59 @@ async function front(ctx, url, seg, method, path) {
     }));
   }
 
+  // 文章页：按「永久链接」规则解析（放在所有固定路由之后，保证 /archive、/search 等
+  // 系统路径永远优先；命中不了再兜底旧地址 /post/:slug(.html) 并 301 到当前规范地址）
+  const pr = await permalinkRoute(env, s, path, user);
+  if (pr) return pr;
+
   // 404
   return html(site.render404(s), 404);
+}
+
+// ============ 永久链接（伪静态）解析 ============
+const redirect301 = (loc) => new Response(null, {
+  status: 301, headers: { location: loc, 'cache-control': 'no-store' },
+});
+// 路径可能是百分号编码（中文别名）；解码失败就按原样匹配，不能让异常变成 500
+const safeDecode = (p) => { try { return decodeURIComponent(p); } catch (e) { return p; } };
+
+async function permalinkRoute(env, s, path, user) {
+  const p0 = safeDecode(path);
+  const { re, keys } = permalinkRegex(permalinkOf(s));
+  const m = re.exec(p0);
+  let post = null;
+  if (m) {
+    const kv = {};
+    keys.forEach((k, i) => { kv[k] = m[i + 1]; });
+    post = kv.slug
+      ? await db.getPost(env.DB, { slug: kv.slug })
+      : (kv.id ? await db.getPost(env.DB, { id: Number(kv.id) }) : null);
+    // 文章改过发布时间或分类后，URL 里的日期/分类就对不上了 → 301 到当前规范地址
+    if (post && !permalinkVarsMatch(kv, post)) return redirect301(postUrl(s, post));
+  }
+  if (!post) {
+    // 旧地址 /post/xxx 与 /post/xxx.html 始终可用：改了规则后老链接不会 404
+    const lm = /^\/post\/(.+?)(?:\.html)?$/.exec(p0);
+    if (lm) {
+      const old = await db.getPost(env.DB, { slug: lm[1] });
+      if (old) return redirect301(postUrl(s, old));
+    }
+    return null;
+  }
+  if (post.status !== 'published' && !user) return html(site.render404(s), 404);
+  if (post.status !== 'published') {
+    post.content_html = `<div class="empty" style="padding:14px;margin-bottom:14px">此文章为<b>草稿</b>，仅你可见 · <a href="/admin#/posts/${post.id}">回后台编辑</a></div>` + post.content_html;
+  }
+  const [siblings, comments, cfg] = await Promise.all([
+    db.siblings(env.DB, post),
+    db.commentsForPost(env.DB, post.id),
+    Promise.resolve({
+      allow: s.get('allow_comments') === '1',
+      audit: s.get('comment_audit') === '1',
+      captcha: s.get('captcha') !== '0',   // 未设置即默认开启
+    }),
+  ]);
+  return html(site.renderArticle(s, post, { siblings, comments, cfg }));
 }
 
 // ============ API ============
@@ -614,13 +647,14 @@ async function api(ctx, url, seg, method) {
   if (seg[0] === 'dashboard' && method === 'GET' && seg.length === 1) {
     const monthStart = bnNow().slice(0, 8) + '01'; // 本月 1 号 00:00（北京时间字符串可直接比大小）
     const nOf = (r) => (r && r.n) || 0;
-    const [st, pending, recent, cmts, top, mPosts, mCmts, words, views, pv, linkCnt, linkPending] = await Promise.all([
+    const [st, pending, recent, cmts, top, mPosts, mCmts, words, views, pv, linkCnt, linkPending, sm] = await Promise.all([
       db.stats(dbx),
       db.listComments(dbx, { status: 'pending', limit: 5 }),
       db.listPosts(dbx, { status: 'all', page: 1, per: 6 }),
       db.listComments(dbx, { status: 'all', limit: 6 }),
-      dbx.prepare(`SELECT id,title,slug,view_count FROM posts WHERE status='published'
-                   ORDER BY view_count DESC, id DESC LIMIT 5`).all(),
+      dbx.prepare(`SELECT p.id,p.title,p.slug,p.view_count,p.published_at,c.slug AS cat_slug FROM posts p
+                   LEFT JOIN categories c ON c.id=p.category_id WHERE p.status='published'
+                   ORDER BY p.view_count DESC, p.id DESC LIMIT 5`).all(),
       dbx.prepare(`SELECT COUNT(*) n FROM posts WHERE created_at>=?`).bind(monthStart).first(),
       dbx.prepare(`SELECT COUNT(*) n FROM comments WHERE created_at>=?`).bind(monthStart).first(),
       // 字数按 Markdown 源码统计：SQLite 的 length() 对文本返回字符数（不是字节），中文不会被放大 3 倍
@@ -631,6 +665,7 @@ async function api(ctx, url, seg, method) {
       // 友链表同理：老库还没建时不能拖垮整个仪表盘
       db.countLinksByStatus(dbx).catch(() => ({ pending: 0, approved: 0, rejected: 0 })),
       db.listLinks(dbx, { status: 'pending' }).then((l) => l.slice(0, 5)).catch(() => []),
+      db.settingsMap(dbx),   // 取永久链接规则，给下面两条列表补上文章地址
     ]);
     // 裁剪字段：正文等大字段不下发，省流量也省前端解析
     const tc = (c) => ({
@@ -644,10 +679,10 @@ async function api(ctx, url, seg, method) {
       recent_posts: recent.items.map((p) => ({
         id: p.id, title: p.title, slug: p.slug, status: p.status,
         published_at: p.published_at, updated_at: p.updated_at,
-        views: p.view_count || 0, comments: p.comment_count || 0,
+        views: p.view_count || 0, comments: p.comment_count || 0, url: postUrl(sm, p),
       })),
       recent_comments: cmts.map(tc),
-      top_posts: (top.results || []).map((r) => ({ id: r.id, title: r.title, slug: r.slug, views: r.view_count || 0 })),
+      top_posts: (top.results || []).map((r) => ({ id: r.id, title: r.title, slug: r.slug, views: r.view_count || 0, url: postUrl(sm, r) })),
       // pv 为 null = 访问统计不可用（表还没建或查询失败），前端显示「未开启」
       pv: pv || null,
       // 友链：待审数量 + 最近几条待审申请（仪表盘直接给出提醒与处理入口）
@@ -679,6 +714,12 @@ async function api(ctx, url, seg, method) {
     }
     if (method === 'PATCH') {
     const b = (await readJson(request)) || {};
+    // 永久链接先校验再写：不合法直接拒，避免落一半字段；空串表示恢复默认
+    if (b.permalink != null) {
+      const pm = normalizePermalink(b.permalink);
+      if (!pm) return err('永久链接格式不合法：需以 / 开头且包含 {slug} 或 {id}，可用变量 {year} {month} {day} {category}');
+      await db.setSetting(dbx, 'permalink', pm);
+    }
     const allowed = { site_title: 60, site_subtitle: 80, author_name: 30, footer_text: 500, seo_desc: 200, beian: 100 };
     // 代码高亮主题与头像源：取值受限，避免写入任意值
     if (b.code_theme != null) {
@@ -821,14 +862,18 @@ async function api(ctx, url, seg, method) {
     if (method === 'GET' && seg.length === 1) {
       const status = String(url.searchParams.get('status') || 'published');
       if (status !== 'published' && !user) return err('未登录', 401);
-      return json(await db.listPosts(dbx, {
+      const data = await db.listPosts(dbx, {
         status,
         q: url.searchParams.get('q') || '',
         cat: url.searchParams.get('cat') || undefined,
         tag: url.searchParams.get('tag') || undefined,
         page: parseInt(url.searchParams.get('page'), 10) || 1,
         per: Math.min(100, parseInt(url.searchParams.get('per'), 10) || 20),
-      }));
+      });
+      // 带上按当前永久链接规则算出的地址，后台列表直接展示，不必再拼 /post/:slug
+      const sm = await db.settingsMap(dbx);
+      data.items = data.items.map((p) => ({ ...p, url: postUrl(sm, p) }));
+      return json(data);
     }
     // 新建 POST /api/posts
     if (method === 'POST' && seg.length === 1) {
@@ -855,7 +900,7 @@ async function api(ctx, url, seg, method) {
       const id = parseInt(seg[1], 10);
       const post = await db.getPost(dbx, { id });
       if (!post) return err('文章不存在', 404);
-      if (method === 'GET') return json(post);
+      if (method === 'GET') return json({ ...post, url: postUrl(await db.settingsMap(dbx), post) });
       if (method === 'DELETE') {
         await db.deletePost(dbx, id);
         return json({ ok: true });
