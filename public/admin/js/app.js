@@ -1368,9 +1368,7 @@ async function viewSettings(tabArg) {
           ⛔ <b>Cloudflare 禁用 25 端口</b>：本博客跑在 Cloudflare Workers 上，<b>25 端口出站被官方封禁</b>，
           填 25 会直接保存失败、邮件一封也发不出去。请只用 <b>465（SSL/TLS）</b> 或 <b>587（STARTTLS）</b>；
           若你的邮箱服务商只提供 25，说明它不能用于本方案，请换 163 / QQ / Gmail 等支持 465 或 587 的服务商。<br>
-          💡 测试邮件发到「安全设置 → 博主邮箱」，<b>用的是已保存的配置</b>：改完参数请先点「保存全部设置」再测试。发信是异步的，点完稍等几秒看邮箱（含垃圾箱）。<br>
-          🌏 <b>一直超时先看这里</b>：Cloudflare 的 TCP 出站源 IP <b>不在它公布的 IP 段内</b>，163 / 126 / QQ 等国内邮箱常把这类连接判为可疑而直接拒绝 —— 表现为「卡在握手直到超时」，不是账号或密码问题。
-          先用 <b>Outlook（smtp.office365.com : 587）</b> 或 <b>Gmail（smtp.gmail.com : 465）</b> 试一次：能通就说明通道没问题，再回头决定是否继续用国内邮箱。
+          💡 测试邮件发到「安全设置 → 博主邮箱」，<b>用的是已保存的配置</b>：改完参数请先点「保存全部设置」再测试。发信是异步的，点完稍等几秒看邮箱（含垃圾箱）。
         </div>
       </div>
     </div>
@@ -1455,7 +1453,10 @@ async function viewSettings(tabArg) {
     return bad;
   };
   mPort.addEventListener('input', checkPort);
-  const syncMail = () => {
+  // 套用服务商预设：只在「用户主动切服务商」或「第一次进来还没配过」时调用。
+  // ⚠️ 回填已保存的设置时绝不能调用 —— 否则会把用户改过的端口 / 加密方式冲回预设值
+  // （表现：把 465 改成 587 保存后，页面又变回 465）。
+  const applyPreset = () => {
     const p = MAIL_PROVIDERS.find((x) => x.id === mpSel.value) || MAIL_PROVIDERS[MAIL_PROVIDERS.length - 1];
     if (p.host) {
       mHost.value = p.host; mPort.value = p.port; mSec.value = p.secure;
@@ -1465,6 +1466,18 @@ async function viewSettings(tabArg) {
       // 若 host 是用户自己手敲的（不等于任何预设值）就保留，不乱动。
       mHost.value = ''; mPort.value = ''; mSec.value = 'ssl';
     }
+  };
+  // 加密方式与端口是成对的：SSL → 465，STARTTLS → 587。
+  // 只在端口为空或仍是另一套的默认值时才改，避免覆盖用户自定义的端口（如 163 的 994）。
+  const syncPortBySecure = () => {
+    const cur = String(mPort.value || '').trim();
+    if (mSec.value === 'starttls') {
+      if (cur === '' || cur === '465') mPort.value = '587';
+    } else if (cur === '' || cur === '587') mPort.value = '465';
+    checkPort();
+  };
+  const syncMail = () => {
+    const p = MAIL_PROVIDERS.find((x) => x.id === mpSel.value) || MAIL_PROVIDERS[MAIL_PROVIDERS.length - 1];
     mHost.placeholder = p.host ? '选服务商后自动填写' : '如 smtp.example.com';
     // 163 / QQ / Gmail 等必须填授权码：这是配不通的第一大原因，红字写在密码框上方
     const needCode = MAIL_AUTH_CODE.includes(p.id);
@@ -1476,7 +1489,8 @@ async function viewSettings(tabArg) {
     mBody.querySelectorAll('input,select,button').forEach((e) => { e.disabled = !on; });
     checkPort();
   };
-  mpSel.addEventListener('change', syncMail);
+  mpSel.addEventListener('change', () => { applyPreset(); syncMail(); });
+  mSec.addEventListener('change', () => { syncPortBySecure(); syncMail(); });
   mtSel.addEventListener('change', syncMail);
   mOn.addEventListener('change', syncMail);
   set('s-mail_provider', s.mail_provider || '163');
@@ -1488,6 +1502,9 @@ async function viewSettings(tabArg) {
   v.querySelector('#s-mail_on_reply').checked = s.mail_on_reply !== '0';
   mOn.checked = s.mail_enabled === '1';
   mPass.placeholder = s.mail_pass_set === '1' ? '已保存，留空表示不修改' : '';
+  // 只在这一项还没配过时套用预设；已保存过 mail_host 就一律以库里的值为准，
+  // 这样改成 587 / starttls 后保存再进页面，看到的就是 587 而不是被预设改回 465
+  if (!s.mail_host && mpSel.value !== 'custom') applyPreset();
   syncMail();
   mailReady = true; // 回填已完成，此后用户切「自定义」才允许清空
   v.querySelector('#mail-test').addEventListener('click', async (ev) => {
