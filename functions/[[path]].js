@@ -10,7 +10,7 @@ import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, isEmail, stripH
 // 传给 mail.js 而不是让它自己 import —— 这样本地 Node 测试仍能注入假 socket。
 import { connect } from 'cloudflare:sockets';
 import { render } from './_lib/md.js';
-import { mailConfigFrom, mailConfigError, renderMail, sendMailWithTimeout, describeCfg } from './_lib/mail.js';
+import { mailConfigFrom, mailConfigError, renderMail, sendMailWithTimeout, describeCfg, mailPortIssue } from './_lib/mail.js';
 import { CODE_THEMES } from './_lib/hl.js';
 import * as db from './_lib/db.js';
 import * as site from './_lib/site.js';
@@ -769,6 +769,20 @@ async function api(ctx, url, seg, method) {
     if (b.comment_audit != null) await db.setSetting(dbx, 'comment_audit', b.comment_audit ? '1' : '0');
     if (b.captcha != null) await db.setSetting(dbx, 'captcha', b.captcha ? '1' : '0');
     // ---- 邮件通知 ----
+    // 端口必须是该服务商真开了的（163 没有 587、Office365 没有 465）。
+    // 存了不支持的组合，现象是「连上就断」或「干等到超时」，与账号密码无关、极难排查，所以入库前拦住。
+    if (b.mail_provider != null || b.mail_port != null || b.mail_secure != null) {
+      const cur = await db.settingsMap(dbx);
+      const tryCfg = {
+        provider: b.mail_provider != null ? String(b.mail_provider).trim() : (cur.get('mail_provider') || '163'),
+        port: b.mail_port != null ? parseInt(b.mail_port, 10) : (parseInt(cur.get('mail_port'), 10) || 465),
+        secure: b.mail_secure != null
+          ? (String(b.mail_secure) === 'starttls' ? 'starttls' : 'ssl')
+          : (cur.get('mail_secure') === 'starttls' ? 'starttls' : 'ssl'),
+      };
+      const pi = mailPortIssue(tryCfg);
+      if (pi) return err(pi, 400);
+    }
     const MAIL_STR = { mail_provider: 20, mail_host: 120, mail_secure: 10, mail_user: 120, mail_from_name: 60, mail_template: 20 };
     for (const k of Object.keys(MAIL_STR)) {
       if (b[k] != null) await db.setSetting(dbx, k, String(b[k]).trim().slice(0, MAIL_STR[k]));
@@ -1022,7 +1036,19 @@ async function api(ctx, url, seg, method) {
   if (seg[0] === 'mail' && seg[1] === 'test' && method === 'POST' && seg.length === 2) {
     if (!(await authUser())) return err('未登录', 401);
     const s = await db.settingsMap(dbx);
+    // 页面上的参数可能还没保存：允许前端把当前表单值带过来，测的就是眼睛看到的那一套。
+    // 否则会出现「页面显示 465、实际测的是库里的 587」—— 报错信息跟页面对不上，无从排查
+    // （Wei 就踩过：库里存了 163 不支持的 587，页面已自动改成 465，测试却仍打 587 然后报 220 被断）。
+    const b = (await readJson(request)) || {};
     const cfg = mailConfigFrom(s);
+    if (b.mail_host != null) cfg.host = String(b.mail_host).trim();
+    if (b.mail_port != null) cfg.port = parseInt(b.mail_port, 10) || cfg.port;
+    if (b.mail_secure != null) cfg.secure = String(b.mail_secure) === 'starttls' ? 'starttls' : 'ssl';
+    if (b.mail_user != null) cfg.user = String(b.mail_user).trim();
+    if (b.mail_pass != null && String(b.mail_pass) !== '') cfg.pass = String(b.mail_pass);
+    // 服务商没开这个端口就直接说清楚，别去连一次再拿「被提前关闭」这种无法行动的错误
+    const pi = mailPortIssue(cfg);
+    if (pi) return err(pi, 400);
     const ce = mailConfigError(cfg);
     if (ce) return err('配置不完整：' + ce, 400);
     const to = (s.get('email') || '').trim();

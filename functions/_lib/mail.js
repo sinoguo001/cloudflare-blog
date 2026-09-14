@@ -262,6 +262,31 @@ export function describeCfg(cfg) {
   return `${cfg.host}:${Number(cfg.port)}（${isImplicitTls(cfg.port, cfg.secure) ? 'SSL / 隐式 TLS' : 'STARTTLS'}）`;
 }
 
+/**
+ * 端口 / 加密方式是不是这个服务商真开了的。
+ * 163/126/Yeah/阿里云没有 587，Office365 没有 465 —— 存了不支持的组合，
+ * 现象是「TCP 连得上但服务器立刻断开」或「干等到超时」，跟账号密码无关，极难排查。
+ * 所以在入库前、发信前各拦一道。自定义服务商（ports 为空）不限制。
+ * @returns {string} 空串表示没问题，否则是可直接展示给用户的原因
+ */
+export function mailPortIssue(cfg) {
+  const port = Number(cfg.port);
+  // 措辞与 [[path]].js 保存接口里那条保持一致，免得两处各说一套
+  if (port === 25) return 'Cloudflare 禁止 25 端口，请使用 465（SSL）或 587（STARTTLS）';
+  const p = providerById(cfg.provider);
+  if (!p || !p.ports || !p.ports.length) return '';
+  if (!p.ports.map(Number).includes(port)) {
+    return `${p.name}只开放 ${p.ports.join(' / ')} 端口，没有 ${port}：连上去会被服务器直接断开（或干等到超时）`;
+  }
+  // 465/994 一律按隐式 SSL 连（端口优先），所以实际模式和 secure 选项可能不同，这里按实际模式判
+  const mode = isImplicitTls(port, cfg.secure) ? 'ssl' : 'starttls';
+  const allowSec = (p.secures && p.secures.length) ? p.secures : ['ssl', 'starttls'];
+  if (!allowSec.includes(mode)) {
+    return `${p.name}的 ${port} 端口只支持${allowSec[0] === 'ssl' ? 'SSL / 隐式 TLS' : 'STARTTLS'}`;
+  }
+  return '';
+}
+
 export async function sendMail(cfg, msg, connectFn, prog) {
   const timeoutMs = cfg.timeoutMs || 30000;
   const fail = (m) => ({ ok: false, error: m });
@@ -415,7 +440,10 @@ function ehloFromSiteUrl(u) {
 export function mailConfigError(cfg) {
   if (!cfg.host) return 'SMTP 服务器地址未填写';
   if (String(cfg.port) === '25') return 'Cloudflare 禁止 25 端口，请改用 465（SSL）或 587（STARTTLS）';
-  if (!/^\d{2,5}$/.test(String(cfg.port))) return '端口不合法';
+  if (/^\d{2,5}$/.test(String(cfg.port)) === false) return '端口不合法';
+  // 服务商没开这个端口时不发：发了也是失败，日志里留一句明确原因好过默默重试
+  const pi = mailPortIssue(cfg);
+  if (pi) return pi;
   if (!cfg.user) return '发件邮箱未填写';
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cfg.user)) return '发件邮箱格式不正确';
   if (!cfg.pass) return '密码 / 授权码未填写';

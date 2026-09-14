@@ -1375,6 +1375,8 @@ async function viewSettings(tabArg) {
           <p class="hint" id="mail-tpl-note" style="margin:6px 0 0"></p>
         </div>
 
+        <div class="mail-notice danger" id="mail-saved-warn" hidden></div>
+
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
           <button class="btn g" type="button" id="mail-test">发送测试邮件</button>
           <button class="btn g" type="button" id="mail-clear-pass">清除已保存的授权码</button>
@@ -1384,7 +1386,7 @@ async function viewSettings(tabArg) {
           ⛔ <b>Cloudflare 禁用 25 端口</b>：本博客跑在 Cloudflare Workers 上，<b>25 端口出站被官方封禁</b>，
           填 25 会直接保存失败、邮件一封也发不出去。请只用 <b>465（SSL/TLS）</b> 或 <b>587（STARTTLS）</b>；
           若你的邮箱服务商只提供 25，说明它不能用于本方案，请换 163 / QQ / Gmail 等支持 465 或 587 的服务商。<br>
-          💡 测试邮件发到「安全设置 → 博主邮箱」，<b>用的是已保存的配置</b>：改完参数请先点「保存全部设置」再测试。发信是异步的，点完稍等几秒看邮箱（含垃圾箱）。
+          💡 测试邮件发到「安全设置 → 博主邮箱」，用<b>当前表单里的参数</b>（没保存也能测，改完立刻可验证）；密码留空时沿用已保存的授权码。发信是异步的，点完稍等几秒看邮箱（含垃圾箱）。
         </div>
       </div>
     </div>
@@ -1459,14 +1461,35 @@ async function viewSettings(tabArg) {
   let lastPresetHost = '';  // 最近一次由预设自动填进来的 SMTP 服务器
   // ---- 端口 25 校验：Cloudflare 封禁 25 出站，打字即红字提示，保存再拦一道 ----
   const mPortWarn = v.querySelector('#mail-port-warn');
+  const mSavedWarn = v.querySelector('#mail-saved-warn');
   const portBad = () => String(mPort.value || '').trim() === '25';
+  // 端口不只查 25：还得是该服务商真开了的。163 没有 587、Office365 没有 465，
+  // 配上去的现象就是「连上就被断开」或干等到超时，跟账号密码无关，必须在打字时就说清楚。
+  const portIssue = (rawPort, secure) => {
+    const raw = String(rawPort || '').trim();
+    if (raw === '25') return '25 端口在 Cloudflare 上被封禁，无法保存，请改用 465 或 587';
+    const n = Number(raw);
+    if (!n) return '';
+    const p = curProvider();
+    if (!(p.ports && p.ports.length)) return '';   // 自定义服务商不限制
+    if (!p.ports.map(Number).includes(n)) {
+      return `${p.name}只开放 ${p.ports.join(' / ')} 端口，没有 ${n}：连上去会被服务器直接断开`;
+    }
+    // 465 / 994 一律按隐式 SSL 连（端口优先于选项），所以按实际模式判定
+    const mode = (n === 465 || n === 994) ? 'ssl' : (secure === 'starttls' ? 'starttls' : 'ssl');
+    const allowSec = (p.secures && p.secures.length) ? p.secures : ['ssl', 'starttls'];
+    if (!allowSec.includes(mode)) return `${p.name}的 ${n} 端口只支持${allowSec[0] === 'ssl' ? 'SSL / 隐式 TLS' : 'STARTTLS'}`;
+    return '';
+  };
   const checkPort = () => {
     const bad = portBad();
-    mPortWarn.hidden = !bad;
-    if (bad) mPortWarn.textContent = '⛔ 25 端口在 Cloudflare 上被封禁，无法保存，请改用 465 或 587';
-    mPort.style.borderColor = bad ? '#b91c1c' : '';
-    mPort.style.background = bad ? '#fef2f2' : '';
-    return bad;
+    const issue = bad ? '' : portIssue(mPort.value, mSec.value);
+    const msg = bad ? `⛔ ${portIssue('25', mSec.value)}` : (issue ? `⚠️ ${issue}` : '');
+    mPortWarn.hidden = !msg;
+    if (msg) mPortWarn.textContent = msg;
+    mPort.style.borderColor = msg ? '#b91c1c' : '';
+    mPort.style.background = msg ? '#fef2f2' : '';
+    return bad || !!issue;
   };
   mPort.addEventListener('input', checkPort);
   // 套用服务商预设：只在「用户主动切服务商」或「第一次进来还没配过」时调用。
@@ -1529,7 +1552,37 @@ async function viewSettings(tabArg) {
     mBody.querySelectorAll('input,select,button').forEach((e) => { e.disabled = !on; });
     checkPort();
   };
-  mpSel.addEventListener('change', () => { applyPreset(); syncSecureOptions(); syncMail(); });
+  // 库里已保存的端口 / 加密方式可能是不久前存进去的无效组合（比如 163 + 587）：
+  // 页面会自动把表单改成推荐值，但库里的值不会自己变，必须提示用户去保存，否则看着对、实际发不出。
+  const savedIssue = () => {
+    const p = curProvider();
+    if (!(p.ports && p.ports.length)) return '';
+    const n = Number(s.mail_port || 465);
+    if (p.ports.map(Number).includes(n)) return '';
+    return `${p.name}只开放 ${p.ports.join(' / ')} 端口，但库里已保存的是 ${n}`;
+  };
+  const showSavedWarn = () => {
+    const msg = savedIssue();
+    mSavedWarn.hidden = !msg;
+    if (!msg) { mSavedWarn.innerHTML = ''; return; }
+    const p = curProvider();
+    mSavedWarn.innerHTML = `⚠️ <b>已保存的配置发不出邮件</b>：${esc(msg)}。表单已自动改成推荐值 `
+      + `${esc(String(p.port))}（${p.secure === 'ssl' ? 'SSL' : 'STARTTLS'}），但<b>要点「保存全部设置」才会生效</b>；`
+      + '也可以直接点这里 <button class="btn g" type="button" id="mail-fix-port">恢复推荐端口并保存</button>';
+    const fb = mSavedWarn.querySelector('#mail-fix-port');
+    if (!fb) return;
+    fb.addEventListener('click', async () => {
+      mPort.value = String(p.port); mSec.value = p.secure;
+      syncSecureOptions(); syncMail();
+      fb.disabled = true;
+      try {
+        await API.patch('/settings', { mail_port: mPort.value, mail_secure: mSec.value });
+        toast(`已恢复为 ${p.port}（${p.secure === 'ssl' ? 'SSL' : 'STARTTLS'}）并保存`, 'ok');
+        mSavedWarn.hidden = true;
+      } catch (e2) { toast('保存失败：' + (e2.message || e2), 'bad'); fb.disabled = false; }
+    });
+  };
+  mpSel.addEventListener('change', () => { applyPreset(); syncSecureOptions(); syncMail(); showSavedWarn(); });
   mSec.addEventListener('change', () => { syncPortBySecure(); syncMail(); });
   mtSel.addEventListener('change', syncMail);
   mOn.addEventListener('change', syncMail);
@@ -1547,19 +1600,24 @@ async function viewSettings(tabArg) {
   if (!s.mail_host && mpSel.value !== 'custom') applyPreset();
   syncSecureOptions();
   syncMail();
+  showSavedWarn();
   mailReady = true; // 回填已完成，此后用户切「自定义」才允许清空
   v.querySelector('#mail-test').addEventListener('click', async (ev) => {
     const btn = ev.currentTarget;
     const note = v.querySelector('#mail-test-note');
-    // 测试用的是「已保存」的配置；端口填了 25 时先拦住，否则测的是旧配置、结果会误导人
-    if (portBad()) {
+    // 端口 25、或该服务商没开的端口：直接拦住，别浪费一次 30 秒的等待
+    if (checkPort()) {
       note.className = 'hint mail-bad';
-      note.textContent = '端口 25 在 Cloudflare 上被封禁，请先改成 465 或 587 并保存后再测试';
+      note.textContent = mPortWarn.textContent.replace(/^[⛔⚠️]\s*/, '') + '。请改好后再测试';
       return;
     }
     note.className = 'hint'; note.textContent = '正在发送，请稍候…'; btn.disabled = true;
     try {
-      const r = await API.post('/mail/test', {});
+      // 把当前表单值一起发过去：测的就是眼睛看到的这一套，不必先保存
+      const r = await API.post('/mail/test', {
+        mail_host: mHost.value.trim(), mail_port: mPort.value, mail_secure: mSec.value,
+        mail_user: mUser.value.trim(), mail_pass: mPass.value,
+      });
       note.className = 'hint mail-ok';
       // used = 后端实际连的 host:port + 加密方式：页面上看到的和真发的可能不一致，显示出来好核对
       note.textContent = '发送成功：已发到 ' + (r.to || '') + '（' + (r.used || '') + '），请查收（含垃圾箱）';
@@ -1685,9 +1743,10 @@ async function viewSettings(tabArg) {
       toast('永久链接格式不合法：需以 / 开头且包含 {slug} 或 {id}', 'bad');
       return;
     }
-    // 25 端口在 Cloudflare 上根本连不出去，后端也会拒；这里先拦，免得配完才发现发不出
-    if (portBad()) {
-      toast('SMTP 端口不能填 25：Cloudflare 禁止 25 端口，请改用 465（SSL）或 587（STARTTLS）', 'bad');
+    // 25 端口、或该服务商没开的端口（如 163 配 587）：后端也会拒，这里先拦住并说明原因
+    const pi = portIssue(mPort.value, mSec.value);
+    if (pi) {
+      toast(pi, 'bad');
       mPort.focus();
       return;
     }
