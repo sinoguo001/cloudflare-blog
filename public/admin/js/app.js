@@ -1344,7 +1344,7 @@ async function viewSettings(tabArg) {
 
         <div style="display:flex;gap:14px">
           <div class="field" style="flex:1"><label>SMTP 服务器</label><input class="inp" id="s-mail_host" placeholder="选服务商后自动填写"></div>
-          <div class="field" style="width:120px"><label>端口</label><input class="inp" id="s-mail_port" type="number" min="1" max="65535">
+          <div class="field" style="width:120px"><label>端口</label><input class="inp" id="s-mail_port" type="number" min="1" max="65535" placeholder="465">
             <p class="hint" id="mail-port-warn" style="margin:6px 0 0;color:#b91c1c;font-weight:600" hidden></p></div>
           <div class="field" style="width:170px"><label>加密方式</label>
             <select class="inp" id="s-mail_secure">
@@ -1439,6 +1439,8 @@ async function viewSettings(tabArg) {
   const mBody = v.querySelector('#mail-body');
   const mPass = v.querySelector('#s-mail_pass');
   let clearPass = false;
+  let mailReady = false;    // 初始回填期间不做「自定义清空」，否则会把已保存的自定义配置抹掉
+  let lastPresetHost = '';  // 最近一次由预设自动填进来的 SMTP 服务器
   // ---- 端口 25 校验：Cloudflare 封禁 25 出站，打字即红字提示，保存再拦一道 ----
   const mPortWarn = v.querySelector('#mail-port-warn');
   const portBad = () => String(mPort.value || '').trim() === '25';
@@ -1453,7 +1455,15 @@ async function viewSettings(tabArg) {
   mPort.addEventListener('input', checkPort);
   const syncMail = () => {
     const p = MAIL_PROVIDERS.find((x) => x.id === mpSel.value) || MAIL_PROVIDERS[MAIL_PROVIDERS.length - 1];
-    if (p.host) { mHost.value = p.host; mPort.value = p.port; mSec.value = p.secure; }
+    if (p.host) {
+      mHost.value = p.host; mPort.value = p.port; mSec.value = p.secure;
+      lastPresetHost = p.host;
+    } else if (mailReady && mHost.value && mHost.value === lastPresetHost) {
+      // 切到「自定义」：把上一个预设自动填的值清掉，免得把网易的服务器配给别的邮箱发出去。
+      // 若 host 是用户自己手敲的（不等于任何预设值）就保留，不乱动。
+      mHost.value = ''; mPort.value = ''; mSec.value = 'ssl';
+    }
+    mHost.placeholder = p.host ? '选服务商后自动填写' : '如 smtp.example.com';
     // 163 / QQ / Gmail 等必须填授权码：这是配不通的第一大原因，红字写在密码框上方
     const needCode = MAIL_AUTH_CODE.includes(p.id);
     mTip.innerHTML = `⚠️ <b>${esc(p.name)}</b>：${needCode
@@ -1477,6 +1487,7 @@ async function viewSettings(tabArg) {
   mOn.checked = s.mail_enabled === '1';
   mPass.placeholder = s.mail_pass_set === '1' ? '已保存，留空表示不修改' : '';
   syncMail();
+  mailReady = true; // 回填已完成，此后用户切「自定义」才允许清空
   v.querySelector('#mail-test').addEventListener('click', async (ev) => {
     const btn = ev.currentTarget;
     const note = v.querySelector('#mail-test-note');
