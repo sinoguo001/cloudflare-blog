@@ -247,6 +247,21 @@ class Smtp {
  *   本地测试则注入假 socket 工厂 —— 注意假工厂不校验字段，所以 address 的字段名
  *   必须在测试里单独断言（曾经写成 host，漏过 72 个用例，上线才暴露）。
  */
+/**
+ * 465 / 994 是隐式 SSL 端口（网易系两家都提供），587 才是 STARTTLS。
+ * 端口优先于选项：端口填了 465 却选 STARTTLS 也按 SSL 连 ——
+ * 否则明文去连 SSL 端口，服务器等握手、我们等问候，双方干等到超时。
+ * 抽成函数是为了让「提示里说的」和「实际连的」共用一套判定，不会各写一份改漏。
+ */
+export function isImplicitTls(port, secure) {
+  return [465, 994].includes(Number(port)) ? true : secure !== 'starttls';
+}
+
+/** 错误信息里带上实际连接参数：用户不用猜「到底连的哪个端口、用的哪种加密」 */
+export function describeCfg(cfg) {
+  return `${cfg.host}:${Number(cfg.port)}（${isImplicitTls(cfg.port, cfg.secure) ? 'SSL / 隐式 TLS' : 'STARTTLS'}）`;
+}
+
 export async function sendMail(cfg, msg, connectFn, prog) {
   const timeoutMs = cfg.timeoutMs || 30000;
   const fail = (m) => ({ ok: false, error: m });
@@ -263,12 +278,7 @@ export async function sendMail(cfg, msg, connectFn, prog) {
 
   let socket = null;
   try {
-    // 465 与 994 都是隐式 SSL 端口（网易系两家都提供），587 才是 STARTTLS。
-    // 端口优先于选项：端口填了 465 却选 STARTTLS，也按 SSL 连 ——
-    // 否则明文去连 SSL 端口，服务器等握手、我们等问候，双方干等到超时。
-    const ssl = [465, 994].includes(Number(cfg.port))
-      ? true
-      : cfg.secure !== 'starttls';
+    const ssl = isImplicitTls(cfg.port, cfg.secure);
     at(`TCP/TLS 握手 ${cfg.host}:${cfg.port}（${ssl ? '465 隐式 SSL' : '587 STARTTLS'}）`);
     // ⚠️ connect(address, options) —— secureTransport 必须放在第二个参数 options 里。
     //    曾经把它塞进 address（第一个参数），Cloudflare 不认，结果就是明文去连 465：
@@ -325,7 +335,11 @@ export async function sendMail(cfg, msg, connectFn, prog) {
     return { ok: true };
   } catch (e) {
     if (socket) { try { socket.close(); } catch (e2) { /* ignore */ } }
-    const why = e && e.message ? e.message : String(e);
+    let why = e && e.message ? e.message : String(e);
+    // 连上了却没等到 220 就被断开：不是账号问题，是传输层就被拒，给出可核对的排查项
+    if (/提前关闭/.test(why) && /问候/.test(P.stage)) {
+      why += `。TCP 连得上但服务器立刻断开，说明它不接受这次连接：① 端口与加密方式不匹配（465/994 必须是 SSL，587 必须是 STARTTLS），本次实际是 ${describeCfg(cfg)}；② 服务商拒绝了 Cloudflare 的出站 IP —— Cloudflare 的出口 IP 每次可能不同，所以会时通时不通，可隔几分钟重试，或把端口换成 994 再试`;
+    }
     return fail(`[${P.stage}] ${why}`);
   }
 }

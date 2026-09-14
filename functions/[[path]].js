@@ -10,7 +10,7 @@ import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, isEmail, stripH
 // 传给 mail.js 而不是让它自己 import —— 这样本地 Node 测试仍能注入假 socket。
 import { connect } from 'cloudflare:sockets';
 import { render } from './_lib/md.js';
-import { mailConfigFrom, mailConfigError, renderMail, sendMailWithTimeout } from './_lib/mail.js';
+import { mailConfigFrom, mailConfigError, renderMail, sendMailWithTimeout, describeCfg } from './_lib/mail.js';
 import { CODE_THEMES } from './_lib/hl.js';
 import * as db from './_lib/db.js';
 import * as site from './_lib/site.js';
@@ -1036,7 +1036,10 @@ async function api(ctx, url, seg, method) {
         author: '系统', content: '这是一封测试邮件。收到它说明 SMTP 配置正确，评论通知可以正常工作。', pending: false,
       });
       const r = await sendMailWithTimeout(cfg, { to, subject: m.subject, text: m.text, html: m.html }, connect);
-      return r.ok ? json({ ok: true, to }) : err('发送失败：' + r.error, 400);
+      // 把实际连接参数一并回传：页面显示的值与库里的值可能不一致（改了没保存等），
+      // 报错时带上它能立刻判断到底是「配错了」还是「服务器拒绝了」。
+      const used = describeCfg(cfg);
+      return r.ok ? json({ ok: true, to, used }) : err(`发送失败：${r.error}｜实际连接 ${used}`, 400);
     } catch (e) {
       return err('发送出错：' + ((e && e.message) || e), 400);
     }

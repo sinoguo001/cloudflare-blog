@@ -1561,7 +1561,8 @@ async function viewSettings(tabArg) {
     try {
       const r = await API.post('/mail/test', {});
       note.className = 'hint mail-ok';
-      note.textContent = '发送成功：已发到 ' + (r.to || '') + '，请查收（含垃圾箱）';
+      // used = 后端实际连的 host:port + 加密方式：页面上看到的和真发的可能不一致，显示出来好核对
+      note.textContent = '发送成功：已发到 ' + (r.to || '') + '（' + (r.used || '') + '），请查收（含垃圾箱）';
     } catch (e) {
       note.className = 'hint mail-bad';
       const m = e.message || '';
