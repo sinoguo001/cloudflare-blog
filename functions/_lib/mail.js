@@ -17,27 +17,30 @@
 // ============================================================
 
 // ---------- 服务商预设 ----------
-// port/secure 成对给出：465 = 隐式 TLS（ssl），587 = STARTTLS。
+// port/secure 成对给出：465（或 994）= 隐式 TLS，587 = STARTTLS。
+// ports / secures 是该服务商**实际开放**的端口与加密方式，按各家官方帮助文档核对（2026-09）。
+// ⚠️ 网易 163 / 126 / Yeah 与阿里云都**不开 587**；Office365 反过来**不支持 465**。
+// ⚠️ 163 与 Yeah 还有 994 端口，同样走隐式 SSL，与 465 等价。
 export const MAIL_PROVIDERS = [
-  { id: '163', name: '网易 163 邮箱', host: 'smtp.163.com', port: 465, secure: 'ssl',
+  { id: '163', name: '网易 163 邮箱', host: 'smtp.163.com', port: 465, secure: 'ssl', ports: [465, 994], secures: ['ssl'],
     passHint: '填「客户端授权码」，不是邮箱登录密码。获取：网页版 163 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务 → 按提示拿到授权码' },
-  { id: '126', name: '网易 126 邮箱', host: 'smtp.126.com', port: 465, secure: 'ssl',
+  { id: '126', name: '网易 126 邮箱', host: 'smtp.126.com', port: 465, secure: 'ssl', ports: [465], secures: ['ssl'],
     passHint: '填「客户端授权码」。获取：网页版 126 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务' },
-  { id: 'yeah', name: '网易 Yeah.net', host: 'smtp.yeah.net', port: 465, secure: 'ssl',
+  { id: 'yeah', name: '网易 Yeah.net', host: 'smtp.yeah.net', port: 465, secure: 'ssl', ports: [465, 994], secures: ['ssl'],
     passHint: '填「客户端授权码」，获取方式同 163' },
-  { id: 'qq', name: 'QQ 邮箱', host: 'smtp.qq.com', port: 465, secure: 'ssl',
+  { id: 'qq', name: 'QQ 邮箱', host: 'smtp.qq.com', port: 465, secure: 'ssl', ports: [465, 587], secures: ['ssl', 'starttls'],
     passHint: '填「授权码」。获取：QQ 邮箱 → 设置 → 账号 → 开启 IMAP/SMTP 服务 → 发短信后生成 16 位授权码' },
-  { id: 'foxmail', name: 'Foxmail 邮箱', host: 'smtp.foxmail.com', port: 465, secure: 'ssl',
+  { id: 'foxmail', name: 'Foxmail 邮箱', host: 'smtp.foxmail.com', port: 465, secure: 'ssl', ports: [465, 587], secures: ['ssl', 'starttls'],
     passHint: '填「授权码」，获取方式与 QQ 邮箱相同' },
-  { id: 'gmail', name: 'Gmail', host: 'smtp.gmail.com', port: 465, secure: 'ssl',
+  { id: 'gmail', name: 'Gmail', host: 'smtp.gmail.com', port: 465, secure: 'ssl', ports: [465, 587], secures: ['ssl', 'starttls'],
     passHint: '需先开启两步验证，再用「应用专用密码」（16 位）登录，不能用 Google 账号密码' },
-  { id: 'outlook', name: 'Outlook / Hotmail', host: 'smtp.office365.com', port: 587, secure: 'starttls',
-    passHint: '一般用账号密码；若开启了两步验证则填「应用密码」，并需在账户设置里启用 SMTP AUTH' },
-  { id: 'aliyun', name: '阿里云个人邮箱', host: 'smtp.aliyun.com', port: 465, secure: 'ssl',
-    passHint: '填邮箱密码或单独设置的「三方客户端密码」，需在邮箱设置里开启 SMTP 服务' },
-  { id: 'exmail', name: '腾讯企业邮', host: 'smtp.exmail.qq.com', port: 465, secure: 'ssl',
+  { id: 'outlook', name: 'Outlook / Office 365', host: 'smtp.office365.com', port: 587, secure: 'starttls', ports: [587], secures: ['starttls'],
+    passHint: '微软官方只开放 587（STARTTLS），465 连不上；开了两步验证要用「应用密码」，且需在账户设置里启用 SMTP AUTH' },
+  { id: 'aliyun', name: '阿里云邮箱', host: 'smtp.aliyun.com', port: 465, secure: 'ssl', ports: [465], secures: ['ssl'],
+    passHint: '填邮箱密码或单独设置的「三方客户端密码」，需在邮箱设置里开启 SMTP 服务（官方说明 80 与 587 端口未开通）' },
+  { id: 'exmail', name: '腾讯企业邮', host: 'smtp.exmail.qq.com', port: 465, secure: 'ssl', ports: [465, 587], secures: ['ssl', 'starttls'],
     passHint: '填「客户端专用密码」（企业邮后台生成），不是登录密码' },
-  { id: 'custom', name: '自定义', host: '', port: 465, secure: 'ssl',
+  { id: 'custom', name: '自定义', host: '', port: 465, secure: 'ssl', ports: [], secures: ['ssl', 'starttls'],
     passHint: '按服务商要求填写；多数国内邮箱需要的是「授权码 / 客户端专用密码」而非登录密码' },
 ];
 
@@ -260,7 +263,12 @@ export async function sendMail(cfg, msg, connectFn, prog) {
 
   let socket = null;
   try {
-    const ssl = cfg.secure === 'ssl' || Number(cfg.port) === 465;
+    // 465 与 994 都是隐式 SSL 端口（网易系两家都提供），587 才是 STARTTLS。
+    // 端口优先于选项：端口填了 465 却选 STARTTLS，也按 SSL 连 ——
+    // 否则明文去连 SSL 端口，服务器等握手、我们等问候，双方干等到超时。
+    const ssl = [465, 994].includes(Number(cfg.port))
+      ? true
+      : cfg.secure !== 'starttls';
     at(`TCP/TLS 握手 ${cfg.host}:${cfg.port}（${ssl ? '465 隐式 SSL' : '587 STARTTLS'}）`);
     // ⚠️ connect(address, options) —— secureTransport 必须放在第二个参数 options 里。
     //    曾经把它塞进 address（第一个参数），Cloudflare 不认，结果就是明文去连 465：

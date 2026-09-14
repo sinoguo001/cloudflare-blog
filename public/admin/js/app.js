@@ -16,26 +16,40 @@ let draftSaver = null; // 由编辑器页注入的“保存草稿”函数（Ctr
 
 // ---------- 邮件服务商预设（与 functions/_lib/mail.js 的 MAIL_PROVIDERS 对应） ----------
 // 选服务商后自动填服务器 / 端口 / 加密方式，并把「授权码」提示显示出来
+// ports / secures = 该服务商**实际开放**的端口与加密方式（按各家官方帮助文档核对，2026-09）。
+// 必须写明的原因：不少邮箱只开放其中一种，选错就是连不上，表现为握手超时而非报错。
+// ⚠️ 网易 163 / 126 / Yeah、阿里云都**不开 587**；Office365 反过来**不支持 465**。
+// ⚠️ 163 / Yeah 还有个 994 端口，也是隐式 SSL，跟 465 等价。
 const MAIL_PROVIDERS = [
   { id: '163', name: '网易 163 邮箱', host: 'smtp.163.com', port: 465, secure: 'ssl',
-    how: '163 网页版 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务 → 拿到授权码' },
+    ports: [465, 994], secures: ['ssl'],
+    how: '163 网页版 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务 → 拿到授权码（不开 587）' },
   { id: '126', name: '网易 126 邮箱', host: 'smtp.126.com', port: 465, secure: 'ssl',
-    how: '126 网页版 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务' },
+    ports: [465], secures: ['ssl'],
+    how: '126 网页版 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务（不开 587）' },
   { id: 'yeah', name: '网易 Yeah.net', host: 'smtp.yeah.net', port: 465, secure: 'ssl',
-    how: '获取方式同 163 邮箱' },
+    ports: [465, 994], secures: ['ssl'],
+    how: '获取方式同 163 邮箱（不开 587）' },
   { id: 'qq', name: 'QQ 邮箱', host: 'smtp.qq.com', port: 465, secure: 'ssl',
+    ports: [465, 587], secures: ['ssl', 'starttls'],
     how: 'QQ 邮箱 → 设置 → 账号 → 开启 IMAP/SMTP 服务 → 发短信后生成 16 位授权码' },
   { id: 'foxmail', name: 'Foxmail 邮箱', host: 'smtp.foxmail.com', port: 465, secure: 'ssl',
+    ports: [465, 587], secures: ['ssl', 'starttls'],
     how: '获取方式与 QQ 邮箱相同' },
   { id: 'gmail', name: 'Gmail', host: 'smtp.gmail.com', port: 465, secure: 'ssl',
+    ports: [465, 587], secures: ['ssl', 'starttls'],
     how: '需先开启两步验证，再生成「应用专用密码」（16 位），不能用 Google 账号密码' },
-  { id: 'outlook', name: 'Outlook / Hotmail', host: 'smtp.office365.com', port: 587, secure: 'starttls',
-    how: '一般用账号密码；开了两步验证则用「应用密码」，并需在账户设置里启用 SMTP AUTH' },
-  { id: 'aliyun', name: '阿里云个人邮箱', host: 'smtp.aliyun.com', port: 465, secure: 'ssl',
-    how: '邮箱设置里开启 SMTP 服务，可用邮箱密码或「三方客户端密码」' },
+  { id: 'outlook', name: 'Outlook / Office 365', host: 'smtp.office365.com', port: 587, secure: 'starttls',
+    ports: [587], secures: ['starttls'],
+    how: '微软官方只开放 587（STARTTLS），**465 连不上**；开了两步验证要用「应用密码」，且需在账户设置里启用 SMTP AUTH' },
+  { id: 'aliyun', name: '阿里云邮箱', host: 'smtp.aliyun.com', port: 465, secure: 'ssl',
+    ports: [465], secures: ['ssl'],
+    how: '邮箱设置里开启 SMTP 服务，可用邮箱密码或「三方客户端密码」（官方说明 80 与 587 端口未开通）' },
   { id: 'exmail', name: '腾讯企业邮', host: 'smtp.exmail.qq.com', port: 465, secure: 'ssl',
+    ports: [465, 587], secures: ['ssl', 'starttls'],
     how: '用企业邮后台生成的「客户端专用密码」，不是登录密码' },
   { id: 'custom', name: '自定义', host: '', port: 465, secure: 'ssl',
+    ports: [], secures: ['ssl', 'starttls'],
     how: '按服务商要求填写；多数国内邮箱要的是「授权码 / 客户端专用密码」而非登录密码' },
 ];
 const MAIL_TEMPLATES = [
@@ -1345,11 +1359,12 @@ async function viewSettings(tabArg) {
         <div style="display:flex;gap:14px">
           <div class="field" style="flex:1"><label>SMTP 服务器</label><input class="inp" id="s-mail_host" placeholder="选服务商后自动填写"></div>
           <div class="field" style="width:120px"><label>端口</label><input class="inp" id="s-mail_port" type="number" min="1" max="65535" placeholder="465">
-            <p class="hint" id="mail-port-warn" style="margin:6px 0 0;color:#b91c1c;font-weight:600" hidden></p></div>
+            <p class="hint" id="mail-port-warn" style="margin:6px 0 0;color:#b91c1c;font-weight:600" hidden></p>
+            <p class="hint" id="mail-port-note" style="margin:4px 0 0"></p></div>
           <div class="field" style="width:170px"><label>加密方式</label>
             <select class="inp" id="s-mail_secure">
-              <option value="ssl">SSL/TLS（465）</option>
-              <option value="starttls">STARTTLS（587）</option>
+              <option value="ssl">SSL / 隐式 TLS</option>
+              <option value="starttls">STARTTLS</option>
             </select>
           </div>
         </div>
@@ -1433,6 +1448,7 @@ async function viewSettings(tabArg) {
   const mHost = v.querySelector('#s-mail_host');
   const mPort = v.querySelector('#s-mail_port');
   const mSec = v.querySelector('#s-mail_secure');
+  const mPortNote = v.querySelector('#mail-port-note');
   const mTip = v.querySelector('#mail-pass-tip');
   const mTplNote = v.querySelector('#mail-tpl-note');
   const mOn = v.querySelector('#s-mail_enabled');
@@ -1467,18 +1483,35 @@ async function viewSettings(tabArg) {
       mHost.value = ''; mPort.value = ''; mSec.value = 'ssl';
     }
   };
+  const curProvider = () => MAIL_PROVIDERS.find((x) => x.id === mpSel.value) || MAIL_PROVIDERS[MAIL_PROVIDERS.length - 1];
+  // 该服务商开放的端口；自定义（空数组）不限制
+  const allowPortsOf = (p) => ((p.ports && p.ports.length) ? p.ports.map(Number) : [465, 587]);
   // 加密方式与端口是成对的：SSL → 465，STARTTLS → 587。
-  // 只在端口为空或仍是另一套的默认值时才改，避免覆盖用户自定义的端口（如 163 的 994）。
+  // 但只在该服务商真开了这个端口时才用；比如网易系没有 587、Office365 没有 465，
+  // 硬套一个不支持的组合就是「连不上还查不出原因」。
   const syncPortBySecure = () => {
-    const cur = String(mPort.value || '').trim();
-    if (mSec.value === 'starttls') {
-      if (cur === '' || cur === '465') mPort.value = '587';
-    } else if (cur === '' || cur === '587') mPort.value = '465';
+    const allow = allowPortsOf(curProvider());
+    const cur = Number(String(mPort.value || '').trim());
+    const want = mSec.value === 'starttls' ? 587 : 465;
+    const other = mSec.value === 'starttls' ? 465 : 587;
+    // 端口留空、仍是另一套的默认值、或压根不在该服务商开放列表里 —— 这三种才改
+    if (!(cur === 0 || cur === other || !allow.includes(cur))) { checkPort(); return; }
+    mPort.value = String(allow.includes(want) ? want : allow[0]);
     checkPort();
   };
+  // 加密方式按服务商实际支持情况禁用：163 系列只能 SSL、Office365 只能 STARTTLS
+  const syncSecureOptions = () => {
+    const p = curProvider();
+    const allow = (p.secures && p.secures.length) ? p.secures : ['ssl', 'starttls'];
+    mSec.querySelectorAll('option').forEach((o) => { o.disabled = !allow.includes(o.value); });
+    if (!allow.includes(mSec.value)) { mSec.value = allow[0]; syncPortBySecure(); }
+  };
   const syncMail = () => {
-    const p = MAIL_PROVIDERS.find((x) => x.id === mpSel.value) || MAIL_PROVIDERS[MAIL_PROVIDERS.length - 1];
+    const p = curProvider();
     mHost.placeholder = p.host ? '选服务商后自动填写' : '如 smtp.example.com';
+    mPortNote.textContent = (p.ports && p.ports.length)
+      ? `${p.name}只开放：${p.ports.join(' / ')}${p.secures.length === 1 ? (p.secures[0] === 'ssl' ? '（SSL）' : '（STARTTLS）') : ''}`
+      : '';
     // 163 / QQ / Gmail 等必须填授权码：这是配不通的第一大原因，红字写在密码框上方
     const needCode = MAIL_AUTH_CODE.includes(p.id);
     mTip.innerHTML = `⚠️ <b>${esc(p.name)}</b>：${needCode
@@ -1489,7 +1522,7 @@ async function viewSettings(tabArg) {
     mBody.querySelectorAll('input,select,button').forEach((e) => { e.disabled = !on; });
     checkPort();
   };
-  mpSel.addEventListener('change', () => { applyPreset(); syncMail(); });
+  mpSel.addEventListener('change', () => { applyPreset(); syncSecureOptions(); syncMail(); });
   mSec.addEventListener('change', () => { syncPortBySecure(); syncMail(); });
   mtSel.addEventListener('change', syncMail);
   mOn.addEventListener('change', syncMail);
@@ -1505,6 +1538,7 @@ async function viewSettings(tabArg) {
   // 只在这一项还没配过时套用预设；已保存过 mail_host 就一律以库里的值为准，
   // 这样改成 587 / starttls 后保存再进页面，看到的就是 587 而不是被预设改回 465
   if (!s.mail_host && mpSel.value !== 'custom') applyPreset();
+  syncSecureOptions();
   syncMail();
   mailReady = true; // 回填已完成，此后用户切「自定义」才允许清空
   v.querySelector('#mail-test').addEventListener('click', async (ev) => {
