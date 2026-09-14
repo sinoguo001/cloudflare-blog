@@ -74,6 +74,11 @@ export async function readJson(req) {
 
 export const isHexColor = (s) => /^#[0-9a-fA-F]{6}$/.test(s || '');
 
+// 邮箱格式校验（只管格式，不验证是否真实存在、也不发验证邮件）
+// 要求：本地部分不含空格与 @；域名各级以字母数字开头结尾（`-b.com` 这类不合法）、至少含一个点、顶级域 2 位以上字母
+export const isEmail = (s) =>
+  /^[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$/.test(String(s || '').trim());
+
 // 访客标识（仅用于 UV 去重：随机串，不含任何个人信息，1 年有效）
 export const newVisitorId = () =>
   [...crypto.getRandomValues(new Uint8Array(12))].map((x) => x.toString(16).padStart(2, '0')).join('');

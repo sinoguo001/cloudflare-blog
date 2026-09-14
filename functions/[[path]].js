@@ -3,9 +3,10 @@
 // 负责：/api/* 接口、/media/* R2 图片代理、前台页面 SSR、
 //       rss.xml / sitemap.xml / robots.txt、后台静态资源(经 ASSETS)
 // ============================================================
-import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard,
+import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, isEmail, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard,
   normalizePermalink, permalinkOf, permalinkRegex, postUrl, permalinkVarsMatch } from './_lib/util.js';
 import { render } from './_lib/md.js';
+import { mailConfigFrom, mailConfigError, renderMail, sendMailWithTimeout } from './_lib/mail.js';
 import { CODE_THEMES } from './_lib/hl.js';
 import * as db from './_lib/db.js';
 import * as site from './_lib/site.js';
@@ -322,12 +323,18 @@ async function api(ctx, url, seg, method) {
     const password = String(b.password || '');
     if (!/^[A-Za-z0-9_]{3,32}$/.test(username)) return err('用户名需为 3–32 位字母、数字或下划线');
     if (password.length < 6) return err('密码至少 6 位');
+    // 邮箱选填：只校验格式，不验证是否真实存在。注意先校验完整串再截断，
+    // 反过来（先截断）会把长地址截成一串 a 再判为非法
+    const emailRaw = String(b.email || '').trim();
+    if (emailRaw && !isEmail(emailRaw)) return err('邮箱格式不正确（示例：name@example.com）');
+    const email = emailRaw.slice(0, 120);
     const salt = newSalt();
     const hash = await pbkdf2(password, salt);
     await db.setSetting(dbx, 'site_title', String(b.site_title || '').trim().slice(0, 60) || '我的博客');
     if (b.site_subtitle != null) await db.setSetting(dbx, 'site_subtitle', String(b.site_subtitle).slice(0, 80));
     if (b.author_name != null) await db.setSetting(dbx, 'author_name', String(b.author_name).slice(0, 30));
     if (b.accent && isHexColor(String(b.accent))) await db.setSetting(dbx, 'accent', b.accent);
+    if (email) await db.setSetting(dbx, 'email', email);
     await db.setSetting(dbx, 'admin_username', username);
     await db.setSetting(dbx, 'admin_pass_salt', salt);
     await db.setSetting(dbx, 'admin_pass_hash', hash);
@@ -433,6 +440,8 @@ async function api(ctx, url, seg, method) {
       postId: post.id, author, email, website, content,
       status: audit ? 'pending' : 'approved', isAdmin: 0, ip,
     });
+    // 邮件通知异步发：SMTP 握手可能要 1–3 秒，不能拖慢读者提交评论的响应
+    ctx.waitUntil(notifyNewComment(dbx, url.origin, post, { author, email, content, status: audit ? 'pending' : 'approved' }));
     // 验证码一次性：用掉即作废（前端随后会自动换一张新图）
     return capOn ? jset({ ok: true, pending: audit }, clearCaptchaCookie()) : json({ ok: true, pending: audit });
   }
@@ -709,9 +718,15 @@ async function api(ctx, url, seg, method) {
   if (seg[0] === 'settings' && (seg.length === 1 || (seg[1] === 'read' && seg.length === 2))) {
     if (method === 'GET') {
       const all = await db.allSettings(dbx);
+      // 发信授权码任何情况下都不回传（回显只会增加泄露面）
+      // 本接口位于登录守卫之后，属私有接口；这里再兜一层，防止日后被挪到公开区
+      const hasPass = !!all.mail_pass;
       delete all.admin_pass_hash;
       delete all.admin_pass_salt;
       delete all.admin_pass_iter;
+      delete all.mail_pass;
+      all.mail_pass_set = hasPass ? '1' : '0';
+      if (!(await authUser())) delete all.email;
       return json(all);
     }
     if (method === 'PATCH' && seg.length === 1) {
@@ -721,6 +736,12 @@ async function api(ctx, url, seg, method) {
       const pm = normalizePermalink(b.permalink);
       if (!pm) return err('永久链接格式不合法：需以 / 开头且包含 {slug} 或 {id}，可用变量 {year} {month} {day} {category}');
       await db.setSetting(dbx, 'permalink', pm);
+    }
+    // 博主邮箱同先校验后写：留空表示清除，填了必须是合法格式（不验证是否真实存在）
+    if (b.email != null) {
+      const em = String(b.email).trim();
+      if (em && !isEmail(em)) return err('邮箱格式不正确（示例：name@example.com）');
+      await db.setSetting(dbx, 'email', em.slice(0, 120));
     }
     const allowed = { site_title: 60, site_subtitle: 80, author_name: 30, footer_text: 500, seo_desc: 200, beian: 100, copyright: 600 };
     // 代码高亮主题与头像源：取值受限，避免写入任意值
@@ -743,6 +764,26 @@ async function api(ctx, url, seg, method) {
     if (b.allow_comments != null) await db.setSetting(dbx, 'allow_comments', b.allow_comments ? '1' : '0');
     if (b.comment_audit != null) await db.setSetting(dbx, 'comment_audit', b.comment_audit ? '1' : '0');
     if (b.captcha != null) await db.setSetting(dbx, 'captcha', b.captcha ? '1' : '0');
+    // ---- 邮件通知 ----
+    const MAIL_STR = { mail_provider: 20, mail_host: 120, mail_secure: 10, mail_user: 120, mail_from_name: 60, mail_template: 20 };
+    for (const k of Object.keys(MAIL_STR)) {
+      if (b[k] != null) await db.setSetting(dbx, k, String(b[k]).trim().slice(0, MAIL_STR[k]));
+    }
+    for (const k of ['mail_enabled', 'mail_on_comment', 'mail_on_reply']) {
+      if (b[k] != null) await db.setSetting(dbx, k, b[k] ? '1' : '0');
+    }
+    // 授权码只写不读：留空表示保持原值，要清除需显式传 mail_clear_pass
+    if (b.mail_pass != null && String(b.mail_pass) !== '') {
+      await db.setSetting(dbx, 'mail_pass', String(b.mail_pass).slice(0, 200));
+    } else if (b.mail_clear_pass === true) {
+      await db.setSetting(dbx, 'mail_pass', '');
+    }
+    if (b.mail_port != null) {
+      const p = parseInt(b.mail_port, 10);
+      // 25 端口在 Cloudflare 上被禁，直接拒，免得配完发不出去还查不出原因
+      if (p === 25) return err('Cloudflare 禁止 25 端口，请使用 465（SSL）或 587（STARTTLS）');
+      await db.setSetting(dbx, 'mail_port', String(Math.min(65535, Math.max(1, p || 465))));
+    }
     if (b.accent && isHexColor(String(b.accent))) await db.setSetting(dbx, 'accent', b.accent);
     if (b.new_password && String(b.new_password).length >= 6) {
       const salt = newSalt();
@@ -969,8 +1010,82 @@ async function api(ctx, url, seg, method) {
       author: (await db.getSetting(dbx, 'author_name')) || '博主',
       email: '', content, status: 'approved', isAdmin: 1, ip: '',
     });
+    ctx.waitUntil(notifyReply(dbx, url.origin, parent, content));
     return json({ ok: true });
   }
 
+  // --- 邮件通知：发一封测试邮件验证配置（登录） ---
+  if (seg[0] === 'mail' && seg[1] === 'test' && method === 'POST' && seg.length === 2) {
+    if (!(await authUser())) return err('未登录', 401);
+    const s = await db.settingsMap(dbx);
+    const cfg = mailConfigFrom(s);
+    const ce = mailConfigError(cfg);
+    if (ce) return err('配置不完整：' + ce, 400);
+    const to = (s.get('email') || '').trim();
+    if (!to) return err('请先在「设置 → 安全设置」填写博主邮箱：测试邮件会发到这个地址', 400);
+    const m = renderMail(cfg.template, {
+      kind: 'comment', site: s.get('site_title') || '博客', siteUrl: url.origin,
+      postTitle: '邮件通知测试', postUrl: url.origin, adminUrl: url.origin + '/admin#/settings/comment',
+      author: '系统', content: '这是一封测试邮件。收到它说明 SMTP 配置正确，评论通知可以正常工作。', pending: false,
+    });
+    const r = await sendMailWithTimeout(cfg, { to, subject: m.subject, text: m.text, html: m.html });
+    return r.ok ? json({ ok: true, to }) : err('发送失败：' + r.error, 502);
+  }
+
   return err('接口不存在', 404);
+}
+
+// ============================================================
+// 邮件通知：任何失败都只记日志，绝不影响评论 / 回复本身的结果
+// （SMTP 可能不通、博主邮箱可能没填，这些都不该让读者提交失败）
+// ============================================================
+async function notifyNewComment(dbx, origin, post, c) {
+  try {
+    const s = await db.settingsMap(dbx);
+    const cfg = mailConfigFrom(s);
+    if (!cfg.enabled || !cfg.onComment) return;
+    const to = (s.get('email') || '').trim();
+    if (!to) return;
+    const ce = mailConfigError(cfg);
+    if (ce) { console.error('mail skip:', ce); return; }
+    const m = renderMail(cfg.template, {
+      kind: 'comment',
+      site: s.get('site_title') || '博客',
+      siteUrl: origin,
+      postTitle: post.title || '',
+      postUrl: origin + postUrl(s, post),
+      adminUrl: origin + '/admin#/comments',
+      author: c.author, email: c.email, content: c.content,
+      pending: c.status === 'pending',
+    });
+    const r = await sendMailWithTimeout(cfg, { to, subject: m.subject, text: m.text, html: m.html });
+    if (!r.ok) console.error('mail fail:', r.error);
+  } catch (e) { console.error('mail error:', (e && e.message) || e); }
+}
+
+async function notifyReply(dbx, origin, parent, content) {
+  try {
+    const s = await db.settingsMap(dbx);
+    const cfg = mailConfigFrom(s);
+    if (!cfg.enabled || !cfg.onReply) return;
+    const to = (parent.email || '').trim();
+    // 回复博主自己的评论时没有收件人，直接跳过
+    if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return;
+    const ce = mailConfigError(cfg);
+    if (ce) { console.error('mail skip:', ce); return; }
+    const post = await db.getPost(dbx, { id: parent.post_id });
+    const m = renderMail(cfg.template, {
+      kind: 'reply',
+      site: s.get('site_title') || '博客',
+      siteUrl: origin,
+      postTitle: (post && post.title) || '',
+      postUrl: post ? origin + postUrl(s, post) : origin,
+      adminUrl: origin + '/admin#/comments',
+      author: s.get('author_name') || '博主',
+      content,
+      pending: false,
+    });
+    const r = await sendMailWithTimeout(cfg, { to, subject: m.subject, text: m.text, html: m.html });
+    if (!r.ok) console.error('mail fail:', r.error);
+  } catch (e) { console.error('mail error:', (e && e.message) || e); }
 }

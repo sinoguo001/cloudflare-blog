@@ -1,0 +1,334 @@
+// ============================================================
+// 邮件通知：SMTP 客户端 + 邮件模板
+//
+// 为什么自己写 SMTP：Cloudflare Workers 只有 fetch 与 cloudflare:sockets 两种出网能力，
+// 官方文档明确「禁止 25 端口」，但 465（隐式 TLS）与 587（STARTTLS）是允许的，
+// 所以用 cloudflare:sockets 直连 163 / QQ 这类 SMTP 服务器是可行的。
+// ⚠️ 25 端口在本项目里直接不给选项，避免配了发不出去。
+//
+// 为什么 connect() 用动态 import：Node 环境没有 cloudflare:sockets 模块，
+// 顶层 import 会让本地测试直接崩。改成运行时按需 import，且允许注入假 socket，
+// 这样协议流程（EHLO / AUTH / DATA）能在本地做完整的命令级断言。
+// ============================================================
+
+// ---------- 服务商预设 ----------
+// port/secure 成对给出：465 = 隐式 TLS（ssl），587 = STARTTLS。
+export const MAIL_PROVIDERS = [
+  { id: '163', name: '网易 163 邮箱', host: 'smtp.163.com', port: 465, secure: 'ssl',
+    passHint: '填「客户端授权码」，不是邮箱登录密码。获取：网页版 163 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务 → 按提示拿到授权码' },
+  { id: '126', name: '网易 126 邮箱', host: 'smtp.126.com', port: 465, secure: 'ssl',
+    passHint: '填「客户端授权码」。获取：网页版 126 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务' },
+  { id: 'yeah', name: '网易 Yeah.net', host: 'smtp.yeah.net', port: 465, secure: 'ssl',
+    passHint: '填「客户端授权码」，获取方式同 163' },
+  { id: 'qq', name: 'QQ 邮箱', host: 'smtp.qq.com', port: 465, secure: 'ssl',
+    passHint: '填「授权码」。获取：QQ 邮箱 → 设置 → 账号 → 开启 IMAP/SMTP 服务 → 发短信后生成 16 位授权码' },
+  { id: 'foxmail', name: 'Foxmail 邮箱', host: 'smtp.foxmail.com', port: 465, secure: 'ssl',
+    passHint: '填「授权码」，获取方式与 QQ 邮箱相同' },
+  { id: 'gmail', name: 'Gmail', host: 'smtp.gmail.com', port: 465, secure: 'ssl',
+    passHint: '需先开启两步验证，再用「应用专用密码」（16 位）登录，不能用 Google 账号密码' },
+  { id: 'outlook', name: 'Outlook / Hotmail', host: 'smtp.office365.com', port: 587, secure: 'starttls',
+    passHint: '一般用账号密码；若开启了两步验证则填「应用密码」，并需在账户设置里启用 SMTP AUTH' },
+  { id: 'aliyun', name: '阿里云个人邮箱', host: 'smtp.aliyun.com', port: 465, secure: 'ssl',
+    passHint: '填邮箱密码或单独设置的「三方客户端密码」，需在邮箱设置里开启 SMTP 服务' },
+  { id: 'exmail', name: '腾讯企业邮', host: 'smtp.exmail.qq.com', port: 465, secure: 'ssl',
+    passHint: '填「客户端专用密码」（企业邮后台生成），不是登录密码' },
+  { id: 'custom', name: '自定义', host: '', port: 465, secure: 'ssl',
+    passHint: '按服务商要求填写；多数国内邮箱需要的是「授权码 / 客户端专用密码」而非登录密码' },
+];
+
+export const providerById = (id) => MAIL_PROVIDERS.find((p) => p.id === id) || MAIL_PROVIDERS[MAIL_PROVIDERS.length - 1];
+
+// ---------- 邮件模板 ----------
+export const MAIL_TEMPLATES = [
+  { id: 'card', name: '卡片式（推荐）', desc: '带站点头部、引用块与按钮的 HTML 邮件，手机上也好读' },
+  { id: 'plain', name: '纯文本', desc: '无 HTML 无样式，兼容性最好，最不容易进垃圾箱' },
+  { id: 'minimal', name: '极简一行', desc: '只有一句摘要加一个链接，最短，适合当提醒看' },
+];
+
+const esc = (s) => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const nl2br = (s) => esc(s).replace(/\n/g, '<br>');
+
+/**
+ * 渲染一封通知邮件
+ * @param {string} tpl  模板 id：card / plain / minimal
+ * @param {object} d    { kind, site, siteUrl, postTitle, postUrl, adminUrl, author, email, content, pending }
+ */
+export function renderMail(tpl, d) {
+  const site = d.site || '博客';
+  const who = d.author || '访客';
+  const title = d.postTitle || '文章';
+  const isComment = d.kind !== 'reply';
+  const subject = isComment
+    ? `【${site}】文章《${title}》收到新评论`
+    : `【${site}】你在《${title}》的评论有了新回复`;
+  const head = isComment ? `${who} 在你的文章《${title}》发表了评论：` : `博主回复了你在《${title}》的评论：`;
+  const tail = isComment
+    ? (d.pending ? '该评论当前为「待审核」状态，需你在后台通过后才会公开显示。' : '该评论已直接发布。')
+    : '（本邮件只发送给本条评论的留言者）';
+  const action = isComment ? (d.pending ? '去后台审核' : '去后台查看') : '查看回复';
+  const actUrl = isComment ? (d.adminUrl || d.postUrl) : d.postUrl;
+
+  // --- 极简：一行 + 链接 ---
+  if (tpl === 'minimal') {
+    const oneLine = isComment
+      ? `${who}：${String(d.content || '').replace(/\s+/g, ' ').slice(0, 80)}`
+      : `博主：${String(d.content || '').replace(/\s+/g, ' ').slice(0, 80)}`;
+    return {
+      subject,
+      text: [
+        `${site} · ${head}`,
+        oneLine,
+        `${action}：${actUrl}`,
+        d.postUrl ? `文章：${d.postUrl}` : '',
+        '', tail,
+      ].filter((x) => x !== '').join('\n'),
+    };
+  }
+
+  // --- 纯文本 ---
+  const text = [
+    `${site} · ${head}`, '', String(d.content || ''), '',
+    `文章：${title}`,
+    `链接：${d.postUrl || ''}`,
+    isComment && d.email ? `留言者邮箱：${d.email}` : '',
+    isComment ? `管理地址：${d.adminUrl || ''}` : '',
+    '', tail,
+    '', `—— 本邮件由 ${site} 自动发送`,
+  ].filter((x) => x !== '').join('\n');
+
+  if (tpl === 'plain') return { subject, text };
+
+  // --- 卡片 HTML ---
+  const html = `<div style="background:#f5f7fa;padding:22px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
+  <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
+    <div style="background:#2563eb;color:#fff;padding:16px 22px;font-size:16px;font-weight:700">${esc(site)}</div>
+    <div style="padding:22px">
+      <div style="font-size:17px;font-weight:700;color:#111827;margin-bottom:14px">${esc(subject)}</div>
+      <div style="color:#6b7280;font-size:14px;margin-bottom:10px">${esc(head)}</div>
+      <div style="background:#f9fafb;border-left:3px solid #2563eb;border-radius:6px;padding:12px 14px;color:#1f2937;font-size:14.5px;line-height:1.75;white-space:pre-wrap">${nl2br(d.content)}</div>
+      <div style="margin-top:18px">
+        <a href="${esc(actUrl)}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:10px 20px;border-radius:8px;font-size:14px">${esc(action)}</a>
+      </div>
+      <div style="margin-top:16px;color:#9ca3af;font-size:12.5px;line-height:1.7">
+        文章：${esc(title)}<br>
+        ${d.postUrl ? `链接：<a href="${esc(d.postUrl)}" style="color:#6b7280">${esc(d.postUrl)}</a><br>` : ''}
+        ${isComment && d.email ? `留言者邮箱：${esc(d.email)}<br>` : ''}
+        ${esc(tail)}
+      </div>
+    </div>
+    <div style="padding:12px 22px;border-top:1px solid #f3f4f6;color:#9ca3af;font-size:12px">本邮件由 ${esc(site)} 自动发送，无需回复。</div>
+  </div>
+</div>`;
+  return { subject, text, html };
+}
+
+// ---------- MIME 构建 ----------
+const b64 = (str) => {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+};
+// 每行 76 字符折行（RFC 2045）
+const fold = (s) => (s.match(/.{1,76}/g) || []).join('\r\n');
+const addr = (name, mail) => (name ? `"${String(name).replace(/["\\]/g, '')}" <${mail}>` : `<${mail}>`);
+
+export function buildMime(o) {
+  const { from, fromName, to, subject, text, html } = o;
+  const now = new Date();
+  const date = now.toUTCString();
+  const mid = `<${now.getTime()}.${Math.random().toString(36).slice(2, 10)}@${(from || 'blog').split('@')[1] || 'blog'}>`;
+  const head = [
+    `From: ${addr(fromName, from)}`,
+    `To: <${to}>`,
+    `Subject: =?UTF-8?B?${b64(subject)}?=`,
+    `Date: ${date}`,
+    `Message-ID: ${mid}`,
+    'MIME-Version: 1.0',
+  ];
+  if (html) {
+    const b = '----=_b' + now.getTime().toString(36);
+    head.push(`Content-Type: multipart/alternative; boundary="${b}"`, '');
+    return [
+      ...head,
+      `--${b}`,
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: base64', '',
+      fold(b64(text || '')),
+      `--${b}`,
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64', '',
+      fold(b64(html)),
+      `--${b}--`, '',
+    ].join('\r\n');
+  }
+  head.push('Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '');
+  return [...head, '', fold(b64(text || '')), ''].join('\r\n');
+}
+
+// DATA 里以 . 开头的行要双写（RFC 5321 4.5.2）
+const dotStuff = (s) => s.replace(/\r\n\./g, '\r\n..').replace(/^\./m, '..');
+
+// ---------- SMTP 会话 ----------
+// 多行响应：以 `NNN-` 续行，`NNN ` 收尾
+function takeReply(buf) {
+  const parts = buf.split('\r\n');
+  const complete = parts.slice(0, -1);
+  const start = complete.findIndex((l) => /^\d{3}[- ]/.test(l));
+  if (start < 0) return null;
+  const block = [];
+  for (let i = start; i < complete.length; i += 1) {
+    block.push(complete[i]);
+    if (/^\d{3} /.test(complete[i])) {
+      return {
+        code: parseInt(complete[i].slice(0, 3), 10),
+        text: block.join('\n'),
+        rest: parts.slice(i + 1).join('\r\n'),
+      };
+    }
+  }
+  return null;
+}
+
+async function readReply(reader, state) {
+  const dec = new TextDecoder();
+  for (;;) {
+    const hit = takeReply(state.buf);
+    if (hit) { state.buf = hit.rest; return hit; }
+    const { value, done } = await reader.read();
+    if (done) throw new Error('SMTP 连接被服务器提前关闭');
+    state.buf += dec.decode(value, { stream: true });
+  }
+}
+
+class Smtp {
+  constructor(socket) {
+    this.socket = socket;
+    this.writer = socket.writable.getWriter();
+    this.reader = socket.readable.getReader();
+    this.state = { buf: '' };
+    this.enc = new TextEncoder();
+  }
+
+  async cmd(line, expect) {
+    if (line !== null) await this.writer.write(this.enc.encode(line + '\r\n'));
+    const r = await readReply(this.reader, this.state);
+    if (expect && !expect.includes(r.code)) {
+      throw new Error(`SMTP ${r.code}：${r.text.split('\n').pop()}`);
+    }
+    return r;
+  }
+
+  async close() {
+    try { await this.writer.close(); } catch (e) { /* 关闭失败无需处理 */ }
+    try { this.socket.close(); } catch (e) { /* 同上 */ }
+  }
+}
+
+async function getConnect(injected) {
+  if (injected) return injected;
+  const mod = await import('cloudflare:sockets');
+  return mod.connect;
+}
+
+/**
+ * 发送一封邮件
+ * @param {object} cfg  { host, port, secure:'ssl'|'starttls', user, pass, from, fromName, timeoutMs }
+ * @param {object} msg  { to, subject, text, html }
+ * @param {function} [connectFn] 仅供测试注入
+ * @returns {Promise<{ok:boolean, error?:string}>}
+ */
+export async function sendMail(cfg, msg, connectFn) {
+  const timeoutMs = cfg.timeoutMs || 15000;
+  const fail = (m) => ({ ok: false, error: m });
+  if (!cfg.host || !cfg.port) return fail('SMTP 服务器地址或端口未配置');
+  if (String(cfg.port) === '25') return fail('Cloudflare 禁止 25 端口，请改用 465（SSL）或 587（STARTTLS）');
+  if (!cfg.user || !cfg.pass) return fail('发件邮箱或密码（授权码）未填写');
+  if (!msg.to) return fail('收件人为空');
+
+  const connect = await getConnect(connectFn);
+  let socket = null;
+  const cl = { host: cfg.host, port: Number(cfg.port) };
+  try {
+    const ssl = cfg.secure === 'ssl' || Number(cfg.port) === 465;
+    cl.secureTransport = ssl ? 'on' : 'starttls';
+    socket = connect(cl);
+    let s = new Smtp(socket);
+    await s.cmd(null, [220]);
+
+    if (!ssl) {
+      // 587：先明文 EHLO，再 STARTTLS 升级，升级后必须重新 EHLO（服务器会丢弃升级前的状态）
+      await s.cmd(`EHLO ${cfg.host}`, [250]);
+      await s.cmd('STARTTLS', [220]);
+      const secure = socket.startTls();
+      s = new Smtp(secure);
+      socket = secure;
+    }
+    await s.cmd(`EHLO ${cfg.host}`, [250]);
+
+    // AUTH LOGIN：163 / QQ / Gmail 等均支持；按 base64 分两次提交
+    await s.cmd('AUTH LOGIN', [334]);
+    await s.cmd(b64(cfg.user), [334]);
+    await s.cmd(b64(cfg.pass), [235]);
+
+    await s.cmd(`MAIL FROM:<${cfg.from || cfg.user}>`, [250]);
+    await s.cmd(`RCPT TO:<${msg.to}>`, [250, 251]);
+    await s.cmd('DATA', [354]);
+    const raw = buildMime({ ...msg, from: cfg.from || cfg.user, fromName: cfg.fromName });
+    await s.cmd(dotStuff(raw) + '\r\n.', [250]);
+    try { await s.cmd('QUIT', [221, 250]); } catch (e) { /* 有些服务器直接断开，不影响发送结果 */ }
+    await s.close();
+    return { ok: true };
+  } catch (e) {
+    if (socket) { try { socket.close(); } catch (e2) { /* ignore */ } }
+    return fail(e && e.message ? e.message : String(e));
+  } finally {
+    // 超时保护见 withTimeout，此处只负责收尾
+  }
+}
+
+// 给整次发送套一个硬超时：握手卡住时不能把请求拖死
+export async function sendMailWithTimeout(cfg, msg, connectFn) {
+  const ms = cfg.timeoutMs || 15000;
+  let timer = null;
+  const guard = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`连接或发送超时（${ms / 1000} 秒）`)), ms); });
+  try {
+    return await Promise.race([sendMail(cfg, msg, connectFn), guard]);
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// ---------- 配置校验 ----------
+// 从设置里组装发信配置；缺项直接给出可读错误，避免发出去才失败
+export function mailConfigFrom(s) {
+  const enabled = s.get('mail_enabled') === '1';
+  const cfg = {
+    enabled,
+    onComment: s.get('mail_on_comment') === '1',
+    onReply: s.get('mail_on_reply') === '1',
+    provider: s.get('mail_provider') || '163',
+    host: (s.get('mail_host') || '').trim(),
+    port: parseInt(s.get('mail_port'), 10) || 465,
+    secure: s.get('mail_secure') === 'starttls' ? 'starttls' : 'ssl',
+    user: (s.get('mail_user') || '').trim(),
+    pass: s.get('mail_pass') || '',
+    fromName: (s.get('mail_from_name') || '').trim() || s.get('site_title') || '博客',
+    template: ['card', 'plain', 'minimal'].includes(s.get('mail_template')) ? s.get('mail_template') : 'card',
+    timeoutMs: 15000,
+  };
+  return cfg;
+}
+
+export function mailConfigError(cfg) {
+  if (!cfg.host) return 'SMTP 服务器地址未填写';
+  if (String(cfg.port) === '25') return 'Cloudflare 禁止 25 端口，请改用 465（SSL）或 587（STARTTLS）';
+  if (!/^\d{2,5}$/.test(String(cfg.port))) return '端口不合法';
+  if (!cfg.user) return '发件邮箱未填写';
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cfg.user)) return '发件邮箱格式不正确';
+  if (!cfg.pass) return '密码 / 授权码未填写';
+  return '';
+}

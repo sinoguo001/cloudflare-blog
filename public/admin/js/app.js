@@ -14,6 +14,38 @@ let editor = null; // 当前编辑器实例
 let dirty = false; // 文章是否有未保存修改（全局守卫用）
 let draftSaver = null; // 由编辑器页注入的“保存草稿”函数（Ctrl+S 用）
 
+// ---------- 邮件服务商预设（与 functions/_lib/mail.js 的 MAIL_PROVIDERS 对应） ----------
+// 选服务商后自动填服务器 / 端口 / 加密方式，并把「授权码」提示显示出来
+const MAIL_PROVIDERS = [
+  { id: '163', name: '网易 163 邮箱', host: 'smtp.163.com', port: 465, secure: 'ssl',
+    how: '163 网页版 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务 → 拿到授权码' },
+  { id: '126', name: '网易 126 邮箱', host: 'smtp.126.com', port: 465, secure: 'ssl',
+    how: '126 网页版 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务' },
+  { id: 'yeah', name: '网易 Yeah.net', host: 'smtp.yeah.net', port: 465, secure: 'ssl',
+    how: '获取方式同 163 邮箱' },
+  { id: 'qq', name: 'QQ 邮箱', host: 'smtp.qq.com', port: 465, secure: 'ssl',
+    how: 'QQ 邮箱 → 设置 → 账号 → 开启 IMAP/SMTP 服务 → 发短信后生成 16 位授权码' },
+  { id: 'foxmail', name: 'Foxmail 邮箱', host: 'smtp.foxmail.com', port: 465, secure: 'ssl',
+    how: '获取方式与 QQ 邮箱相同' },
+  { id: 'gmail', name: 'Gmail', host: 'smtp.gmail.com', port: 465, secure: 'ssl',
+    how: '需先开启两步验证，再生成「应用专用密码」（16 位），不能用 Google 账号密码' },
+  { id: 'outlook', name: 'Outlook / Hotmail', host: 'smtp.office365.com', port: 587, secure: 'starttls',
+    how: '一般用账号密码；开了两步验证则用「应用密码」，并需在账户设置里启用 SMTP AUTH' },
+  { id: 'aliyun', name: '阿里云个人邮箱', host: 'smtp.aliyun.com', port: 465, secure: 'ssl',
+    how: '邮箱设置里开启 SMTP 服务，可用邮箱密码或「三方客户端密码」' },
+  { id: 'exmail', name: '腾讯企业邮', host: 'smtp.exmail.qq.com', port: 465, secure: 'ssl',
+    how: '用企业邮后台生成的「客户端专用密码」，不是登录密码' },
+  { id: 'custom', name: '自定义', host: '', port: 465, secure: 'ssl',
+    how: '按服务商要求填写；多数国内邮箱要的是「授权码 / 客户端专用密码」而非登录密码' },
+];
+const MAIL_TEMPLATES = [
+  { id: 'card', name: '卡片式（推荐）', desc: '带站点头部、引用块与按钮的 HTML 邮件，手机上也好读' },
+  { id: 'plain', name: '纯文本', desc: '无 HTML 无样式，兼容性最好，最不容易进垃圾箱' },
+  { id: 'minimal', name: '极简一行', desc: '只有一句摘要加一个链接，最短，适合当提醒看' },
+];
+// 这些服务商必须填「授权码 / 专用密码」，不能填登录密码 —— 这是最常见的配置失败原因
+const MAIL_AUTH_CODE = ['163', '126', 'yeah', 'qq', 'foxmail', 'gmail', 'exmail'];
+
 // ---------- 工具 ----------
 function pageTitle(t) { document.title = (t ? t + ' · ' : '') + '博客管理后台'; }
 // 上传提示：若图片已被转成 WebP，附上体积变化（d._webp 由 API.upload 写入）
@@ -81,7 +113,10 @@ function viewSetup() {
     <form id="st">
       <div class="field"><label>站点名称</label><input class="inp" name="site_title" value="我的博客" maxlength="60" required></div>
       <div class="field"><label>副标题（首页大字标语）</label><input class="inp" name="site_subtitle" value="记录 · 思考 · 分享" maxlength="80"></div>
-      <div class="field"><label>作者署名</label><input class="inp" name="author_name" value="博主" maxlength="30"></div>
+      <div style="display:flex;gap:14px">
+        <div class="field" style="flex:1"><label>作者署名</label><input class="inp" name="author_name" value="博主" maxlength="30"></div>
+        <div class="field" style="flex:1"><label>博主邮箱（选填）</label><input class="inp" name="email" type="email" placeholder="name@example.com" autocomplete="email"></div>
+      </div>
       <div style="display:flex;gap:14px">
         <div class="field" style="flex:1"><label>管理员用户名</label><input class="inp" name="username" placeholder="3–32 位字母数字下划线" required></div>
         <div class="field" style="flex:1"><label>主题色</label><input class="inp" name="accent" type="color" value="#2563eb" style="height:40px;padding:4px"></div>
@@ -110,6 +145,11 @@ function viewSetup() {
     errEl.textContent = '';
     const fd = new FormData(ev.target);
     if (fd.get('password') !== fd.get('password2')) { errEl.textContent = '两次输入的密码不一致'; return; }
+    // 邮箱选填，只校验格式（与后端 isEmail 同一套规则）
+    const em = String(fd.get('email') || '').trim();
+    if (em && !/^[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$/.test(em)) {
+      errEl.textContent = '邮箱格式不正确（示例：name@example.com）'; return;
+    }
     try {
       await API.post('/setup', Object.fromEntries(fd.entries()));
       toast('初始化完成，欢迎使用');
@@ -1276,9 +1316,70 @@ async function viewSettings(tabArg) {
         <p class="hint" style="margin-bottom:0">头像按邮箱 MD5 取值，<b>邮箱原文不会出现在页面上</b>，也不随接口下发给前台。若某个源取不到头像，会自动回退显示昵称首字方块。国内访问建议用 WeAvatar 或 Cravatar 镜像。</p>
       </div>
     </div>
+
+    <div class="card">
+      <div class="sec-title">邮件通知 <small>新评论提醒博主 · 博主回复提醒留言者</small></div>
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="s-mail_enabled"> <b>启用邮件通知</b>（默认关闭；用第三方邮箱的 SMTP 发送）</label>
+      <p class="hint" style="margin:6px 0 0">收件人：新评论通知发到「安全设置 → 博主邮箱」；回复通知发到留言者提交评论时填的邮箱。</p>
+      <div id="mail-body" style="margin-top:12px">
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><input type="checkbox" id="s-mail_on_comment"> 有新评论时，发邮件通知我</label>
+        <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="s-mail_on_reply"> 我回复评论时，发邮件通知留言者</label>
+
+        <div style="display:flex;gap:14px;margin-top:14px">
+          <div class="field" style="flex:1"><label>邮件服务商</label>
+            <select class="inp" id="s-mail_provider"></select>
+          </div>
+          <div class="field" style="flex:1"><label>发件邮箱</label><input class="inp" id="s-mail_user" type="email" placeholder="you@163.com" autocomplete="email"></div>
+        </div>
+
+        <div class="mail-notice" id="mail-pass-tip"></div>
+
+        <div style="display:flex;gap:14px">
+          <div class="field" style="flex:1"><label>密码 / 授权码</label>
+            <input class="inp" id="s-mail_pass" type="password" autocomplete="new-password" placeholder="留空表示不修改">
+            <p class="hint" style="margin:6px 0 0">已保存的授权码不会回显；要清除请点下方「清除已保存的授权码」。</p>
+          </div>
+          <div class="field" style="flex:1"><label>发件人名称（可留空）</label><input class="inp" id="s-mail_from_name" placeholder="默认使用站点名称"></div>
+        </div>
+
+        <div style="display:flex;gap:14px">
+          <div class="field" style="flex:1"><label>SMTP 服务器</label><input class="inp" id="s-mail_host" placeholder="选服务商后自动填写"></div>
+          <div class="field" style="width:120px"><label>端口</label><input class="inp" id="s-mail_port" type="number" min="1" max="65535">
+            <p class="hint" id="mail-port-warn" style="margin:6px 0 0;color:#b91c1c;font-weight:600" hidden></p></div>
+          <div class="field" style="width:170px"><label>加密方式</label>
+            <select class="inp" id="s-mail_secure">
+              <option value="ssl">SSL/TLS（465）</option>
+              <option value="starttls">STARTTLS（587）</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field"><label>通知邮件格式</label>
+          <select class="inp" id="s-mail_template"></select>
+          <p class="hint" id="mail-tpl-note" style="margin:6px 0 0"></p>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <button class="btn g" type="button" id="mail-test">发送测试邮件</button>
+          <button class="btn g" type="button" id="mail-clear-pass">清除已保存的授权码</button>
+          <span class="hint" id="mail-test-note"></span>
+        </div>
+        <div class="mail-notice danger" style="margin-bottom:0">
+          ⛔ <b>Cloudflare 禁用 25 端口</b>：本博客跑在 Cloudflare Workers 上，<b>25 端口出站被官方封禁</b>，
+          填 25 会直接保存失败、邮件一封也发不出去。请只用 <b>465（SSL/TLS）</b> 或 <b>587（STARTTLS）</b>；
+          若你的邮箱服务商只提供 25，说明它不能用于本方案，请换 163 / QQ / Gmail 等支持 465 或 587 的服务商。<br>
+          💡 测试邮件发到「安全设置 → 博主邮箱」，<b>用的是已保存的配置</b>：改完参数请先点「保存全部设置」再测试。发信是异步的，点完稍等几秒看邮箱（含垃圾箱）。
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="set-pane" data-pane="security">
+    <div class="card">
+      <div class="sec-title">博主邮箱</div>
+      <div class="field"><label>邮箱地址（选填）</label><input class="inp" name="email" id="s-email" type="email" placeholder="name@example.com" autocomplete="email"></div>
+      <p class="hint" style="margin-bottom:0">只做<b>格式校验</b>，不验证邮箱是否真实存在、也不会发送验证邮件。当前版本仅保存在设置中，不会在前台公开显示；留空即清除。</p>
+    </div>
     <div class="card">
       <div class="sec-title">修改登录密码</div>
       <div style="display:flex;gap:10px">
@@ -1317,11 +1418,88 @@ async function viewSettings(tabArg) {
   set('s-footer_text', s.footer_text);
   set('s-beian', s.beian);
   set('s-copyright', s.copyright);
+  set('s-email', s.email);
   set('s-code_theme', s.code_theme || 'github');
   set('s-gravatar_source', s.gravatar_source || 'weavatar');
   v.querySelector('#s-allow').checked = s.allow_comments !== '0';
   v.querySelector('#s-audit').checked = s.comment_audit !== '0';
   v.querySelector('#s-captcha').checked = s.captcha !== '0';
+
+  // ---- 邮件通知：服务商预设 / 授权码提醒 / 测试发送 ----
+  const mpSel = v.querySelector('#s-mail_provider');
+  const mtSel = v.querySelector('#s-mail_template');
+  mpSel.innerHTML = MAIL_PROVIDERS.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+  mtSel.innerHTML = MAIL_TEMPLATES.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+  const mHost = v.querySelector('#s-mail_host');
+  const mPort = v.querySelector('#s-mail_port');
+  const mSec = v.querySelector('#s-mail_secure');
+  const mTip = v.querySelector('#mail-pass-tip');
+  const mTplNote = v.querySelector('#mail-tpl-note');
+  const mOn = v.querySelector('#s-mail_enabled');
+  const mBody = v.querySelector('#mail-body');
+  const mPass = v.querySelector('#s-mail_pass');
+  let clearPass = false;
+  // ---- 端口 25 校验：Cloudflare 封禁 25 出站，打字即红字提示，保存再拦一道 ----
+  const mPortWarn = v.querySelector('#mail-port-warn');
+  const portBad = () => String(mPort.value || '').trim() === '25';
+  const checkPort = () => {
+    const bad = portBad();
+    mPortWarn.hidden = !bad;
+    if (bad) mPortWarn.textContent = '⛔ 25 端口在 Cloudflare 上被封禁，无法保存，请改用 465 或 587';
+    mPort.style.borderColor = bad ? '#b91c1c' : '';
+    mPort.style.background = bad ? '#fef2f2' : '';
+    return bad;
+  };
+  mPort.addEventListener('input', checkPort);
+  const syncMail = () => {
+    const p = MAIL_PROVIDERS.find((x) => x.id === mpSel.value) || MAIL_PROVIDERS[MAIL_PROVIDERS.length - 1];
+    if (p.host) { mHost.value = p.host; mPort.value = p.port; mSec.value = p.secure; }
+    // 163 / QQ / Gmail 等必须填授权码：这是配不通的第一大原因，红字写在密码框上方
+    const needCode = MAIL_AUTH_CODE.includes(p.id);
+    mTip.innerHTML = `⚠️ <b>${esc(p.name)}</b>：${needCode
+      ? '密码栏要填<b style="color:#b91c1c">「授权码 / 专用密码」</b>，<b style="color:#b91c1c">不是邮箱登录密码</b>。' : ''}${esc(p.how)}`;
+    mTplNote.textContent = (MAIL_TEMPLATES.find((x) => x.id === mtSel.value) || {}).desc || '';
+    const on = mOn.checked;
+    mBody.style.opacity = on ? '1' : '.55';
+    mBody.querySelectorAll('input,select,button').forEach((e) => { e.disabled = !on; });
+    checkPort();
+  };
+  mpSel.addEventListener('change', syncMail);
+  mtSel.addEventListener('change', syncMail);
+  mOn.addEventListener('change', syncMail);
+  set('s-mail_provider', s.mail_provider || '163');
+  set('s-mail_host', s.mail_host); set('s-mail_port', s.mail_port || '465');
+  set('s-mail_secure', s.mail_secure || 'ssl');
+  set('s-mail_user', s.mail_user); set('s-mail_from_name', s.mail_from_name);
+  set('s-mail_template', s.mail_template || 'card');
+  v.querySelector('#s-mail_on_comment').checked = s.mail_on_comment !== '0';
+  v.querySelector('#s-mail_on_reply').checked = s.mail_on_reply !== '0';
+  mOn.checked = s.mail_enabled === '1';
+  mPass.placeholder = s.mail_pass_set === '1' ? '已保存，留空表示不修改' : '';
+  syncMail();
+  v.querySelector('#mail-test').addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    const note = v.querySelector('#mail-test-note');
+    // 测试用的是「已保存」的配置；端口填了 25 时先拦住，否则测的是旧配置、结果会误导人
+    if (portBad()) {
+      note.className = 'hint mail-bad';
+      note.textContent = '端口 25 在 Cloudflare 上被封禁，请先改成 465 或 587 并保存后再测试';
+      return;
+    }
+    note.className = 'hint'; note.textContent = '正在发送，请稍候…'; btn.disabled = true;
+    try {
+      const r = await API.post('/mail/test', {});
+      note.className = 'hint mail-ok';
+      note.textContent = '发送成功：已发到 ' + (r.to || '') + '，请查收（含垃圾箱）';
+    } catch (e) {
+      note.className = 'hint mail-bad'; note.textContent = e.message;
+    }
+    btn.disabled = false;
+  });
+  v.querySelector('#mail-clear-pass').addEventListener('click', () => {
+    clearPass = true; mPass.value = ''; mPass.placeholder = '已标记清除，保存后生效';
+    toast('已标记清除授权码，点「保存全部设置」后生效');
+  });
   set('s-logo_image', s.logo_image); set('s-favicon_image', s.favicon_image);
 
   // ---- 永久链接（伪静态）：预设下拉 + 自定义输入 + 实时示例 ----
@@ -1420,9 +1598,20 @@ async function viewSettings(tabArg) {
     if (pw !== pw2) { toast('两次输入的新密码不一致', 'bad'); return; }
     // 后端要求 ≥6 位、不足会静默忽略，必须在前端拦住，否则会误以为改成功了
     if (pw && pw.length < 6) { toast('新密码至少 6 位', 'bad'); return; }
+    const email = v.querySelector('#s-email').value.trim();
+    // 邮箱只看格式（与后端 isEmail 同一套规则）；留空表示清除，不拦
+    if (email && !/^[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$/.test(email)) {
+      toast('邮箱格式不正确（示例：name@example.com）', 'bad'); return;
+    }
     const pm = pmValue();
     if (!pmValid(pm)) {
       toast('永久链接格式不合法：需以 / 开头且包含 {slug} 或 {id}', 'bad');
+      return;
+    }
+    // 25 端口在 Cloudflare 上根本连不出去，后端也会拒；这里先拦，免得配完才发现发不出
+    if (portBad()) {
+      toast('SMTP 端口不能填 25：Cloudflare 禁止 25 端口，请改用 465（SSL）或 587（STARTTLS）', 'bad');
+      mPort.focus();
       return;
     }
     const body = {
@@ -1436,6 +1625,7 @@ async function viewSettings(tabArg) {
       footer_text: v.querySelector('#s-footer_text').value,
       beian: v.querySelector('#s-beian').value.trim(),
       copyright: v.querySelector('#s-copyright').value,
+      email,
       code_theme: v.querySelector('#s-code_theme').value,
       gravatar_source: v.querySelector('#s-gravatar_source').value,
       allow_comments: v.querySelector('#s-allow').checked,
@@ -1443,7 +1633,20 @@ async function viewSettings(tabArg) {
       captcha: v.querySelector('#s-captcha').checked,
       logo_image: logoIn.value.trim(),
       favicon_image: favIn.value.trim(),
+      mail_enabled: v.querySelector('#s-mail_enabled').checked,
+      mail_on_comment: v.querySelector('#s-mail_on_comment').checked,
+      mail_on_reply: v.querySelector('#s-mail_on_reply').checked,
+      mail_provider: v.querySelector('#s-mail_provider').value,
+      mail_host: v.querySelector('#s-mail_host').value.trim(),
+      mail_port: v.querySelector('#s-mail_port').value,
+      mail_secure: v.querySelector('#s-mail_secure').value,
+      mail_user: v.querySelector('#s-mail_user').value.trim(),
+      mail_from_name: v.querySelector('#s-mail_from_name').value.trim(),
+      mail_template: v.querySelector('#s-mail_template').value,
+      mail_clear_pass: clearPass,
     };
+    // 授权码只在真的填了才提交：留空 = 保持原值，避免每次保存把已存的密码清掉
+    if (mPass.value) body.mail_pass = mPass.value;
     if (pw) body.new_password = pw;
     try {
       await API.patch('/settings', body);
