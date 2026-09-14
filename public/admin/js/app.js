@@ -20,16 +20,18 @@ let draftSaver = null; // 由编辑器页注入的“保存草稿”函数（Ctr
 // 必须写明的原因：不少邮箱只开放其中一种，选错就是连不上，表现为握手超时而非报错。
 // ⚠️ 网易 163 / 126 / Yeah、阿里云都**不开 587**；Office365 反过来**不支持 465**。
 // ⚠️ 163 / Yeah 还有个 994 端口，也是隐式 SSL，跟 465 等价。
+// 注：端口 / 加密方式不写进 how —— 统一由 syncMail() 从 ports / secures 生成，
+// 附在授权码提示后面。两处各写一份会改漏，也会把这一行撑得又长又挤。
 const MAIL_PROVIDERS = [
   { id: '163', name: '网易 163 邮箱', host: 'smtp.163.com', port: 465, secure: 'ssl',
     ports: [465, 994], secures: ['ssl'],
-    how: '163 网页版 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务 → 拿到授权码（不开 587）' },
+    how: '163 网页版 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务 → 拿到授权码' },
   { id: '126', name: '网易 126 邮箱', host: 'smtp.126.com', port: 465, secure: 'ssl',
     ports: [465], secures: ['ssl'],
-    how: '126 网页版 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务（不开 587）' },
+    how: '126 网页版 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务' },
   { id: 'yeah', name: '网易 Yeah.net', host: 'smtp.yeah.net', port: 465, secure: 'ssl',
     ports: [465, 994], secures: ['ssl'],
-    how: '获取方式同 163 邮箱（不开 587）' },
+    how: '获取方式同 163 邮箱' },
   { id: 'qq', name: 'QQ 邮箱', host: 'smtp.qq.com', port: 465, secure: 'ssl',
     ports: [465, 587], secures: ['ssl', 'starttls'],
     how: 'QQ 邮箱 → 设置 → 账号 → 开启 IMAP/SMTP 服务 → 发短信后生成 16 位授权码' },
@@ -41,13 +43,13 @@ const MAIL_PROVIDERS = [
     how: '需先开启两步验证，再生成「应用专用密码」（16 位），不能用 Google 账号密码' },
   { id: 'outlook', name: 'Outlook / Office 365', host: 'smtp.office365.com', port: 587, secure: 'starttls',
     ports: [587], secures: ['starttls'],
-    how: '微软官方只开放 587（STARTTLS），**465 连不上**；开了两步验证要用「应用密码」，且需在账户设置里启用 SMTP AUTH' },
+    how: '开了两步验证要用「应用密码」，且需在账户设置里启用 SMTP AUTH' },
   { id: 'aliyun', name: '阿里云邮箱', host: 'smtp.aliyun.com', port: 465, secure: 'ssl',
     ports: [465], secures: ['ssl'],
-    how: '邮箱设置里开启 SMTP 服务，可用邮箱密码或「三方客户端密码」（官方说明 80 与 587 端口未开通）' },
+    how: '邮箱设置里开启 SMTP 服务，可用邮箱密码或单独设置的「三方客户端密码」' },
   { id: 'exmail', name: '腾讯企业邮', host: 'smtp.exmail.qq.com', port: 465, secure: 'ssl',
     ports: [465, 587], secures: ['ssl', 'starttls'],
-    how: '用企业邮后台生成的「客户端专用密码」，不是登录密码' },
+    how: '在企业邮后台生成「客户端专用密码」' },
   { id: 'custom', name: '自定义', host: '', port: 465, secure: 'ssl',
     ports: [], secures: ['ssl', 'starttls'],
     how: '按服务商要求填写；多数国内邮箱要的是「授权码 / 客户端专用密码」而非登录密码' },
@@ -1359,8 +1361,7 @@ async function viewSettings(tabArg) {
         <div style="display:flex;gap:14px">
           <div class="field" style="flex:1"><label>SMTP 服务器</label><input class="inp" id="s-mail_host" placeholder="选服务商后自动填写"></div>
           <div class="field" style="width:120px"><label>端口</label><input class="inp" id="s-mail_port" type="number" min="1" max="65535" placeholder="465">
-            <p class="hint" id="mail-port-warn" style="margin:6px 0 0;color:#b91c1c;font-weight:600" hidden></p>
-            <p class="hint" id="mail-port-note" style="margin:4px 0 0"></p></div>
+            <p class="hint" id="mail-port-warn" style="margin:6px 0 0;color:#b91c1c;font-weight:600" hidden></p></div>
           <div class="field" style="width:170px"><label>加密方式</label>
             <select class="inp" id="s-mail_secure">
               <option value="ssl">SSL / 隐式 TLS</option>
@@ -1448,7 +1449,6 @@ async function viewSettings(tabArg) {
   const mHost = v.querySelector('#s-mail_host');
   const mPort = v.querySelector('#s-mail_port');
   const mSec = v.querySelector('#s-mail_secure');
-  const mPortNote = v.querySelector('#mail-port-note');
   const mTip = v.querySelector('#mail-pass-tip');
   const mTplNote = v.querySelector('#mail-tpl-note');
   const mOn = v.querySelector('#s-mail_enabled');
@@ -1506,16 +1506,23 @@ async function viewSettings(tabArg) {
     mSec.querySelectorAll('option').forEach((o) => { o.disabled = !allow.includes(o.value); });
     if (!allow.includes(mSec.value)) { mSec.value = allow[0]; syncPortBySecure(); }
   };
+  // 端口 / 加密方式说明：并进授权码提示里，不单独占一行 —— 挂在端口框下方会把整行撑高、挤坏表单布局。
+  // 只从 ports / secures 生成，避免和预设表里的 how 各写一份改漏。
+  const portsText = (p) => {
+    if (!(p.ports && p.ports.length)) return '端口按服务商要求填，常见 465（SSL）或 587（STARTTLS）';
+    const list = p.ports.join(' / ');
+    if (p.secures.length > 1) return `可用端口 ${list}：465 配 SSL，587 配 STARTTLS`;
+    return p.secures[0] === 'ssl'
+      ? `只开放端口 ${list}（SSL / 隐式 TLS；没有 587，选 STARTTLS 连不上）`
+      : `只开放端口 ${list}（STARTTLS；没有 465，选 SSL 连不上）`;
+  };
   const syncMail = () => {
     const p = curProvider();
     mHost.placeholder = p.host ? '选服务商后自动填写' : '如 smtp.example.com';
-    mPortNote.textContent = (p.ports && p.ports.length)
-      ? `${p.name}只开放：${p.ports.join(' / ')}${p.secures.length === 1 ? (p.secures[0] === 'ssl' ? '（SSL）' : '（STARTTLS）') : ''}`
-      : '';
     // 163 / QQ / Gmail 等必须填授权码：这是配不通的第一大原因，红字写在密码框上方
     const needCode = MAIL_AUTH_CODE.includes(p.id);
     mTip.innerHTML = `⚠️ <b>${esc(p.name)}</b>：${needCode
-      ? '密码栏要填<b style="color:#b91c1c">「授权码 / 专用密码」</b>，<b style="color:#b91c1c">不是邮箱登录密码</b>。' : ''}${esc(p.how)}`;
+      ? '密码栏要填<b style="color:#b91c1c">「授权码 / 专用密码」</b>，<b style="color:#b91c1c">不是邮箱登录密码</b>。' : ''}${esc(p.how)}。<br>🔌 ${esc(portsText(p))}`;
     mTplNote.textContent = (MAIL_TEMPLATES.find((x) => x.id === mtSel.value) || {}).desc || '';
     const on = mOn.checked;
     mBody.style.opacity = on ? '1' : '.55';
