@@ -235,15 +235,17 @@ class Smtp {
  * 发送一封邮件
  * @param {object} cfg  { host, port, secure:'ssl'|'starttls', user, pass, from, fromName, timeoutMs }
  * @param {object} msg  { to, subject, text, html }
- * @param {function} connectFn  connect(address, options) => Socket
+ * @param {function} connectFn  connect(address, options) => Socket（address 用 hostname 字段，
+ *   secureTransport 等选项放第二个参数）
+ * @param {object} [prog]  可选的进度记录对象，外层超时时用它报出卡在哪一步
  *   由调用方（functions/[[path]].js）静态 import 'cloudflare:sockets' 后传入。
  *   为什么不在这里 import：Pages Functions 的打包器只稳妥支持静态 import，
  *   而顶层静态 import 会让本地 Node 测试直接崩在模块加载阶段；由调用方传入，两边都能跑。
  *   本地测试则注入假 socket 工厂 —— 注意假工厂不校验字段，所以 address 的字段名
  *   必须在测试里单独断言（曾经写成 host，漏过 72 个用例，上线才暴露）。
  */
-export async function sendMail(cfg, msg, connectFn) {
-  const timeoutMs = cfg.timeoutMs || 15000;
+export async function sendMail(cfg, msg, connectFn, prog) {
+  const timeoutMs = cfg.timeoutMs || 30000;
   const fail = (m) => ({ ok: false, error: m });
   if (!cfg.host || !cfg.port) return fail('SMTP 服务器地址或端口未配置');
   if (String(cfg.port) === '25') return fail('Cloudflare 禁止 25 端口，请改用 465（SSL）或 587（STARTTLS）');
@@ -251,34 +253,47 @@ export async function sendMail(cfg, msg, connectFn) {
   if (!msg.to) return fail('收件人为空');
   if (typeof connectFn !== 'function') return fail('未拿到 cloudflare:sockets 的 connect（当前环境可能不支持 TCP 出站）');
 
+  // 进度用外部对象记录：外层超时时要能说出「卡在哪一步」，
+  // 否则用户只能看到一个笼统的「超时」，无从排查。
+  const P = prog || { stage: '初始化', t0: Date.now(), at: Date.now() };
+  const at = (s) => { P.stage = s; P.at = Date.now(); };
+
   let socket = null;
-  let stage = '初始化';
-  // Cloudflare 的 SocketAddress 字段是 hostname，写成 host 会连不上
-  const cl = { hostname: cfg.host, port: Number(cfg.port) };
   try {
     const ssl = cfg.secure === 'ssl' || Number(cfg.port) === 465;
-    cl.secureTransport = ssl ? 'on' : 'starttls';
-    stage = `连接 ${cfg.host}:${cfg.port}（${ssl ? 'SSL/TLS' : 'STARTTLS'}）`;
-    socket = connectFn(cl);
+    at(`TCP/TLS 握手 ${cfg.host}:${cfg.port}（${ssl ? '465 隐式 SSL' : '587 STARTTLS'}）`);
+    // ⚠️ connect(address, options) —— secureTransport 必须放在第二个参数 options 里。
+    //    曾经把它塞进 address（第一个参数），Cloudflare 不认，结果就是明文去连 465：
+    //    服务器等着 TLS 握手、我们等着 220 问候，双方干等到超时。
+    //    本地假 socket 不校验参数位置，所以 72 个用例全没抓到，上线才暴露。
+    socket = connectFn(
+      { hostname: cfg.host, port: Number(cfg.port) },
+      { secureTransport: ssl ? 'on' : 'starttls' },
+    );
+    // opened 在连接建立时 resolve、出错时 reject。
+    // 不 await 的话连接失败要等到第一次 read 超时才被发现。
+    if (socket && socket.opened) await socket.opened;
+
     let s = new Smtp(socket);
-    stage = '读取服务器问候（220）';
+    at('读取服务器问候（220）');
     await s.cmd(null, [220]);
 
     if (!ssl) {
       // 587：先明文 EHLO，再 STARTTLS 升级，升级后必须重新 EHLO（服务器会丢弃升级前的状态）
-      stage = '明文 EHLO';
-      await s.cmd(`EHLO ${cfg.host}`, [250]);
-      stage = 'STARTTLS 升级';
+      at('明文 EHLO');
+      await s.cmd(`EHLO ${ehloOf(cfg)}`, [250]);
+      at('STARTTLS 升级');
       await s.cmd('STARTTLS', [220]);
       const secure = socket.startTls();
       s = new Smtp(secure);
       socket = secure;
+      if (secure && secure.opened) await secure.opened;
     }
-    stage = 'EHLO 握手';
-    await s.cmd(`EHLO ${cfg.host}`, [250]);
+    at('EHLO 握手');
+    await s.cmd(`EHLO ${ehloOf(cfg)}`, [250]);
 
     // AUTH LOGIN：163 / QQ / Gmail 等均支持；按 base64 分两次提交
-    stage = '登录认证（AUTH LOGIN）';
+    at('登录认证（AUTH LOGIN）');
     await s.cmd('AUTH LOGIN', [334]);
     await s.cmd(b64(cfg.user), [334]);
     // 535 几乎都是「填了登录密码而不是授权码」，单独提示，省得查半天
@@ -286,14 +301,14 @@ export async function sendMail(cfg, msg, connectFn) {
       await s.cmd(b64(cfg.pass), [235]);
     } catch (ae) {
       const t = String((ae && ae.message) || '');
-      if (t.includes('535')) throw new Error('535 认证失败：密码栏要填 163 的「SMTP 授权码」，不是邮箱登录密码。去 163 网页版 → 设置 → POP3/SMTP/IMAP 开启后生成');
+      if (t.includes('535')) throw new Error('535 认证失败：密码栏要填邮箱的「SMTP 授权码 / 客户端专用密码」，不是邮箱登录密码');
       throw ae;
     }
 
-    stage = '声明发件人与收件人';
+    at('声明发件人与收件人');
     await s.cmd(`MAIL FROM:<${cfg.from || cfg.user}>`, [250]);
     await s.cmd(`RCPT TO:<${msg.to}>`, [250, 251]);
-    stage = '投递邮件内容（DATA）';
+    at('投递邮件内容（DATA）');
     await s.cmd('DATA', [354]);
     const raw = buildMime({ ...msg, from: cfg.from || cfg.user, fromName: cfg.fromName });
     await s.cmd(dotStuff(raw) + '\r\n.', [250]);
@@ -303,17 +318,39 @@ export async function sendMail(cfg, msg, connectFn) {
   } catch (e) {
     if (socket) { try { socket.close(); } catch (e2) { /* ignore */ } }
     const why = e && e.message ? e.message : String(e);
-    return fail(`[${stage}] ${why}`);
+    return fail(`[${P.stage}] ${why}`);
   }
+}
+
+// EHLO 报的主机名：不能拿 SMTP 服务器自己的域名（如 smtp.163.com）当本机名，
+// 服务器会认为客户端伪造身份，表现为延迟甚至直接断连。优先用站点域名，兜底 localhost。
+function ehloOf(cfg) {
+  const h = (cfg && cfg.ehlo) ? String(cfg.ehlo).trim() : '';
+  return h || 'localhost';
+}
+
+// 超时只说「超时」没法排查，得按卡住的阶段给出最可能的原因
+function timeoutHint(stage) {
+  if (/握手|问候/.test(stage)) {
+    return '最常见：① 该 SMTP 服务器拒绝 Cloudflare 的出站连接 —— Cloudflare 的 TCP 出站源 IP 不在其公布的 IP 段内，163/126/QQ 等国内邮箱常直接拒境外连接；② 端口与加密方式不匹配（465=SSL，587=STARTTLS）。建议先用 smtp.office365.com:587 或 smtp.gmail.com:465 试一次，确认通道本身通不通。';
+  }
+  if (/认证|登录/.test(stage)) return '连接已建立但认证没返回，多半是账号被限流，或需要用授权码 / 应用专用密码。';
+  if (/投递|DATA/.test(stage)) return '认证已通过、卡在投递，通常是内容被扫描或邮件过大。';
+  return '建议换端口或换服务商各试一次，并到 Cloudflare 控制台 → Workers & Pages → 你的项目 → Functions → 日志看完整堆栈。';
 }
 
 // 给整次发送套一个硬超时：握手卡住时不能把请求拖死
 export async function sendMailWithTimeout(cfg, msg, connectFn) {
-  const ms = cfg.timeoutMs || 15000;
+  const ms = cfg.timeoutMs || 30000;
+  const prog = { stage: '初始化', t0: Date.now(), at: Date.now() };
   let timer = null;
-  const guard = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`连接或发送超时（${ms / 1000} 秒）`)), ms); });
+  const guard = new Promise((_, rej) => {
+    timer = setTimeout(() => rej(new Error(
+      `连接或发送超时（${ms / 1000} 秒），卡在「${prog.stage}」。${timeoutHint(prog.stage)}`,
+    )), ms);
+  });
   try {
-    return await Promise.race([sendMail(cfg, msg, connectFn), guard]);
+    return await Promise.race([sendMail(cfg, msg, connectFn, prog), guard]);
   } catch (e) {
     return { ok: false, error: e && e.message ? e.message : String(e) };
   } finally {
@@ -337,9 +374,20 @@ export function mailConfigFrom(s) {
     pass: s.get('mail_pass') || '',
     fromName: (s.get('mail_from_name') || '').trim() || s.get('site_title') || '博客',
     template: ['card', 'plain', 'minimal'].includes(s.get('mail_template')) ? s.get('mail_template') : 'card',
-    timeoutMs: 15000,
+    // 跨国 + TLS 握手 + 8 次命令往返，15 秒不够用，放到 30 秒
+    timeoutMs: 30000,
+    ehlo: ehloFromSiteUrl(s.get('site_url')),
   };
   return cfg;
+}
+
+// EHLO 报给服务器的本机名：用站点域名，取不到就 localhost
+function ehloFromSiteUrl(u) {
+  try {
+    if (!u) return 'localhost';
+    const h = new URL(String(u).trim()).hostname;
+    return h || 'localhost';
+  } catch (e) { return 'localhost'; }
 }
 
 export function mailConfigError(cfg) {
