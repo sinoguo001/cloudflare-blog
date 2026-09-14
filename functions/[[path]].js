@@ -5,6 +5,10 @@
 // ============================================================
 import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, isEmail, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard,
   normalizePermalink, permalinkOf, permalinkRegex, postUrl, permalinkVarsMatch } from './_lib/util.js';
+// cloudflare:sockets 必须静态 import：Pages Functions 的打包器只稳妥支持顶层静态导入，
+// 动态 import('cloudflare:sockets') 在真机上可能加载失败，表现为接口直接 5xx。
+// 传给 mail.js 而不是让它自己 import —— 这样本地 Node 测试仍能注入假 socket。
+import { connect } from 'cloudflare:sockets';
 import { render } from './_lib/md.js';
 import { mailConfigFrom, mailConfigError, renderMail, sendMailWithTimeout } from './_lib/mail.js';
 import { CODE_THEMES } from './_lib/hl.js';
@@ -1023,13 +1027,19 @@ async function api(ctx, url, seg, method) {
     if (ce) return err('配置不完整：' + ce, 400);
     const to = (s.get('email') || '').trim();
     if (!to) return err('请先在「设置 → 安全设置」填写博主邮箱：测试邮件会发到这个地址', 400);
-    const m = renderMail(cfg.template, {
-      kind: 'comment', site: s.get('site_title') || '博客', siteUrl: url.origin,
-      postTitle: '邮件通知测试', postUrl: url.origin, adminUrl: url.origin + '/admin#/settings/comment',
-      author: '系统', content: '这是一封测试邮件。收到它说明 SMTP 配置正确，评论通知可以正常工作。', pending: false,
-    });
-    const r = await sendMailWithTimeout(cfg, { to, subject: m.subject, text: m.text, html: m.html });
-    return r.ok ? json({ ok: true, to }) : err('发送失败：' + r.error, 502);
+    // 用 400 而不是 502：5xx 的响应体可能被 Cloudflare 换成自己的错误页，
+    // 前端就只能看到「请求失败 (502)」而拿不到 SMTP 的真实原因。
+    try {
+      const m = renderMail(cfg.template, {
+        kind: 'comment', site: s.get('site_title') || '博客', siteUrl: url.origin,
+        postTitle: '邮件通知测试', postUrl: url.origin, adminUrl: url.origin + '/admin#/settings/comment',
+        author: '系统', content: '这是一封测试邮件。收到它说明 SMTP 配置正确，评论通知可以正常工作。', pending: false,
+      });
+      const r = await sendMailWithTimeout(cfg, { to, subject: m.subject, text: m.text, html: m.html }, connect);
+      return r.ok ? json({ ok: true, to }) : err('发送失败：' + r.error, 400);
+    } catch (e) {
+      return err('发送出错：' + ((e && e.message) || e), 400);
+    }
   }
 
   return err('接口不存在', 404);
@@ -1058,7 +1068,7 @@ async function notifyNewComment(dbx, origin, post, c) {
       author: c.author, email: c.email, content: c.content,
       pending: c.status === 'pending',
     });
-    const r = await sendMailWithTimeout(cfg, { to, subject: m.subject, text: m.text, html: m.html });
+    const r = await sendMailWithTimeout(cfg, { to, subject: m.subject, text: m.text, html: m.html }, connect);
     if (!r.ok) console.error('mail fail:', r.error);
   } catch (e) { console.error('mail error:', (e && e.message) || e); }
 }
@@ -1085,7 +1095,7 @@ async function notifyReply(dbx, origin, parent, content) {
       content,
       pending: false,
     });
-    const r = await sendMailWithTimeout(cfg, { to, subject: m.subject, text: m.text, html: m.html });
+    const r = await sendMailWithTimeout(cfg, { to, subject: m.subject, text: m.text, html: m.html }, connect);
     if (!r.ok) console.error('mail fail:', r.error);
   } catch (e) { console.error('mail error:', (e && e.message) || e); }
 }

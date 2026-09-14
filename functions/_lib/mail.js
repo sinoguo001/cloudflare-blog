@@ -6,9 +6,14 @@
 // 所以用 cloudflare:sockets 直连 163 / QQ 这类 SMTP 服务器是可行的。
 // ⚠️ 25 端口在本项目里直接不给选项，避免配了发不出去。
 //
-// 为什么 connect() 用动态 import：Node 环境没有 cloudflare:sockets 模块，
-// 顶层 import 会让本地测试直接崩。改成运行时按需 import，且允许注入假 socket，
-// 这样协议流程（EHLO / AUTH / DATA）能在本地做完整的命令级断言。
+// 为什么 connect() 由外部传入：Node 环境没有 cloudflare:sockets 模块，
+// 顶层 import 会让本地测试直接崩在加载阶段；而 Pages Functions 的打包器又只稳妥支持
+// 顶层静态 import（运行时动态 import 在真机上可能加载失败、接口直接 5xx）。
+// 折中：调用方（functions/[[path]].js）静态 import 后把 connect 传进来，
+// 本地测试则注入假 socket，协议流程（EHLO / AUTH / DATA）照样能做命令级断言。
+//
+// ⚠️ 踩过的坑：connect 的地址字段是 hostname 不是 host，写错本地测试查不出来
+// （假 socket 不校验字段），上线表现为连不上。测试里已对字段名单独断言。
 // ============================================================
 
 // ---------- 服务商预设 ----------
@@ -226,18 +231,16 @@ class Smtp {
   }
 }
 
-async function getConnect(injected) {
-  if (injected) return injected;
-  const mod = await import('cloudflare:sockets');
-  return mod.connect;
-}
-
 /**
  * 发送一封邮件
  * @param {object} cfg  { host, port, secure:'ssl'|'starttls', user, pass, from, fromName, timeoutMs }
  * @param {object} msg  { to, subject, text, html }
- * @param {function} [connectFn] 仅供测试注入
- * @returns {Promise<{ok:boolean, error?:string}>}
+ * @param {function} connectFn  connect(address, options) => Socket
+ *   由调用方（functions/[[path]].js）静态 import 'cloudflare:sockets' 后传入。
+ *   为什么不在这里 import：Pages Functions 的打包器只稳妥支持静态 import，
+ *   而顶层静态 import 会让本地 Node 测试直接崩在模块加载阶段；由调用方传入，两边都能跑。
+ *   本地测试则注入假 socket 工厂 —— 注意假工厂不校验字段，所以 address 的字段名
+ *   必须在测试里单独断言（曾经写成 host，漏过 72 个用例，上线才暴露）。
  */
 export async function sendMail(cfg, msg, connectFn) {
   const timeoutMs = cfg.timeoutMs || 15000;
@@ -246,34 +249,51 @@ export async function sendMail(cfg, msg, connectFn) {
   if (String(cfg.port) === '25') return fail('Cloudflare 禁止 25 端口，请改用 465（SSL）或 587（STARTTLS）');
   if (!cfg.user || !cfg.pass) return fail('发件邮箱或密码（授权码）未填写');
   if (!msg.to) return fail('收件人为空');
+  if (typeof connectFn !== 'function') return fail('未拿到 cloudflare:sockets 的 connect（当前环境可能不支持 TCP 出站）');
 
-  const connect = await getConnect(connectFn);
   let socket = null;
-  const cl = { host: cfg.host, port: Number(cfg.port) };
+  let stage = '初始化';
+  // Cloudflare 的 SocketAddress 字段是 hostname，写成 host 会连不上
+  const cl = { hostname: cfg.host, port: Number(cfg.port) };
   try {
     const ssl = cfg.secure === 'ssl' || Number(cfg.port) === 465;
     cl.secureTransport = ssl ? 'on' : 'starttls';
-    socket = connect(cl);
+    stage = `连接 ${cfg.host}:${cfg.port}（${ssl ? 'SSL/TLS' : 'STARTTLS'}）`;
+    socket = connectFn(cl);
     let s = new Smtp(socket);
+    stage = '读取服务器问候（220）';
     await s.cmd(null, [220]);
 
     if (!ssl) {
       // 587：先明文 EHLO，再 STARTTLS 升级，升级后必须重新 EHLO（服务器会丢弃升级前的状态）
+      stage = '明文 EHLO';
       await s.cmd(`EHLO ${cfg.host}`, [250]);
+      stage = 'STARTTLS 升级';
       await s.cmd('STARTTLS', [220]);
       const secure = socket.startTls();
       s = new Smtp(secure);
       socket = secure;
     }
+    stage = 'EHLO 握手';
     await s.cmd(`EHLO ${cfg.host}`, [250]);
 
     // AUTH LOGIN：163 / QQ / Gmail 等均支持；按 base64 分两次提交
+    stage = '登录认证（AUTH LOGIN）';
     await s.cmd('AUTH LOGIN', [334]);
     await s.cmd(b64(cfg.user), [334]);
-    await s.cmd(b64(cfg.pass), [235]);
+    // 535 几乎都是「填了登录密码而不是授权码」，单独提示，省得查半天
+    try {
+      await s.cmd(b64(cfg.pass), [235]);
+    } catch (ae) {
+      const t = String((ae && ae.message) || '');
+      if (t.includes('535')) throw new Error('535 认证失败：密码栏要填 163 的「SMTP 授权码」，不是邮箱登录密码。去 163 网页版 → 设置 → POP3/SMTP/IMAP 开启后生成');
+      throw ae;
+    }
 
+    stage = '声明发件人与收件人';
     await s.cmd(`MAIL FROM:<${cfg.from || cfg.user}>`, [250]);
     await s.cmd(`RCPT TO:<${msg.to}>`, [250, 251]);
+    stage = '投递邮件内容（DATA）';
     await s.cmd('DATA', [354]);
     const raw = buildMime({ ...msg, from: cfg.from || cfg.user, fromName: cfg.fromName });
     await s.cmd(dotStuff(raw) + '\r\n.', [250]);
@@ -282,9 +302,8 @@ export async function sendMail(cfg, msg, connectFn) {
     return { ok: true };
   } catch (e) {
     if (socket) { try { socket.close(); } catch (e2) { /* ignore */ } }
-    return fail(e && e.message ? e.message : String(e));
-  } finally {
-    // 超时保护见 withTimeout，此处只负责收尾
+    const why = e && e.message ? e.message : String(e);
+    return fail(`[${stage}] ${why}`);
   }
 }
 

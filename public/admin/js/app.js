@@ -1503,7 +1503,12 @@ async function viewSettings(tabArg) {
       note.className = 'hint mail-ok';
       note.textContent = '发送成功：已发到 ' + (r.to || '') + '，请查收（含垃圾箱）';
     } catch (e) {
-      note.className = 'hint mail-bad'; note.textContent = e.message;
+      note.className = 'hint mail-bad';
+      const m = e.message || '';
+      // 5xx 的响应体可能被 Cloudflare 换成自己的错误页，此时拿不到后端原因，只能给排查方向
+      note.textContent = (e.code >= 500 && /^请求失败/.test(m))
+        ? `服务端执行出错（Cloudflare 返回 ${e.code}，没拿到具体原因）。请到 Cloudflare 控制台 → Workers & Pages → 本项目 → Functions → 日志查看，常见原因是运行环境不支持 TCP 出站或免费版 CPU 超时。`
+        : m;
     }
     btn.disabled = false;
   });
