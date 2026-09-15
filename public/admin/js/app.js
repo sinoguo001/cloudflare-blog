@@ -8,7 +8,8 @@ import { dashboardHtml, bindDashboard } from './dashboard.js';
 
 const app = document.getElementById('app');
 let state = { installed: true, authed: false, username: '' };
-let listTab = 'all';
+let listTab = 'all';       // 文章列表当前筛选（全部 / 已发布 / 草稿）
+let pageTab = 'all';       // 独立页面列表当前筛选
 let commentTab = 'pending';
 let editor = null; // 当前编辑器实例
 let dirty = false; // 文章是否有未保存修改（全局守卫用）
@@ -183,6 +184,7 @@ function shell(contentHtml) {
     <nav class="tb-nav" id="tb-nav">
       <a href="#/dashboard" data-nav="dashboard">仪表盘</a>
       <a href="#/posts" data-nav="posts">文章</a>
+      <a href="#/pages" data-nav="pages">页面</a>
       <a href="#/comments" data-nav="comments">评论<span class="badge" id="badge-pending" style="display:none"></span></a>
       <a href="#/links" data-nav="links">友链<span class="badge" id="badge-links" style="display:none"></span></a>
       <a href="#/categories" data-nav="categories">分类与标签</a>
@@ -338,38 +340,43 @@ function debounceLocal(fn, ms) {
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 }
 
-// ================= 写文章 / 编辑 =================
-async function viewEditor(id) {
-  pageTitle(id ? '编辑文章' : '写文章');
+// ================= 写文章 / 编辑（kind: 'post' 文章 | 'page' 独立页面） =================
+// 页面与文章共用同一个编辑器：页面只是**少几项**（不设分类、标签、封面），
+// 多一个「在站点导航显示」开关，地址固定 /p/<别名>，且不进文章流。
+async function viewEditor(id, kind = 'post') {
+  const isPage = kind === 'page';
+  pageTitle(id ? (isPage ? '编辑页面' : '编辑文章') : (isPage ? '新建页面' : '写文章'));
   showLoading('加载编辑器…');
   let post = null;
-  const cats = (await API.get('/categories').catch(() => []));
+  const cats = isPage ? [] : (await API.get('/categories').catch(() => []));
   if (id) post = await API.get('/posts/' + id); // 单篇读取：后端路由为 GET /api/posts/:id
 
   shell(`
-  <div class="page-head"><h1>${id ? '编辑文章' : '写文章'}</h1>
-    <div class="spacer"><a class="btn g" href="#/posts">← 返回列表</a></div></div>
+  <div class="page-head"><h1>${id ? (isPage ? '编辑页面' : '编辑文章') : (isPage ? '新建页面' : '写文章')}</h1>
+    <div class="spacer"><a class="btn g" href="#/${isPage ? 'pages' : 'posts'}">← 返回${isPage ? '页面' : '文章'}列表</a></div></div>
   <div class="ed-card">
-    <div class="ed-title"><input id="e-title" placeholder="在此输入文章标题…" value="${esc(post?.title || '')}"></div>
+    <div class="ed-title"><input id="e-title" placeholder="在此输入${isPage ? '页面' : '文章'}标题…" value="${esc(post?.title || '')}"></div>
     <div class="ed-meta">
-      <span class="f2">分类
+      ${isPage ? '' : `<span class="f2">分类
         <select id="e-cat"><option value="">（无分类）</option>
         ${cats.map((c) => `<option value="${c.id}" ${post && post.category_id == c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
         </select></span>
-      <span class="f2">标签 <input id="e-tags" placeholder="多个标签用逗号分隔" value="${esc((post?.tags || []).map((t) => t.name).join(',') || '')}"></span>
+      <span class="f2">标签 <input id="e-tags" placeholder="多个标签用逗号分隔" value="${esc((post?.tags || []).map((t) => t.name).join(',') || '')}"></span>`}
       <span class="f2">别名 <input id="e-slug" placeholder="留空自动生成（英文数字 -）" value="${esc(post?.slug || '')}">
         <a id="e-slug-rand" href="javascript:;" title="随机生成">🎲</a></span>
-      <span class="f2">封面 <input type="file" id="e-cover" accept="image/*" style="max-width:190px">
+      ${isPage ? `<span class="f2"><label><input type="checkbox" id="e-innav" ${(post ? Number(post.in_nav) : 1) ? 'checked' : ''}> 在站点导航显示</label></span>`
+    : `<span class="f2">封面 <input type="file" id="e-cover" accept="image/*" style="max-width:190px">
         <span id="e-cover-prev" style="display:${post?.cover_key ? '' : 'none'}"><img src="/media/${esc(post?.cover_key || '')}" style="height:34px;border-radius:6px;vertical-align:middle">
-        <a id="e-cover-del" href="javascript:;" style="margin-left:4px">移除</a></span></span>
+        <a id="e-cover-del" href="javascript:;" style="margin-left:4px">移除</a></span></span>`}
       <span id="e-status" class="hint"></span>
     </div>
+    ${isPage ? `<div class="hint" style="padding:0 2px 8px">页面地址：<b>/p/&lt;别名&gt;</b>（不进文章列表、归档、搜索与 RSS；可勾选在站点导航显示）</div>` : ''}
     <div id="e-host"></div>
     <div class="ed-actions">
       <button class="btn g" id="e-save-draft">保存草稿</button>
-      <button class="btn p" id="e-publish">${post ? '保存并更新（保持当前状态）' : '一键发布'}</button>
+      <button class="btn p" id="e-publish">${post ? '保存并更新（保持当前状态）' : (isPage ? '一键发布页面' : '一键发布')}</button>
       <button class="btn v" id="e-preview">预览</button>
-      <span class="spacer hint">提示：编辑器所见即所得，正文将保存为 Markdown；发布后自动生成网页、分类/标签/归档页、RSS 与站点地图。快捷键 Ctrl+S 保存草稿。</span>
+      <span class="spacer hint">提示：编辑器所见即所得，正文将保存为 Markdown；${isPage ? '页面发布后进入站点地图与导航。' : '发布后自动生成网页、分类/标签/归档页、RSS 与站点地图。'}快捷键 Ctrl+S 保存草稿。</span>
     </div>
   </div>`);
 
@@ -384,17 +391,19 @@ async function viewEditor(id) {
 
   // 别名随机
   view().querySelector('#e-slug-rand').addEventListener('click', () => {
-    view().querySelector('#e-slug').value = 'post-' + Date.now().toString(36);
+    view().querySelector('#e-slug').value = (isPage ? 'page-' : 'post-') + Date.now().toString(36);
   });
 
-  // 封面
+  // 封面（页面没有封面：元素不存在时整段跳过，不能直接 addEventListener 否则报错）
   let coverKey = post?.cover_key || null;
   const coverPrev = () => {
     const box = view().querySelector('#e-cover-prev');
+    if (!box) return;
     box.style.display = coverKey ? '' : 'none';
     if (coverKey) box.querySelector('img').src = '/media/' + coverKey;
   };
-  view().querySelector('#e-cover').addEventListener('change', async (ev) => {
+  const coverIn = view().querySelector('#e-cover');
+  if (coverIn) coverIn.addEventListener('change', async (ev) => {
     const file = ev.target.files && ev.target.files[0];
     if (!file) return;
     try {
@@ -404,7 +413,8 @@ async function viewEditor(id) {
       toast('封面已上传' + webpNote(d));
     } catch (e) { toast(e.message, 'bad'); }
   });
-  view().querySelector('#e-cover-del').addEventListener('click', () => { coverKey = null; coverPrev(); });
+  const coverDel = view().querySelector('#e-cover-del');
+  if (coverDel) coverDel.addEventListener('click', () => { coverKey = null; coverPrev(); });
 
   const updateStatus = (st) => {
     view().querySelector('#e-status').textContent = st === 'published' ? '当前状态：已发布' : '当前状态：草稿（仅你可见）';
@@ -415,24 +425,33 @@ async function viewEditor(id) {
   // 防误关（模块级 dirty + 一次性守卫）
   dirty = false;
   const markDirty = () => { dirty = true; };
-  ['#e-title', '#e-tags', '#e-slug', '#e-cat'].forEach((s) => view().querySelector(s).addEventListener('input', markDirty));
+  // 只给页面上真实存在的元素绑（页面编辑器没有分类 / 标签）
+  ['#e-title', '#e-tags', '#e-slug', '#e-cat', '#e-innav'].forEach((s) => {
+    const em = view().querySelector(s);
+    if (em) em.addEventListener('input', markDirty);
+  });
   editorHost.addEventListener('input', markDirty);
   draftSaver = () => save(false);
 
   const collect = () => {
     const title = view().querySelector('#e-title').value.trim();
-    if (!title) throw new Error('请填写文章标题');
+    if (!title) throw new Error(`请填写${isPage ? '页面' : '文章'}标题`);
     const md = editor.getMarkdown();
-    if (!md) throw new Error('文章内容不能为空');
-    const tags = view().querySelector('#e-tags').value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (!md) throw new Error(`${isPage ? '页面' : '文章'}内容不能为空`);
+    const tagEl = view().querySelector('#e-tags');   // 页面没有标签 / 分类，取不到就留空
+    const catEl = view().querySelector('#e-cat');
+    const navEl = view().querySelector('#e-innav');
+    const tags = tagEl ? tagEl.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean) : [];
     return {
       title,
       content_md: md,
       slug: view().querySelector('#e-slug').value.trim(),
-      category_id: view().querySelector('#e-cat').value || null,
+      category_id: catEl ? (catEl.value || null) : null,
       tags,
       cover_key: coverKey,
       excerpt: '',
+      // type / in_nav 只有页面才提交：文章不传，后端就不会改动它
+      ...(isPage ? { type: 'page', in_nav: navEl ? (navEl.checked ? 1 : 0) : 1 } : {}),
     };
   };
   // 发布成功后统一走这里：弹「发布成功」→ 回文章列表。
@@ -444,12 +463,12 @@ async function viewEditor(id) {
     try { purl = (await API.get('/posts/' + postId)).url || purl; } catch (e) { /* 取不到就退回旧写法 */ }
     const open = await dialog({
       title: '发布成功',
-      bodyHtml: `文章地址：<a href="${esc(purl)}" target="_blank">${esc(purl)}</a><br>
-      订阅：<a href="/rss.xml" target="_blank">/rss.xml</a> · <a href="/sitemap.xml" target="_blank">/sitemap.xml</a>`,
-      actions: [{ val: 'list', label: '返回列表', cls: 'p' }, { val: 'open', label: '打开文章', cls: 'g' }],
+      bodyHtml: `${isPage ? '页面' : '文章'}地址：<a href="${esc(purl)}" target="_blank">${esc(purl)}</a>${
+        isPage ? '' : '<br>订阅：<a href="/rss.xml" target="_blank">/rss.xml</a> · <a href="/sitemap.xml" target="_blank">/sitemap.xml</a>'}`,
+      actions: [{ val: 'list', label: '返回列表', cls: 'p' }, { val: 'open', label: `打开${isPage ? '页面' : '文章'}`, cls: 'g' }],
     });
     if (open === 'open') window.open(purl, '_blank');
-    go('#/posts');
+    go(isPage ? '#/pages' : '#/posts');
   };
   const save = async (publish) => {
     const btnPub = view().querySelector('#e-publish');
@@ -465,11 +484,13 @@ async function viewEditor(id) {
         const r = await API.post('/posts', body);
         slug = r.slug;
         id = r.id;  // 记下新 id：之后在同一页继续点保存是更新，不会重复建一篇
-        toast(publish ? '已发布 ✓ 前台、分类/标签页、RSS、站点地图均已同步' : '草稿已保存');
+        toast(publish
+          ? (isPage ? '已发布 ✓ 页面已上线，并进入站点地图与导航' : '已发布 ✓ 前台、分类/标签页、RSS、站点地图均已同步')
+          : '草稿已保存');
         if (publish) { dirty = false; await finishPublish(id, slug); return; }
         // 新建草稿：把地址换成真实 id 才能继续编辑，否则再点保存又会新建一篇
         dirty = false;
-        go('#/posts/' + id);
+        go((isPage ? '#/pages/' : '#/posts/') + id);
         return;
       }
       dirty = false;
@@ -489,7 +510,7 @@ async function viewEditor(id) {
     try {
       const r = await API.post('/preview', { title: view().querySelector('#e-title').value, content_md: collect().content_md });
       await dialog({
-        title: '文章预览（与发布效果一致）',
+        title: `${isPage ? '页面' : '文章'}预览（与发布效果一致）`,
         bodyHtml: `<iframe style="width:100%;height:66vh;border:1px solid #e3e7ef;border-radius:10px;background:#f6f7f9" sandbox="" srcdoc="${esc(r.html)}"></iframe>`,
         actions: [{ val: 'ok', label: '关闭', cls: 'p' }],
       });
@@ -498,6 +519,103 @@ async function viewEditor(id) {
   });
 
   editor.we.focus();
+}
+
+// ================= 独立页面列表 =================
+// 与文章完全分开：页面不进文章列表 / 归档 / 搜索 / RSS，地址固定 /p/<别名>，
+// 可选显示在站点导航（in_nav）。编辑复用同一个编辑器（viewEditor(kind='page')）。
+async function viewPages() {
+  pageTitle('页面');
+  showLoading();
+  shell(`<div class="page-head"><h1>独立页面</h1>
+    <div class="spacer">
+      <input class="inp" id="pg-q" placeholder="搜索页面标题…" style="width:190px">
+      <button class="btn p" id="pg-new">＋ 新建页面</button>
+    </div></div>
+    <div class="tabs" id="pg-tabs">
+      <button data-t="all">全部</button><button data-t="published">已发布</button><button data-t="draft">草稿</button>
+    </div>
+    <div class="card"><div id="pg-list"><div class="loading">加载中…</div></div></div>`);
+  let page = 1;
+  const qEl = view().querySelector('#pg-q');
+  const tabsEl = view().querySelector('#pg-tabs');
+
+  const syncTabs = () => {
+    tabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === pageTab));
+  };
+  const loadList = async () => {
+    const listEl = view().querySelector('#pg-list');
+    listEl.innerHTML = '<div class="loading">加载中…</div>';
+    try {
+      const qs = new URLSearchParams({ status: pageTab, type: 'page', page: String(page), per: '30' });
+      if (qEl.value.trim()) qs.set('q', qEl.value.trim());
+      const data = await API.get('/posts?' + qs.toString());
+      renderRows(listEl, data);
+    } catch (e) { listEl.innerHTML = `<div class="empty-note">${esc(e.message)}</div>`; }
+  };
+  const renderRows = (listEl, data) => {
+    if (!data.items.length) {
+      listEl.innerHTML = `<div class="empty-note">${
+        pageTab === 'draft' ? '暂无草稿页面' : '还没有独立页面，点右上角「新建页面」建一个（如「关于我」）。'}</div>`;
+      return;
+    }
+    const rows = data.items.map((p) => {
+      const st = p.status === 'published' ? '<span class="st published">已发布</span>' : '<span class="st draft">草稿</span>';
+      const navTag = p.in_nav ? '<span class="tag-mini">导航</span>' : '';
+      const purl = p.url || ('/p/' + p.slug);
+      const btnPub = p.status === 'published'
+        ? `<button class="btn sm g" data-act="unpub" data-id="${p.id}">下线</button>`
+        : `<button class="btn sm ok" data-act="pub" data-id="${p.id}">发布</button>`;
+      const viewL = p.status === 'published' ? `<a class="btn sm g" href="${esc(purl)}" target="_blank" rel="noopener">查看</a>` : '';
+      return `<tr>
+        <td><div class="cell-title">${esc(p.title)}${st}${navTag}</div>
+          <div class="cell-sub">${esc(purl)}</div></td>
+        <td style="white-space:nowrap">${fmtTime(p.updated_at || p.published_at)}</td>
+        <td style="white-space:nowrap"><a class="btn sm" href="#/pages/${p.id}">编辑</a>${btnPub}${viewL}
+          <button class="btn sm d" data-act="del" data-id="${p.id}" data-title="${esc(p.title)}">删除</button></td>
+      </tr>`;
+    }).join('');
+    const pager = data.pages > 1 ? `<div class="pager-line">
+      <button class="btn sm" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>‹ 上一页</button>
+      <span class="hint">第 ${data.page} / ${data.pages} 页 · 共 ${data.total} 个页面</span>
+      <button class="btn sm" data-page="${page + 1}" ${page >= data.pages ? 'disabled' : ''}>下一页 ›</button>
+    </div>` : `<div class="hint" style="margin-top:12px">共 ${data.total} 个页面</div>`;
+    listEl.innerHTML = `<div class="tbl-w"><table class="tbl"><thead><tr>
+      <th>标题</th><th>最后更新</th><th>操作</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>${pager}`;
+    listEl.querySelectorAll('button[data-act]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const act = btn.dataset.act;
+        const id = btn.dataset.id;
+        try {
+          if (act === 'del') {
+            if (!(await confirmDanger(`确定删除页面《${btn.dataset.title}》？此操作不可恢复。`, '删除页面'))) return;
+            await API.del('/posts/' + id);
+            toast('已删除');
+          } else if (act === 'pub') {
+            await API.post('/posts/' + id + '/publish', { status: 'published' });
+            toast('已发布 ✓ 页面已上线，并进入站点地图');
+          } else if (act === 'unpub') {
+            await API.post('/posts/' + id + '/publish', { status: 'draft' });
+            toast('已下线为草稿');
+          }
+          loadList();
+        } catch (e) { toast(e.message, 'bad'); }
+      });
+    });
+    listEl.querySelectorAll('[data-page]').forEach((b) => {
+      b.addEventListener('click', () => { page = parseInt(b.dataset.page, 10); loadList(); });
+    });
+  };
+  qEl.addEventListener('input', debounceLocal(() => { page = 1; loadList(); }, 350));
+  tabsEl.addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-t]');
+    if (!b) return;
+    pageTab = b.dataset.t; page = 1; syncTabs(); loadList();
+  });
+  view().querySelector('#pg-new').addEventListener('click', () => go('#/pages/new'));
+  syncTabs();
+  loadList();
 }
 
 // 全局一次性守卫：未保存提醒 + Ctrl+S 存草稿
@@ -510,7 +628,7 @@ function installGuards() {
   });
   document.addEventListener('keydown', (ev) => {
     if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's' && draftSaver) {
-      if (/^#\/posts\/(new|\d+)$/.test(location.hash)) {
+      if (/^#\/(posts|pages)\/(new|\d+)$/.test(location.hash)) {
         ev.preventDefault();
         draftSaver();
       }
@@ -1814,6 +1932,10 @@ async function router() {
     if (seg[0] === 'posts' && seg.length === 1) { await viewPosts(); return; }
     if (seg[0] === 'posts' && seg[1] === 'new') { await viewEditor(null); return; }
     if (seg[0] === 'posts' && /^\d+$/.test(seg[1] || '')) { await viewEditor(parseInt(seg[1], 10)); return; }
+    // 独立页面：与文章同一套编辑/发布接口，只是 type=page
+    if (seg[0] === 'pages' && seg.length === 1) { await viewPages(); return; }
+    if (seg[0] === 'pages' && seg[1] === 'new') { await viewEditor(null, 'page'); return; }
+    if (seg[0] === 'pages' && /^\d+$/.test(seg[1] || '')) { await viewEditor(parseInt(seg[1], 10), 'page'); return; }
     if (seg[0] === 'comments') { await viewComments(); return; }
     if (seg[0] === 'links') { await viewLinks(); return; }
     if (seg[0] === 'categories') { await viewCategories(); return; }

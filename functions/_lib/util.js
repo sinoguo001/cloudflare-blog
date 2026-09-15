@@ -183,7 +183,7 @@ const PERMALINK_RESERVED = new Set([
   'api', 'admin', 'media', 'theme-assets', 'backup', 'backups', 'preview',
   'category', 'categories', 'tag', 'tags', 'archive', 'search',
   'links', 'page', 'js', 'rss.xml', 'feed.xml', 'sitemap.xml', 'robots.txt',
-  'favicon.svg', 'favicon.ico',
+  'favicon.svg', 'favicon.ico', 'p',   // p = 独立页面前缀 /p/<slug>，不能被文章规则占用
 ]);
 
 // 规整并校验；不合法返回 ''（调用方据此保留原值或报错）
@@ -252,6 +252,11 @@ export function postUrl(s, p) {
   const pat = permalinkOf(s);
   const v = permalinkVars(p);
   return pat.replace(/\{(slug|id|year|month|day|category)\}/g, (_, k) => v[k] || (k === 'category' ? 'uncategorized' : ''));
+}
+
+// 独立页面（Ver 0.4）：地址固定为 /p/<slug>，不参与永久链接规则
+export function pageUrl(p) {
+  return '/p/' + String((p && p.slug) || '').replace(/^\/+|\/+$/g, '');
 }
 
 // 反解出来的变量是否与文章一致（文章改过发布时间或分类时，旧地址应 301 到新地址）

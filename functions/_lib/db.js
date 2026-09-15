@@ -35,6 +35,23 @@ async function uniqueSlug(db, table, base, excludeId) {
   return `${base}-${Date.now()}`;
 }
 
+// ---------- posts 表结构兜底（Ver 0.4 独立页面） ----------
+// type / in_nav 两列由 migrations/0005_pages.sql 建立。万一使用者部署后没跑迁移，
+// 这里在首次访问时自动补上，避免前台因为「no such column: p.type」整站 500。
+// D1 支持在 Worker 里执行 ALTER TABLE，故不需要本地工具链。
+let postColsReady = false;
+export async function ensurePostCols(db) {
+  if (postColsReady) return;
+  try {
+    const r = await db.prepare('PRAGMA table_info(posts)').all();
+    const cols = new Set(((r && r.results) || []).map((x) => x.name));
+    if (!cols.size) return;                      // 表还没建（未初始化），等下次请求再试
+    if (!cols.has('type')) await db.prepare("ALTER TABLE posts ADD COLUMN type TEXT NOT NULL DEFAULT 'post'").run();
+    if (!cols.has('in_nav')) await db.prepare('ALTER TABLE posts ADD COLUMN in_nav INTEGER NOT NULL DEFAULT 1').run();
+    postColsReady = true;
+  } catch (e) { /* 补列失败不阻断浏览：没有这两列时页面功能不可用，但文章照常 */ }
+}
+
 // ---------- posts ----------
 const POST_SEL = `SELECT p.*, c.name AS cat_name, c.slug AS cat_slug
   FROM posts p LEFT JOIN categories c ON c.id=p.category_id`;
@@ -48,9 +65,15 @@ function rowOf(p) {
   };
 }
 
-export async function listPosts(db, { status = 'published', cat, tag, q, page = 1, per = 8 } = {}) {
+// type：'post' 文章（默认）| 'page' 独立页面 | 'all' 两者都要
+// 默认只取文章：首页 / 分类 / 标签 / 归档 / 搜索 / RSS 都不该出现「关于我」这类页面，
+// 除非调用方显式传 type，页面由此天然与文章流隔离。
+export async function listPosts(db, { status = 'published', type = 'post', cat, tag, q, inNav, page = 1, per = 8 } = {}) {
+  await ensurePostCols(db);
   const where = [], b = [];
   if (status && status !== 'all') { where.push('p.status=?'); b.push(status); }
+  if (type && type !== 'all') { where.push('p.type=?'); b.push(type); }
+  if (inNav) where.push('p.in_nav=1');
   if (cat) { where.push('c.slug=?'); b.push(cat); }
   if (tag) {
     where.push(`EXISTS(SELECT 1 FROM post_tags pt JOIN tags t ON t.id=pt.tag_id WHERE pt.post_id=p.id AND t.slug=?)`);
@@ -103,15 +126,18 @@ export async function getPost(db, { id, slug } = {}) {
 }
 
 export async function createPost(db, f) {
+  await ensurePostCols(db);
   const t = bnNow();
+  const type = f.type === 'page' ? 'page' : 'post';
+  const inNav = f.in_nav == null ? 1 : (f.in_nav ? 1 : 0);
   const r = await db.prepare(
-    `INSERT INTO posts(title,slug,excerpt,content_md,content_html,cover_key,status,category_id,created_at,updated_at,published_at)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO posts(title,slug,excerpt,content_md,content_html,cover_key,status,category_id,type,in_nav,created_at,updated_at,published_at)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(f.title, f.slug || '', f.excerpt || '', f.content_md || '', f.content_html || '',
-    f.cover_key || null, f.status || 'draft', f.category_id || null, t, t,
+    f.cover_key || null, f.status || 'draft', f.category_id || null, type, inNav, t, t,
     f.status === 'published' ? (f.published_at || t) : null).run();
   const id = r.meta.last_row_id;
-  let slug = slugify(f.slug) || ('post-' + id);
+  let slug = slugify(f.slug) || ((type === 'page' ? 'page-' : 'post-') + id);
   // excludeId 必须传：INSERT 时已把 f.slug 写进去了，不排除自己就会撞上自己、被追加成 -2
   slug = await uniqueSlug(db, 'posts', slug, id);
   if (slug !== f.slug) await db.prepare('UPDATE posts SET slug=? WHERE id=?').bind(slug, id).run();
@@ -120,20 +146,28 @@ export async function createPost(db, f) {
 }
 
 export async function updatePost(db, id, f) {
-  const old = await db.prepare('SELECT status,published_at FROM posts WHERE id=?').bind(id).first();
+  await ensurePostCols(db);
+  const old = await db.prepare('SELECT status,published_at,slug FROM posts WHERE id=?').bind(id).first();
   if (!old) return false;
   const t = bnNow();
   const published_at = f.status === 'published'
     ? (old.published_at || f.published_at || t)
     : (f.status === 'draft' ? null : old.published_at);
+  // 没传别名就保留原来的：以前会写进空串，既让地址变成 /post/，又会在下次保存时撞 UNIQUE
+  const finalSlug = String(f.slug || '').trim() || old.slug || ('post-' + id);
+  // type / in_nav 只在调用方显式传了才更新：文章编辑接口不传，就不会把文章改成页面
+  const sets = ['title=?', 'slug=?', 'excerpt=?', 'content_md=?', 'content_html=?',
+    'cover_key=?', 'status=?', 'category_id=?', 'updated_at=?', 'published_at=?'];
+  const vals = [f.title, finalSlug, f.excerpt || '', f.content_md || '', f.content_html || '',
+    f.cover_key || null, f.status || old.status, f.category_id || null, t, published_at];
+  if (f.type) { sets.push('type=?'); vals.push(f.type === 'page' ? 'page' : 'post'); }
+  if (f.in_nav != null) { sets.push('in_nav=?'); vals.push(f.in_nav ? 1 : 0); }
   await db.prepare(
-    `UPDATE posts SET title=?,slug=?,excerpt=?,content_md=?,content_html=?,cover_key=?,status=?,category_id=?,updated_at=?,published_at=? WHERE id=?`
-  ).bind(f.title, f.slug || '', f.excerpt || '', f.content_md || '', f.content_html || '',
-    f.cover_key || null, f.status || old.status, f.category_id || null, t, published_at, id).run();
-  if (f.slug) {
-    const slug = await uniqueSlug(db, 'posts', f.slug || ('post-' + id), id);
-    if (slug !== f.slug) await db.prepare('UPDATE posts SET slug=? WHERE id=?').bind(slug, id).run();
-  }
+    `UPDATE posts SET ${sets.join(',')} WHERE id=?`
+  ).bind(...vals, id).run();
+  // 别名被别人占了就追加序号（excludeId 传 id，避免把自己判成重名）
+  const slug = await uniqueSlug(db, 'posts', finalSlug, id);
+  if (slug !== finalSlug) await db.prepare('UPDATE posts SET slug=? WHERE id=?').bind(slug, id).run();
   if (f.tags) await setPostTags(db, id, f.tags);
   return true;
 }
@@ -161,13 +195,15 @@ export async function incView(db, slug) {
 
 // 上一篇 / 下一篇（按发布时间）
 export async function siblings(db, post) {
+  await ensurePostCols(db);
   if (!post.published_at) return { prev: null, next: null };
+  // 页面（type=page）不参与上一篇 / 下一篇，这里与调用处双重限定
   // 带上 published_at 与分类别名：永久链接规则可能用到 {year} {month} {day} {category}
   const SEL = `SELECT p.id,p.title,p.slug,p.published_at,c.slug AS cat_slug
     FROM posts p LEFT JOIN categories c ON c.id=p.category_id`;
   const [prev, next] = await Promise.all([
-    db.prepare(`${SEL} WHERE p.status='published' AND p.published_at<? ORDER BY p.published_at DESC LIMIT 1`).bind(post.published_at).first(),
-    db.prepare(`${SEL} WHERE p.status='published' AND p.published_at>? ORDER BY p.published_at ASC LIMIT 1`).bind(post.published_at).first(),
+    db.prepare(`${SEL} WHERE p.status='published' AND p.type='post' AND p.published_at<? ORDER BY p.published_at DESC LIMIT 1`).bind(post.published_at).first(),
+    db.prepare(`${SEL} WHERE p.status='published' AND p.type='post' AND p.published_at>? ORDER BY p.published_at ASC LIMIT 1`).bind(post.published_at).first(),
   ]);
   return { prev, next };
 }
@@ -280,16 +316,21 @@ export async function recentCommentsByIp(db, ip, seconds = 60) {
 
 // ---------- 统计 ----------
 export async function stats(db) {
+  await ensurePostCols(db);
   const s = (sql) => db.prepare(sql).first();
-  const [posts, published, drafts, cats, tags, cmAll, cmPending] = await Promise.all([
-    s(`SELECT COUNT(*) n FROM posts`), s(`SELECT COUNT(*) n FROM posts WHERE status='published'`),
-    s(`SELECT COUNT(*) n FROM posts WHERE status='draft'`), s(`SELECT COUNT(*) n FROM categories`),
+  // 文章数与页面数分开统计：仪表盘「文章 N 篇」不该把「关于我」这类页面算进去
+  const [posts, published, drafts, pages, cats, tags, cmAll, cmPending] = await Promise.all([
+    s(`SELECT COUNT(*) n FROM posts WHERE type='post'`),
+    s(`SELECT COUNT(*) n FROM posts WHERE type='post' AND status='published'`),
+    s(`SELECT COUNT(*) n FROM posts WHERE type='post' AND status='draft'`),
+    s(`SELECT COUNT(*) n FROM posts WHERE type='page'`),
+    s(`SELECT COUNT(*) n FROM categories`),
     s(`SELECT COUNT(*) n FROM tags`), s(`SELECT COUNT(*) n FROM comments`),
     s(`SELECT COUNT(*) n FROM comments WHERE status='pending'`),
   ]);
   const v = (r) => (r ? r.n : 0);
-  return { posts: v(posts), published: v(published), drafts: v(drafts), categories: v(cats), tags: v(tags),
-    comments: v(cmAll), pending: v(cmPending) };
+  return { posts: v(posts), published: v(published), drafts: v(drafts), pages: v(pages),
+    categories: v(cats), tags: v(tags), comments: v(cmAll), pending: v(cmPending) };
 }
 
 // ---------- 站点访问统计（PV / UV，按天聚合） ----------
@@ -446,13 +487,21 @@ export async function recentLinkApplies(db, ip, seconds = 3600) {
   return r ? r.n : 0;
 }
 
+// 独立页面（type='page'）：前台导航、站点地图与后台「页面」列表都走这里
+export async function listPages(db, { status = 'published', inNav = false } = {}) {
+  const r = await listPosts(db, { status, type: 'page', inNav, per: 200 });
+  return r.items;
+}
+
 // ---------- 归档 / 全量导出（备份用） ----------
 export async function archivePosts(db) {
+  await ensurePostCols(db);
   const r = await db.prepare(
     // 带分类别名：永久链接用到 {category} 时归档页也要能拼出正确地址
+    // 只归档文章：页面没有发布时间概念，混进来会变成一堆无日期条目
     `SELECT p.id,p.title,p.slug,p.published_at,c.slug AS cat_slug
       FROM posts p LEFT JOIN categories c ON c.id=p.category_id
-      WHERE p.status='published' ORDER BY p.published_at DESC`).all();
+      WHERE p.status='published' AND p.type='post' ORDER BY p.published_at DESC`).all();
   return r.results || [];
 }
 export async function dumpAll(db) {
@@ -472,6 +521,8 @@ export async function dumpAll(db) {
 }
 // 恢复：先清空再按原 id 回填（自动续接自增序列）
 export async function restoreAll(db, data) {
+  // 备份里可能带 type / in_nav 两列（新版本导出），目标库若没跑迁移要先补上，否则整批写入失败
+  await ensurePostCols(db).catch(() => {});
   // 访问统计表可能还没建（老库），先确保存在再清空，否则 DELETE 会报 no such table
   await ensurePvTables(db).catch(() => {});
   await ensureLinkTable(db).catch(() => {});

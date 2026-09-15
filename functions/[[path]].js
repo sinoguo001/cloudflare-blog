@@ -4,7 +4,7 @@
 //       rss.xml / sitemap.xml / robots.txt、后台静态资源(经 ASSETS)
 // ============================================================
 import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, isEmail, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard,
-  normalizePermalink, permalinkOf, permalinkRegex, postUrl, permalinkVarsMatch } from './_lib/util.js';
+  normalizePermalink, permalinkOf, permalinkRegex, postUrl, pageUrl, permalinkVarsMatch } from './_lib/util.js';
 // cloudflare:sockets 必须静态 import：Pages Functions 的打包器只稳妥支持顶层静态导入，
 // 动态 import('cloudflare:sockets') 在真机上可能加载失败，表现为接口直接 5xx。
 // 传给 mail.js 而不是让它自己 import —— 这样本地 Node 测试仍能注入假 socket。
@@ -138,7 +138,13 @@ const html = (str, status = 200) =>
 
 async function front(ctx, url, seg, method, path) {
   const { env } = ctx;
+  // 没跑 0005 迁移也能用：这里自动补 type / in_nav 两列（内部有缓存，只做一次）
+  await db.ensurePostCols(env.DB);
   const s = await db.settingsMap(env.DB);
+  // 导航里的独立页面：按请求单独查好塞进 s（s 是本请求新建的 Map，不会串到别的请求），
+  // layout() 再从 s 里取，避免用模块级全局变量导致并发请求互相覆盖。
+  const navPages = await db.listPages(env.DB, { status: 'published', inNav: true });
+  s.set('_nav_pages', JSON.stringify(navPages.map((p) => ({ title: p.title, slug: p.slug }))));
   const per = Math.min(20, Math.max(1, parseInt(s.get('per_page'), 10) || 8));
   const user = await userFromRequest(env, ctx.request);
   const pageNum = (p) => Math.max(1, parseInt(p, 10) || 1);
@@ -251,6 +257,17 @@ async function front(ctx, url, seg, method, path) {
     }));
   }
 
+  // 独立页面 /p/<slug>（Ver 0.4）：固定前缀，永不与文章永久链接抢路径
+  if (seg[0] === 'p' && seg.length === 2) {
+    const pg = await db.getPost(env.DB, { slug: seg[1] });
+    if (!pg || pg.type !== 'page') return html(site.render404(s), 404);
+    if (pg.status !== 'published' && !user) return html(site.render404(s), 404);
+    if (pg.status !== 'published') {
+      pg.content_html = `<div class="empty" style="padding:14px;margin-bottom:14px">此页面为<b>草稿</b>，仅你可见 · <a href="/admin#/pages/${pg.id}">回后台编辑</a></div>` + pg.content_html;
+    }
+    return html(site.renderPage(s, pg));
+  }
+
   // 文章页：按「永久链接」规则解析（放在所有固定路由之后，保证 /archive、/search 等
   // 系统路径永远优先；命中不了再兜底旧地址 /post/:slug(.html) 并 301 到当前规范地址）
   const pr = await permalinkRoute(env, s, path, user, url.origin);
@@ -278,6 +295,9 @@ async function permalinkRoute(env, s, path, user, origin) {
     post = kv.slug
       ? await db.getPost(env.DB, { slug: kv.slug })
       : (kv.id ? await db.getPost(env.DB, { id: Number(kv.id) }) : null);
+    // 页面不当文章渲染：规则恰好匹配到页面别名时（如 /{slug}），统一跳到 /p/<slug>，
+    // 否则「关于我」会顶着发布时间、分类和评论区出现，看着就是一篇没归类的文章。
+    if (post && post.type === 'page') return redirect301(pageUrl(post));
     // 文章改过发布时间或分类后，URL 里的日期/分类就对不上了 → 301 到当前规范地址
     if (post && !permalinkVarsMatch(kv, post)) return redirect301(postUrl(s, post));
   }
@@ -286,7 +306,7 @@ async function permalinkRoute(env, s, path, user, origin) {
     const lm = /^\/post\/(.+?)(?:\.html)?$/.exec(p0);
     if (lm) {
       const old = await db.getPost(env.DB, { slug: lm[1] });
-      if (old) return redirect301(postUrl(s, old));
+      if (old) return redirect301(old.type === 'page' ? pageUrl(old) : postUrl(s, old));
     }
     return null;
   }
@@ -925,6 +945,8 @@ async function api(ctx, url, seg, method) {
       if (status !== 'published' && !user) return err('未登录', 401);
       const data = await db.listPosts(dbx, {
         status,
+        // 默认只给文章；后台「页面」菜单传 type=page，互不干扰
+        type: String(url.searchParams.get('type') || 'post'),
         q: url.searchParams.get('q') || '',
         cat: url.searchParams.get('cat') || undefined,
         tag: url.searchParams.get('tag') || undefined,
@@ -933,7 +955,7 @@ async function api(ctx, url, seg, method) {
       });
       // 带上按当前永久链接规则算出的地址，后台列表直接展示，不必再拼 /post/:slug
       const sm = await db.settingsMap(dbx);
-      data.items = data.items.map((p) => ({ ...p, url: postUrl(sm, p) }));
+      data.items = data.items.map((p) => ({ ...p, url: p.type === 'page' ? pageUrl(p) : postUrl(sm, p) }));
       return json(data);
     }
     // 新建 POST /api/posts
@@ -949,6 +971,8 @@ async function api(ctx, url, seg, method) {
       if (!excerpt) excerpt = stripHtml(contentHtml).slice(0, 180);
       const id = await db.createPost(dbx, {
         title, slug: body.slug, status,
+        type: body.type === 'page' ? 'page' : 'post',
+        in_nav: body.in_nav,   // 未传时 db 层默认 1（导航显示）
         category_id: body.category_id ? parseInt(body.category_id, 10) : null,
         content_md: contentMd, content_html: contentHtml, excerpt,
         cover_key: body.cover_key || null, tags: Array.isArray(body.tags) ? body.tags : [],
@@ -961,7 +985,7 @@ async function api(ctx, url, seg, method) {
       const id = parseInt(seg[1], 10);
       const post = await db.getPost(dbx, { id });
       if (!post) return err('文章不存在', 404);
-      if (method === 'GET') return json({ ...post, url: postUrl(await db.settingsMap(dbx), post) });
+      if (method === 'GET') return json({ ...post, url: post.type === 'page' ? pageUrl(post) : postUrl(await db.settingsMap(dbx), post) });
       if (method === 'DELETE') {
         await db.deletePost(dbx, id);
         return json({ ok: true });
@@ -978,6 +1002,9 @@ async function api(ctx, url, seg, method) {
         if (!excerpt) excerpt = stripHtml(contentHtml).slice(0, 180);
         await db.updatePost(dbx, id, {
           title, slug: body.slug, status,
+          // type / in_nav 只在显式传了才改：文章编辑不传，就不会被误改成页面
+          ...(body.type ? { type: body.type === 'page' ? 'page' : 'post' } : {}),
+          ...(body.in_nav != null ? { in_nav: body.in_nav ? 1 : 0 } : {}),
           category_id: body.category_id ? parseInt(body.category_id, 10) : null,
           content_md: contentMd, content_html: contentHtml, excerpt,
           cover_key: body.cover_key || null,

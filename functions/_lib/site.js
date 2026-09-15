@@ -3,7 +3,7 @@
 // 路由入口在 functions/[[path]].js，本文件只负责拼 HTML。
 // ============================================================
 import * as db from './db.js';
-import { esc, fmtDate, rfc822, stripHtml, isHexColor, bnNow, postUrl } from './util.js';
+import { esc, fmtDate, rfc822, stripHtml, isHexColor, bnNow, postUrl, pageUrl } from './util.js';
 import { codeThemeCss } from './hl.js';
 import { gravatarHash } from './md5.js';
 
@@ -107,6 +107,8 @@ img{max-width:100%}
 .art-cover img{border-radius:12px;border:1px solid var(--line)}
 .art-cp{margin-top:22px;padding:13px 16px;background:var(--tint);border-left:3px solid var(--accent);border-radius:0 10px 10px 0;font-size:13.5px;line-height:1.85;color:var(--muted);word-break:break-word}
 .art-cp a{color:var(--accent)}
+/* 独立页面（/p/<slug>）：只留更新时间，去掉发布时间 / 分类 / 阅读数 */
+.page-upd{margin:-4px 0 20px;font-size:13px;color:var(--muted)}
 /* 正文排版 */
 .art-body{font-size:16.5px}
 .art-body h2{font-size:23px;margin:1.6em 0 .6em;padding-left:11px;border-left:4px solid var(--accent)}
@@ -273,6 +275,15 @@ export function layout(s, o) {
   const beian = (s.get('beian') || '').trim(); // ICP 备案号：填了才在页脚显示，链工信部官网
   const nav = (href, label, key) =>
     `<a href="${href}"${o.active === key ? ' class="on"' : ''}>${esc(label)}</a>`;
+  // 独立页面入口：路由层把当前请求查到的页面列表塞进 s（键名带下划线，不会落库），
+  // 这样每个请求各用自己的数据，不靠模块级全局变量，避免并发请求互相串。
+  let navPages = [];
+  try {
+    const raw = JSON.parse(s.get('_nav_pages') || '[]');
+    if (Array.isArray(raw)) navPages = raw;
+  } catch (e) { navPages = []; }
+  const navPagesHtml = navPages
+    .map((p) => nav(pageUrl(p), p.title, 'p:' + p.slug)).join('');
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -297,6 +308,7 @@ ${themeLink(s)}
     ${nav('/tags', '标签', 'tags')}
     ${nav('/archive', '归档', 'arc')}
     ${nav('/links', '友链', 'links')}
+    ${navPagesHtml}
     ${nav('/rss.xml', 'RSS', 'rss')}
   </nav>
   <form class="hd-search" action="/search" method="get"><input name="q" placeholder="搜索文章…" value="${o.q ? esc(o.q) : ''}"></form>
@@ -423,6 +435,23 @@ export function renderArticle(s, post, extra) {
     ${pnHtml}
     ${renderComments(s, post, extra.comments, extra.cfg)}`;
   return layout(s, { content, title: post.title, active: 'home', bodySlug: post.slug });
+}
+
+// 独立页面（Ver 0.4）：只有标题与正文 —— 不带发布时间、分类、阅读数、标签、评论、
+// 上下篇与版权声明；bodySlug 留空，前端也就不会上报阅读量。
+export function renderPage(s, post) {
+  const upd = post.updated_at
+    ? `<p class="page-upd">最后更新：${fmtDate(post.updated_at, true)}</p>` : '';
+  const content = `
+    <article class="article">
+      <h1>${esc(post.title)}</h1>
+      ${upd}
+      <div class="art-body">${post.content_html}</div>
+    </article>`;
+  return layout(s, {
+    content, title: post.title, active: 'p:' + post.slug,
+    desc: post.excerpt || '', bodySlug: '',
+  });
 }
 
 // ---------- 评论区 ----------
@@ -741,6 +770,9 @@ export async function sitemapHtml(env, s, origin) {
   for (const t of tags) rows.push(u('/tag/' + t.slug, '标签', 't', ''));
   const data = await db.listPosts(env.DB, { status: 'published', per: 1000 });
   for (const p of data.items) rows.push(u(postUrl(s, p), '文章', 'a', (p.published_at || '').slice(0, 10)));
+  // 独立页面同样进站点地图：搜索引擎要能抓到「关于我」这类页面
+  const pages = await db.listPages(env.DB);
+  for (const p of pages) rows.push(u(pageUrl(p), '页面', 'p', (p.published_at || '').slice(0, 10)));
   return feedLayout({
     icon: '🗺️',
     title: '站点地图',
@@ -792,6 +824,8 @@ export async function sitemapXml(env, s, origin) {
   for (const t of tags) rows.push(u('/tag/' + esc(t.slug), ''));
   const data = await db.listPosts(env.DB, { status: 'published', per: 1000 });
   for (const p of data.items) rows.push(u(postUrl(s, p), (p.published_at || '').slice(0, 10)));
+  const pages = await db.listPages(env.DB);
+  for (const p of pages) rows.push(u(pageUrl(p), (p.published_at || '').slice(0, 10)));
   return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${rows.join('\n')}
