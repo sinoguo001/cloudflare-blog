@@ -435,6 +435,22 @@ async function viewEditor(id) {
       excerpt: '',
     };
   };
+  // 发布成功后统一走这里：弹「发布成功」→ 回文章列表。
+  // ⚠️ 以前只有「更新已有文章」走这条路，新建发布直接 go('#/posts/:id') 跳回编辑页，
+  //    两条路径行为不一致：新建一篇直接点发布会停在编辑页，看着像没发出去。
+  const finishPublish = async (postId, slug) => {
+    // 地址按当前永久链接规则取，别再硬拼 /post/:slug
+    let purl = '/post/' + slug;
+    try { purl = (await API.get('/posts/' + postId)).url || purl; } catch (e) { /* 取不到就退回旧写法 */ }
+    const open = await dialog({
+      title: '发布成功',
+      bodyHtml: `文章地址：<a href="${esc(purl)}" target="_blank">${esc(purl)}</a><br>
+      订阅：<a href="/rss.xml" target="_blank">/rss.xml</a> · <a href="/sitemap.xml" target="_blank">/sitemap.xml</a>`,
+      actions: [{ val: 'list', label: '返回列表', cls: 'p' }, { val: 'open', label: '打开文章', cls: 'g' }],
+    });
+    if (open === 'open') window.open(purl, '_blank');
+    go('#/posts');
+  };
   const save = async (publish) => {
     const btnPub = view().querySelector('#e-publish');
     btnPub.disabled = true;
@@ -448,27 +464,17 @@ async function viewEditor(id) {
       } else {
         const r = await API.post('/posts', body);
         slug = r.slug;
+        id = r.id;  // 记下新 id：之后在同一页继续点保存是更新，不会重复建一篇
         toast(publish ? '已发布 ✓ 前台、分类/标签页、RSS、站点地图均已同步' : '草稿已保存');
+        if (publish) { dirty = false; await finishPublish(id, slug); return; }
+        // 新建草稿：把地址换成真实 id 才能继续编辑，否则再点保存又会新建一篇
         dirty = false;
-        go('#/posts/' + r.id);
+        go('#/posts/' + id);
         return;
       }
       dirty = false;
-      if (publish) {
-        // 地址按当前永久链接规则取，别再硬拼 /post/:slug（此处只可能是已存在的文章）
-        let purl = '/post/' + slug;
-        try { purl = (await API.get('/posts/' + id)).url || purl; } catch (e) { /* 取不到就退回旧写法 */ }
-        const open = await dialog({
-          title: '发布成功',
-          bodyHtml: `文章地址：<a href="${esc(purl)}" target="_blank">${esc(purl)}</a><br>
-          订阅：<a href="/rss.xml" target="_blank">/rss.xml</a> · <a href="/sitemap.xml" target="_blank">/sitemap.xml</a>`,
-          actions: [{ val: 'list', label: '返回列表', cls: 'p' }, { val: 'open', label: '打开文章', cls: 'g' }],
-        });
-        if (open === 'open') window.open(purl, '_blank');
-        go('#/posts');
-      } else {
-        updateStatus('draft');
-      }
+      if (publish) await finishPublish(id, slug);
+      else updateStatus('draft');
     } catch (e) {
       toast(e.message, 'bad');
     } finally {
