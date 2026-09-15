@@ -1456,6 +1456,7 @@ async function viewSettings(tabArg) {
   const mOn = v.querySelector('#s-mail_enabled');
   const mBody = v.querySelector('#mail-body');
   const mPass = v.querySelector('#s-mail_pass');
+  const mUser = v.querySelector('#s-mail_user');   // 测试发信要带上表单里的发件邮箱，别漏声明
   let clearPass = false;
   let mailReady = false;    // 初始回填期间不做「自定义清空」，否则会把已保存的自定义配置抹掉
   let lastPresetHost = '';  // 最近一次由预设自动填进来的 SMTP 服务器
