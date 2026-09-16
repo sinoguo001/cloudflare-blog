@@ -230,6 +230,10 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .cat-tip{margin:8px 0 0}
 .cat-dlg-slug{margin-top:12px}
 .cat-slug{color:var(--ac);font-family:ui-monospace,Consolas,Menlo,monospace;font-size:12.5px}
+/* 二级分类：行首拐角标记 + 整行淡底，和顶级分类区分 */
+.sub-mark{display:inline-block;color:var(--mut);margin-right:5px;font-style:normal}
+.tbl tr.row-sub td:first-child{padding-left:20px}
+.tbl tr.row-sub{background:rgba(0,0,0,.018)}
 
 /* 邮件通知：授权码提醒条与测试结果的成功 / 失败色 */
 .mail-notice{background:#fff7ed;border:1px solid #fed7aa;border-left:3px solid #f59e0b;border-radius:8px;

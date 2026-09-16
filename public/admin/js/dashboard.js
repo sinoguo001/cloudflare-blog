@@ -224,7 +224,9 @@ export function dashboardHtml(d, username) {
         <div class="sec-title">快捷操作</div>
         <div class="dash-quick">
           <a class="btn g" href="#/posts/new">写新文章</a>
-          <a class="btn g" href="#/categories">分类与标签</a>
+          <a class="btn g" href="#/pages/new">新建页面</a>
+          <a class="btn g" href="#/categories">分类</a>
+          <a class="btn g" href="#/tags">标签</a>
           <a class="btn g" href="#/media">图片库</a>
           <a class="btn g" href="#/themes">主题外观</a>
           <a class="btn g" href="#/backup">备份与恢复</a>

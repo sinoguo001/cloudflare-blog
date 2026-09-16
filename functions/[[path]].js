@@ -4,7 +4,7 @@
 //       rss.xml / sitemap.xml / robots.txt、后台静态资源(经 ASSETS)
 // ============================================================
 import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, isEmail, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard,
-  normalizePermalink, permalinkOf, permalinkRegex, postUrl, pageUrl, permalinkVarsMatch } from './_lib/util.js';
+  normalizePermalink, permalinkOf, permalinkRegex, postUrl, pageUrl, catUrl, permalinkVarsMatch } from './_lib/util.js';
 // cloudflare:sockets 必须静态 import：Pages Functions 的打包器只稳妥支持顶层静态导入，
 // 动态 import('cloudflare:sockets') 在真机上可能加载失败，表现为接口直接 5xx。
 // 传给 mail.js 而不是让它自己 import —— 这样本地 Node 测试仍能注入假 socket。
@@ -157,22 +157,31 @@ async function front(ctx, url, seg, method, path) {
     return html(site.renderHome(s, data, page));
   }
 
-  // 分类 /category /category/x[/page/n]
+  // 分类 /category · /category/别名 · /category/父别名/子别名（后两者可再跟 /page/n）
   if (seg[0] === 'category') {
+    const cats = await db.listCategories(env.DB);
     if (!seg[1]) {
-      const cats = await db.listCategories(env.DB);
-      const cards = cats.map((c) => `<div class="cat-card"><h3><a href="/category/${esc(c.slug)}">${esc(c.name)}</a></h3>
+      // 全部分类：按父子重排，二级分类排在上级之后
+      const cards = db.treeCategories(cats).map((c) => `<div class="cat-card${c.parent_id ? ' cat-card-sub' : ''}">
+        <h3><a href="${esc(catUrl(c))}">${c.parent_id ? '<i class="sub-mark">└</i>' : ''}${esc(c.name)}</a></h3>
         ${c.description ? `<p>${esc(c.description)}</p>` : ''}<span class="cnt">${c.count || 0} 篇文章</span></div>`).join('');
       return html(site.renderListPage(s, { head: '全部分类', active: 'cat', title: '分类',
         itemsHtml: '', empty: '还没有分类', extra: cards ? `<div class="cat-grid">${cards}</div>` : '' }));
     }
-    const slug = seg[1];
+    // 先摘掉尾部的 /page/n，剩下的都是分类路径段
     let page = 1;
-    if (seg[2] === 'page' && seg[3]) page = pageNum(seg[3]);
-    const cats = await db.listCategories(env.DB);
-    const cat = cats.find((c) => c.slug === slug);
+    const parts = [];
+    for (let i = 1; i < seg.length; i++) {
+      if (seg[i] === 'page') { page = pageNum(seg[i + 1]); break; }
+      parts.push(seg[i]);
+    }
+    // 别名全站唯一，用最后一段就能定位到分类
+    const cat = cats.find((c) => c.slug === (parts[parts.length - 1] || ''));
     if (!cat) return html(site.render404(s), 404);
-    const data = await db.listPosts(env.DB, { status: 'published', cat: slug, page, per });
+    // 层级不对就 301：父分类改了别名、子分类被当顶级访问、顶级分类多写了一层，全都跳到规范地址
+    const want = catUrl(cat);
+    if ('/category/' + parts.join('/') !== want) return redirect301(want + (page > 1 ? `/page/${page}` : ''));
+    const data = await db.listPosts(env.DB, { status: 'published', cat: cat.slug, page, per });
     const itemsHtml = data.items.map((p) => {
       const u = esc(postUrl(s, p));   // 永久链接：随「文章设置」里的规则变化
       const cover = p.cover_key ? `<div class="pc-cover"><a href="${u}"><img src="/media/${esc(p.cover_key)}" alt="" loading="lazy"></a></div>` : '';
@@ -183,9 +192,16 @@ async function front(ctx, url, seg, method, path) {
         ${p.excerpt ? `<p class="pc-excerpt">${esc(p.excerpt)}</p>` : ''}
         ${tags ? `<div class="pc-tags">${tags}</div>` : ''}</div>${cover}</article>`;
     }).join('');
-    const makeUrl = (n) => (n <= 1 ? `/category/${slug}` : `/category/${slug}/page/${n}`);
+    // 顶级分类页顶上列出它的二级分类入口；二级分类页则给出返回上级的链接
+    const kids = cats.filter((c) => c.parent_id === cat.id);
+    const subNav = kids.length
+      ? `<div class="chips">${kids.map((c) => `<a class="chip chip-sub" href="${esc(catUrl(c))}"><i class="sub-mark">└</i>${esc(c.name)}<b> ${c.count || 0}</b></a>`).join('')}</div>`
+      : (cat.parent_id ? `<p class="desc">上级分类：<a href="/category/${esc(cat.parent_slug)}">${esc(cat.parent_name || cat.parent_slug)}</a></p>` : '');
+    const headName = cat.parent_id ? `${cat.parent_name || cat.parent_slug} / ${cat.name}` : cat.name;
+    const makeUrl = (n) => (n <= 1 ? want : `${want}/page/${n}`);
     return html(site.renderListPage(s, {
-      head: `分类：${cat.name}`, active: 'cat', title: cat.name, desc: cat.description || '',
+      head: `分类：${headName}`, active: 'cat', title: cat.name,
+      desc: cat.description || '', extra: subNav,
       itemsHtml, empty: '该分类下暂无文章', page, pages: data.pages, makeUrl,
     }));
   }
@@ -901,8 +917,15 @@ async function api(ctx, url, seg, method) {
       // 现在明确拒绝，让用户在后台自己填一个可读的别名
       const slugRaw = b.slug == null ? '' : String(b.slug).trim().slice(0, 60);
       if (slugRaw && !/^[a-zA-Z0-9-]+$/.test(slugRaw)) return err('别名只能用英文字母、数字和连字符 -');
-      const r = await db.createCategory(dbx, { name, slug: slugRaw, description: String(b.description || '').slice(0, 200) });
-      return json({ ok: true, id: r.id, slug: r.slug });
+      // 上级分类：只能挂在「顶级分类」下，只支持两级
+      const pid = parseInt(b.parent_id, 10) || 0;
+      if (pid) {
+        const p = await dbx.prepare('SELECT id,parent_id FROM categories WHERE id=?').bind(pid).first();
+        if (!p) return err('上级分类不存在');
+        if (p.parent_id) return err('只支持两级分类：不能把分类挂在二级分类下面');
+      }
+      const r = await db.createCategory(dbx, { name, slug: slugRaw, description: String(b.description || '').slice(0, 200), parent_id: pid });
+      return json({ ok: true, id: r.id, slug: r.slug, parent_id: r.parent_id });
     }
     if (seg.length === 2 && /^\d+$/.test(seg[1])) {
       const id = parseInt(seg[1], 10);
@@ -912,7 +935,19 @@ async function api(ctx, url, seg, method) {
         if (!name) return err('请输入分类名称');
         const slugRaw = b.slug == null ? '' : String(b.slug).trim().slice(0, 60);
         if (slugRaw && !/^[a-zA-Z0-9-]+$/.test(slugRaw)) return err('别名只能用英文字母、数字和连字符 -');
-        const slug = await db.updateCategory(dbx, id, { name, slug: slugRaw, description: String(b.description || '').slice(0, 200) });
+        // parent_id 传 0 表示改回顶级；不传则保持原上级不变
+        const pidRaw = b.parent_id;
+        let pid;
+        if (pidRaw === 0 || pidRaw === '0') pid = 0;
+        else if (pidRaw == null || pidRaw === '') pid = null;   // null = 不动
+        else pid = parseInt(pidRaw, 10) || 0;
+        if (pid) {
+          const p = await dbx.prepare('SELECT id,parent_id FROM categories WHERE id=?').bind(pid).first();
+          if (!p) return err('上级分类不存在');
+          if (p.parent_id) return err('只支持两级分类：不能把分类挂在二级分类下面');
+          if (Number(p.id) === Number(id)) return err('上级不能是它自己');
+        }
+        const slug = await db.updateCategory(dbx, id, { name, slug: slugRaw, description: String(b.description || '').slice(0, 200), parent_id: pid });
         return json({ ok: true, slug });
       }
       if (method === 'DELETE') {

@@ -187,7 +187,8 @@ function shell(contentHtml) {
       <a href="#/pages" data-nav="pages">页面</a>
       <a href="#/comments" data-nav="comments">评论<span class="badge" id="badge-pending" style="display:none"></span></a>
       <a href="#/links" data-nav="links">友链<span class="badge" id="badge-links" style="display:none"></span></a>
-      <a href="#/categories" data-nav="categories">分类与标签</a>
+      <a href="#/categories" data-nav="categories">分类</a>
+      <a href="#/tags" data-nav="tags">标签</a>
       <a href="#/media" data-nav="media">图片库</a>
       <a href="#/themes" data-nav="themes">主题</a>
       <a href="#/backup" data-nav="backup">备份与恢复</a>
@@ -359,7 +360,7 @@ async function viewEditor(id, kind = 'post') {
     <div class="ed-meta">
       ${isPage ? '' : `<span class="f2">分类
         <select id="e-cat"><option value="">（无分类）</option>
-        ${cats.map((c) => `<option value="${c.id}" ${post && post.category_id == c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+        ${catOptionsHtml(cats, post ? post.category_id : null)}
         </select></span>
       <span class="f2">标签 <input id="e-tags" placeholder="多个标签用逗号分隔" value="${esc((post?.tags || []).map((t) => t.name).join(',') || '')}"></span>`}
       <span class="f2">别名 <input id="e-slug" placeholder="留空自动生成（英文数字 -）" value="${esc(post?.slug || '')}">
@@ -856,60 +857,84 @@ async function viewLinks() {
   load();
 }
 
-// ================= 分类与标签 =================
+// ================= 分类（支持二级） =================
+// 分类下拉：顶级分类下挂自己的二级分类，二级显示为「　└ 子名」
+function catOptionsHtml(cats, selectedId) {
+  const sel = selectedId == null ? '' : String(selectedId);
+  const opt = (c, label) => `<option value="${c.id}"${sel === String(c.id) ? ' selected' : ''}>${esc(label)}</option>`;
+  const out = [];
+  for (const c of cats.filter((x) => !x.parent_id)) {
+    const kids = cats.filter((x) => Number(x.parent_id) === Number(c.id));
+    if (!kids.length) { out.push(opt(c, c.name)); continue; }
+    out.push(`<optgroup label="${esc(c.name)}">`);
+    out.push(opt(c, c.name + '（本级）'));
+    for (const k of kids) out.push(opt(k, '　└ ' + k.name));
+    out.push('</optgroup>');
+  }
+  // 上级已不存在的孤儿分类：照样列出来，避免它从界面上消失
+  for (const c of cats) if (c.parent_id && !cats.some((x) => Number(x.id) === Number(c.parent_id))) out.push(opt(c, c.name));
+  return out.join('');
+}
+// 分类访问地址：二级是 /category/父别名/子别名
+const catUrlOf = (c) => '/category/' + (c.full_slug || c.slug);
+
 async function viewCategories() {
-  pageTitle('分类与标签');
+  pageTitle('分类');
   showLoading();
-  const cats = await API.get('/categories');
-  const tags = await API.get('/tags');
+  let cats = await API.get('/categories');
   shell(`
-  <div class="page-head"><h1>分类与标签</h1></div>
-  <div class="grid2">
-    <div class="card">
-      <div class="sec-title">分类 <small>文章分类（一篇文章一个分类）</small></div>
-      <form id="cat-add">
-        <div class="field cat-f-name">
-          <label>名称</label>
-          <input class="inp" name="name" id="cat-new-name" placeholder="新分类名称，如：技术笔记" required>
-        </div>
-        <div class="field cat-f-slug">
-          <label>别名（网址用，选填）</label>
-          <input class="inp" name="slug" id="cat-new-slug" placeholder="如 tech-notes">
-          <div class="hint cat-tip">访问地址 <b id="cat-new-prev">/category/…</b> · 别名只能用小写英文字母、数字和 -；
-            中文名称请手动填一个英文别名，留空会自动生成一串随机字符，不利于收录。</div>
-        </div>
-        <div class="cat-add-row"><button class="btn p" type="submit">新建</button></div>
-      </form>
-      <div id="cat-list"></div>
-    </div>
-    <div class="card">
-      <div class="sec-title">标签 <small>建议在写文章时直接给正文打标签</small></div>
-      <div id="tag-list"></div>
-    </div>
+  <div class="page-head"><h1>分类</h1><div class="spacer"><a class="btn g" href="/categories" target="_blank" rel="noopener">前台查看 ↗</a></div></div>
+  <div class="card">
+    <div class="sec-title">新建分类 <small>支持两级：顶级分类，或挂在某个顶级分类下的二级分类</small></div>
+    <form id="cat-add">
+      <div class="field cat-f-name"><label>名称</label>
+        <input class="inp" id="cat-new-name" placeholder="如：技术笔记" required></div>
+      <div class="field cat-f-slug"><label>别名（网址用，选填）</label>
+        <input class="inp" id="cat-new-slug" placeholder="如 tech-notes">
+        <div class="hint cat-tip">访问地址 <b id="cat-new-prev">/category/…</b> · 别名只能用小写英文字母、数字和 -；
+          中文名称请手动填一个英文别名，留空会自动生成一串随机字符，不利于收录。</div></div>
+      <div class="field"><label>上级分类</label>
+        <select class="inp" id="cat-new-parent"><option value="0">（作为顶级分类）</option></select>
+        <div class="hint">选了上级就是二级分类，地址变成 <b>/上级别名/本级别名</b>；二级分类下面不能再建下级。</div></div>
+      <div class="cat-add-row"><button class="btn p" type="submit">新建</button></div>
+    </form>
+    <div id="cat-list"></div>
   </div>`);
   const renderCats = (list) => {
-    view().querySelector('#cat-list').innerHTML = !list.length ? '<div class="empty-note">还没有分类</div>' :
+    const tree = [];
+    for (const c of list.filter((x) => !x.parent_id)) {
+      tree.push(c);
+      for (const k of list) if (Number(k.parent_id) === Number(c.id)) tree.push(k);
+    }
+    for (const c of list) if (!tree.includes(c)) tree.push(c);
+    view().querySelector('#cat-list').innerHTML = !tree.length ? '<div class="empty-note">还没有分类</div>' :
       `<div class="tbl-w"><table class="tbl"><thead><tr><th>名称</th><th>文章数</th><th>操作</th></tr></thead><tbody>${
-      list.map((c) => `<tr><td><b>${esc(c.name)}</b><div class="cell-sub"><a class="cat-slug" href="/category/${esc(c.slug)}" target="_blank" rel="noopener" title="在前台打开">/category/${esc(c.slug)} ↗</a>${c.description ? ' · ' + esc(c.description) : ''}</div></td>
-        <td>${c.count}</td><td><button class="btn sm" data-i="${c.id}" data-n="${esc(c.name)}" data-s="${esc(c.slug)}" data-d="${esc(c.description)}" data-cat="1">编辑</button>
-        <button class="btn sm d" data-del-cat="${c.id}" data-n="${esc(c.name)}">删除</button></td></tr>`).join('')}
+      tree.map((c) => `<tr${c.parent_id ? ' class="row-sub"' : ''}><td>${c.parent_id ? '<span class="sub-mark">└</span>' : ''}<b>${esc(c.name)}</b>${
+        c.parent_id && c.parent_name ? `<span class="cell-sub">上级：${esc(c.parent_name)}</span>` : ''}
+        <div class="cell-sub"><a class="cat-slug" href="${esc(catUrlOf(c))}" target="_blank" rel="noopener" title="在前台打开">${esc(catUrlOf(c))} ↗</a>${c.description ? ' · ' + esc(c.description) : ''}</div></td>
+        <td>${c.count}</td><td><button class="btn sm" data-i="${c.id}" data-n="${esc(c.name)}" data-s="${esc(c.slug)}" data-d="${esc(c.description)}" data-p="${c.parent_id || 0}" data-cat="1">编辑</button>
+        <button class="btn sm d" data-del-cat="${c.id}" data-n="${esc(c.name)}" data-sub="${c.parent_id ? 0 : (list.filter((k) => Number(k.parent_id) === Number(c.id)).length)}">删除</button></td></tr>`).join('')}
       </tbody></table></div>`;
+    // 上级下拉：只有顶级分类可选（两级封顶）
+    const sel = view().querySelector('#cat-new-parent');
+    if (sel) {
+      const tops = list.filter((c) => !c.parent_id);
+      sel.innerHTML = '<option value="0">（作为顶级分类）</option>'
+        + tops.map((c) => `<option value="${c.id}">${esc(c.name)}（/${esc(c.slug)}）</option>`).join('');
+    }
   };
-  const renderTags = (list) => {
-    view().querySelector('#tag-list').innerHTML = !list.length ? '<div class="empty-note">还没有标签</div>' :
-      `<div class="tbl-w"><table class="tbl"><thead><tr><th>名称</th><th>文章数</th><th>操作</th></tr></thead><tbody>${
-      list.map((t) => `<tr><td><b>${esc(t.name)}</b><div class="cell-sub">/${esc(t.slug)}</div></td>
-        <td>${t.count}</td><td><button class="btn sm d" data-del-tag="${t.id}" data-n="${esc(t.name)}">删除</button></td></tr>`).join('')}
-      </tbody></table></div>`;
-  };
-  renderCats(cats); renderTags(tags);
+  renderCats(cats);
   // 别名合法性：只允许小写英文/数字/-（与后端 /api/categories 的校验一致）
   const SLUG_RE = /^[a-zA-Z0-9-]+$/;
   const slugifyUi = (s) => String(s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   const newName = view().querySelector('#cat-new-name');
   const newSlug = view().querySelector('#cat-new-slug');
   const newPrev = view().querySelector('#cat-new-prev');
-  const syncNewPrev = () => { newPrev.textContent = '/category/' + (slugifyUi(newSlug.value) || '…'); };
+  const newParent = view().querySelector('#cat-new-parent');
+  const syncNewPrev = () => {
+    const p = cats.find((c) => String(c.id) === String(newParent.value));
+    newPrev.textContent = '/category/' + (p ? p.slug + '/' : '') + (slugifyUi(newSlug.value) || '…');
+  };
   // 名称是纯英文时自动带出别名，省得手打；中文则不动，等用户自己填
   newName.addEventListener('input', () => {
     if (newSlug.value) { syncNewPrev(); return; }
@@ -918,6 +943,7 @@ async function viewCategories() {
     syncNewPrev();
   });
   newSlug.addEventListener('input', syncNewPrev);
+  newParent.addEventListener('change', syncNewPrev);
   syncNewPrev();
 
   view().querySelector('#cat-add').addEventListener('submit', async (ev) => {
@@ -927,20 +953,27 @@ async function viewCategories() {
     const slug = newSlug.value.trim();
     if (slug && !SLUG_RE.test(slug)) { toast('别名只能用英文字母、数字和连字符 -', 'bad'); newSlug.focus(); return; }
     try {
-      const r = await API.post('/categories', { name, slug, description: '' });
+      const r = await API.post('/categories', { name, slug, description: '', parent_id: parseInt(newParent.value, 10) || 0 });
       toast(r.slug && !slug && /^cat-\d+$/.test(r.slug)
         ? `分类已创建，但未填别名，系统自动生成了 ${r.slug}，建议编辑改成可读的英文别名`
         : '分类已创建');
-      renderCats(await API.get('/categories'));
+      cats = await API.get('/categories');
+      renderCats(cats);
       newName.value = ''; newSlug.value = ''; syncNewPrev();
     } catch (e) { toast(e.message, 'bad'); }
   });
   view().querySelector('#cat-list').addEventListener('click', async (ev) => {
     const b = ev.target.closest('button[data-del-cat]');
     if (b) {
-      if (!(await confirmDanger(`删除分类「${b.dataset.n}」？其下文章将变为无分类，不会被删除。`, '删除分类'))) return;
-      try { await API.del('/categories/' + b.dataset.delCat); toast('已删除'); renderCats(await API.get('/categories')); }
-      catch (e) { toast(e.message, 'bad'); }
+      const kid = parseInt(b.dataset.sub, 10) || 0;
+      const warn = kid ? `（其下 ${kid} 个二级分类不会被删除，会自动升为顶级分类，地址会少一层）` : '';
+      if (!(await confirmDanger(`删除分类「${b.dataset.n}」？其下文章将变为无分类，不会被删除。${warn}`, '删除分类'))) return;
+      try {
+        await API.del('/categories/' + b.dataset.delCat);
+        toast('已删除');
+        cats = await API.get('/categories');
+        renderCats(cats);
+      } catch (e) { toast(e.message, 'bad'); }
       return;
     }
     const eb = ev.target.closest('button[data-cat]');
@@ -953,6 +986,11 @@ async function viewCategories() {
         <div class="field cat-dlg-slug"><label>别名（网址用）</label><input class="inp" id="cs" value="${eb.dataset.s}" placeholder="如 tech-notes">
           <div class="hint" style="margin:6px 0 0">访问地址 <b id="cs-prev">/category/${esc(oldSlug)}</b></div>
         </div>
+        <div class="field"><label>上级分类</label><select class="inp" id="cp">
+          <option value="0"${eb.dataset.p === '0' ? ' selected' : ''}>（顶级分类）</option>
+          ${cats.filter((c) => !c.parent_id && String(c.id) !== String(eb.dataset.i))
+            .map((c) => `<option value="${c.id}"${String(c.id) === String(eb.dataset.p) ? ' selected' : ''}>${esc(c.name)}（/${esc(c.slug)}）</option>`).join('')}
+        </select></div>
         <div class="field"><label>描述</label><textarea class="txa" id="cd" style="min-height:70px">${eb.dataset.d}</textarea></div>
         <div class="hint" style="margin-bottom:0">别名只能用小写英文字母、数字和 -。
           <b>改了之后旧地址 /category/${esc(oldSlug)} 会失效</b>，已被搜索引擎收录的链接需要重新收录。</div>`,
@@ -963,7 +1001,8 @@ async function viewCategories() {
         if (!n) { toast('请输入分类名称', 'bad'); return false; }
         const s = body.querySelector('#cs').value.trim();
         if (s && !SLUG_RE.test(s)) { toast('别名只能用英文字母、数字和连字符 -', 'bad'); return false; }
-        payload = { name: n, slug: s, description: body.querySelector('#cd').value.trim() };
+        payload = { name: n, slug: s, description: body.querySelector('#cd').value.trim(),
+          parent_id: parseInt(body.querySelector('#cp').value, 10) || 0 };
         return true;
       },
     });
@@ -973,8 +1012,15 @@ async function viewCategories() {
     if (dlgEl) {
       const csEl = dlgEl.querySelector('#cs');
       const prevEl = dlgEl.querySelector('#cs-prev');
-      if (csEl && prevEl) {
-        csEl.addEventListener('input', () => { prevEl.textContent = '/category/' + (slugifyUi(csEl.value) || '…'); });
+      const cpEl = dlgEl.querySelector('#cp');
+      const sync = () => {
+        const p = cats.find((c) => String(c.id) === String(cpEl.value));
+        prevEl.textContent = '/category/' + (p ? p.slug + '/' : '') + (slugifyUi(csEl.value) || '…');
+      };
+      if (csEl && prevEl && cpEl) {
+        csEl.addEventListener('input', sync);
+        cpEl.addEventListener('change', sync);
+        sync();
       }
     }
     const res = await dlgP;
@@ -983,15 +1029,48 @@ async function viewCategories() {
       const r = await API.put('/categories/' + eb.dataset.i, payload);
       if (r && r.slug && payload.slug && r.slug !== payload.slug) toast(`别名 ${payload.slug} 已被占用，已自动改为 ${r.slug}`, 'bad');
       else toast('已保存');
-      renderCats(await API.get('/categories'));
+      cats = await API.get('/categories');
+      renderCats(cats);
     } catch (e) { toast(e.message, 'bad'); }
+  });
+}
+
+// ================= 标签 =================
+async function viewTags() {
+  pageTitle('标签');
+  showLoading();
+  let tags = await API.get('/tags');
+  shell(`
+  <div class="page-head"><h1>标签</h1><div class="spacer"><a class="btn g" href="/tags" target="_blank" rel="noopener">前台查看 ↗</a></div></div>
+  <div class="card">
+    <div class="sec-title">全部标签 <small>标签在写文章时直接填写，这里只做整理与删除</small></div>
+    <div class="field"><input class="inp" id="tag-q" placeholder="搜索标签名称…"></div>
+    <div id="tag-list"></div>
+    <div class="hint" style="margin-bottom:0">改名请到「文章 → 编辑」里修改正文标签：改完保存，旧标签无文章引用时会自动留在这里，可手动删除。</div>
+  </div>`);
+  const renderTags = (list) => {
+    view().querySelector('#tag-list').innerHTML = !list.length ? '<div class="empty-note">还没有标签（或没有匹配的标签）</div>' :
+      `<div class="tbl-w"><table class="tbl"><thead><tr><th>名称</th><th>文章数</th><th>操作</th></tr></thead><tbody>${
+      list.map((t) => `<tr><td><b>${esc(t.name)}</b><div class="cell-sub"><a class="cat-slug" href="/tag/${esc(t.slug)}" target="_blank" rel="noopener" title="在前台打开">/tag/${esc(t.slug)} ↗</a></div></td>
+        <td>${t.count}</td><td><button class="btn sm d" data-del-tag="${t.id}" data-n="${esc(t.name)}">删除</button></td></tr>`).join('')}
+      </tbody></table></div>`;
+  };
+  renderTags(tags);
+  view().querySelector('#tag-q').addEventListener('input', (ev) => {
+    const q = ev.target.value.trim().toLowerCase();
+    renderTags(q ? tags.filter((t) => String(t.name).toLowerCase().includes(q) || String(t.slug).toLowerCase().includes(q)) : tags);
   });
   view().querySelector('#tag-list').addEventListener('click', async (ev) => {
     const b = ev.target.closest('button[data-del-tag]');
     if (!b) return;
     if (!(await confirmDanger(`删除标签「${b.dataset.n}」？文章内容不会被删除。`, '删除标签'))) return;
-    try { await API.del('/tags/' + b.dataset.delTag); toast('已删除'); renderTags(await API.get('/tags')); }
-    catch (e) { toast(e.message, 'bad'); }
+    try {
+      await API.del('/tags/' + b.dataset.delTag);
+      toast('已删除');
+      tags = await API.get('/tags');
+      view().querySelector('#tag-q').value = '';
+      renderTags(tags);
+    } catch (e) { toast(e.message, 'bad'); }
   });
 }
 
@@ -1939,6 +2018,7 @@ async function router() {
     if (seg[0] === 'comments') { await viewComments(); return; }
     if (seg[0] === 'links') { await viewLinks(); return; }
     if (seg[0] === 'categories') { await viewCategories(); return; }
+    if (seg[0] === 'tags') { await viewTags(); return; }
     if (seg[0] === 'media') { await viewMedia(); return; }
     if (seg[0] === 'themes') { await viewThemes(); return; }
     if (seg[0] === 'backup') { await viewBackup(); return; }

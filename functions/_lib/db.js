@@ -49,17 +49,44 @@ export async function ensurePostCols(db) {
     if (!cols.has('type')) await db.prepare("ALTER TABLE posts ADD COLUMN type TEXT NOT NULL DEFAULT 'post'").run();
     if (!cols.has('in_nav')) await db.prepare('ALTER TABLE posts ADD COLUMN in_nav INTEGER NOT NULL DEFAULT 1').run();
     postColsReady = true;
+    // 顺带补 categories：文章查询要联父分类别名，少这一列会整站 500
+    await ensureCatCols(db);
   } catch (e) { /* 补列失败不阻断浏览：没有这两列时页面功能不可用，但文章照常 */ }
 }
 
+// ---------- categories 表结构兜底（Ver 0.4 二级分类） ----------
+// parent_id 由 migrations/0006_subcats.sql 建立，没跑迁移时这里自动补，避免整站 500。
+let catColsReady = false;
+export async function ensureCatCols(db) {
+  if (catColsReady) return;
+  try {
+    const r = await db.prepare('PRAGMA table_info(categories)').all();
+    const cols = new Set(((r && r.results) || []).map((x) => x.name));
+    if (!cols.size) return;
+    if (!cols.has('parent_id')) await db.prepare('ALTER TABLE categories ADD COLUMN parent_id INTEGER NOT NULL DEFAULT 0').run();
+    catColsReady = true;
+  } catch (e) { /* 补列失败时按「全是顶级分类」继续跑，不阻断浏览 */ }
+}
+
 // ---------- posts ----------
-const POST_SEL = `SELECT p.*, c.name AS cat_name, c.slug AS cat_slug
+// 多带一层父分类别名：二级分类的访问地址是 /category/父别名/子别名
+const POST_SEL = `SELECT p.*, c.name AS cat_name, c.slug AS cat_slug,
+  (SELECT pc.slug FROM categories pc WHERE pc.id=c.parent_id) AS cat_parent_slug,
+  (SELECT pc.name FROM categories pc WHERE pc.id=c.parent_id) AS cat_parent_name
   FROM posts p LEFT JOIN categories c ON c.id=p.category_id`;
+
+// 二级分类的完整路径别名：顶级是自己，二级是「父/子」
+export const catFullSlug = (c) =>
+  (c && c.parent_slug ? c.parent_slug + '/' : '') + String((c && c.slug) || '');
 
 function rowOf(p) {
   return {
     ...p,
-    category: p.category_id ? { id: p.category_id, name: p.cat_name, slug: p.cat_slug } : null,
+    category: p.category_id ? {
+      id: p.category_id, name: p.cat_name, slug: p.cat_slug,
+      full_slug: (p.cat_parent_slug ? p.cat_parent_slug + '/' : '') + (p.cat_slug || ''),
+      parent_name: p.cat_parent_name || '', parent_slug: p.cat_parent_slug || '',
+    } : null,
     tags: [],
     comment_count: 0,
   };
@@ -70,11 +97,24 @@ function rowOf(p) {
 // 除非调用方显式传 type，页面由此天然与文章流隔离。
 export async function listPosts(db, { status = 'published', type = 'post', cat, tag, q, inNav, page = 1, per = 8 } = {}) {
   await ensurePostCols(db);
+  await ensureCatCols(db);
   const where = [], b = [];
   if (status && status !== 'all') { where.push('p.status=?'); b.push(status); }
   if (type && type !== 'all') { where.push('p.type=?'); b.push(type); }
   if (inNav) where.push('p.in_nav=1');
-  if (cat) { where.push('c.slug=?'); b.push(cat); }
+  if (cat) {
+    await ensureCatCols(db);
+    // 传的是别名：先换成 id，再看有没有二级分类——父分类页要把子分类的文章一起带出来
+    const c = await db.prepare('SELECT id FROM categories WHERE slug=?').bind(cat).first();
+    let ids = [];
+    if (c) {
+      const kids = await db.prepare('SELECT id FROM categories WHERE parent_id=?').bind(c.id).all();
+      ids = [c.id, ...(kids.results || []).map((k) => k.id)];
+    }
+    // 查不到这个分类就返回空，绝不能退化成「不过滤」把所有文章都列出来
+    where.push(ids.length ? `p.category_id IN (${ids.map(() => '?').join(',')})` : '1=0');
+    b.push(...ids);
+  }
   if (tag) {
     where.push(`EXISTS(SELECT 1 FROM post_tags pt JOIN tags t ON t.id=pt.tag_id WHERE pt.post_id=p.id AND t.slug=?)`);
     b.push(tag);
@@ -116,6 +156,8 @@ async function fillExtras(db, items) {
 }
 
 export async function getPost(db, { id, slug } = {}) {
+  // POST_SEL 里取了父分类别名，没跑 0006 迁移会报 no such column: c.parent_id，先补列
+  await ensureCatCols(db);
   const p = id
     ? await db.prepare(`${POST_SEL} WHERE p.id=?`).bind(id).first()
     : await db.prepare(`${POST_SEL} WHERE p.slug=?`).bind(slug).first();
@@ -228,28 +270,66 @@ async function setPostTags(db, postId, names) {
 }
 
 // ---------- categories ----------
+// 只支持两级：顶级（parent_id=0）与挂在顶级下的二级分类。
+// 返回 full_slug（父/子）供前台拼地址；count 含二级分类的文章，与父分类页实际列出的数量一致。
 export async function listCategories(db) {
+  await ensureCatCols(db);
   const r = await db.prepare(
-    `SELECT c.*, (SELECT COUNT(*) FROM posts p WHERE p.category_id=c.id AND p.status='published') AS count
-     FROM categories c ORDER BY c.id ASC`).all();
-  return r.results || [];
+    `SELECT c.*, p.slug AS parent_slug, p.name AS parent_name,
+       (SELECT COUNT(*) FROM posts po WHERE po.status='published'
+          AND (po.category_id=c.id OR po.category_id IN (SELECT id FROM categories WHERE parent_id=c.id))) AS count
+     FROM categories c LEFT JOIN categories p ON p.id=c.parent_id
+     ORDER BY c.parent_id ASC, c.id ASC`).all();
+  const rows = r.results || [];
+  for (const c of rows) c.full_slug = catFullSlug(c);
+  return rows;
 }
-export async function createCategory(db, { name, slug, description }) {
+// 顶级分类在前、其下二级紧随其后，供后台列表与前台总览按树形渲染
+export function treeCategories(list) {
+  const tops = list.filter((c) => !c.parent_id);
+  const out = [];
+  for (const t of tops) {
+    out.push(t);
+    for (const c of list) if (c.parent_id === t.id) out.push(c);
+  }
+  // 父分类被删掉而子分类还没清理的极端情况：别把孤儿藏起来
+  for (const c of list) if (!out.includes(c)) out.push(c);
+  return out;
+}
+export async function createCategory(db, { name, slug, description, parent_id }) {
+  await ensureCatCols(db);
   const t = bnNow();
+  // 上级只能是顶级分类：这样天然不会出现三层，也不会成环
+  const pid = parent_id ? await topCategoryId(db, parent_id) : 0;
   const finalSlug = await uniqueSlug(db, 'categories', slugify(slug || name) || ('cat-' + Date.now() % 1000000));
-  const r = await db.prepare('INSERT INTO categories(name,slug,description,created_at) VALUES(?,?,?,?)')
-    .bind(name, finalSlug, description || '', t).run();
-  return { id: r.meta.last_row_id, slug: finalSlug };
+  const r = await db.prepare('INSERT INTO categories(name,slug,description,parent_id,created_at) VALUES(?,?,?,?,?)')
+    .bind(name, finalSlug, description || '', pid, t).run();
+  return { id: r.meta.last_row_id, slug: finalSlug, parent_id: pid };
 }
-export async function updateCategory(db, id, { name, slug, description }) {
+export async function updateCategory(db, id, { name, slug, description, parent_id }) {
+  await ensureCatCols(db);
+  const cur = await db.prepare('SELECT parent_id FROM categories WHERE id=?').bind(id).first();
+  // 上级只接受「顶级分类」或「回到顶级」：传了非顶级就沿用原值
+  const pid = parent_id ? await topCategoryId(db, parent_id, id) : (parent_id === 0 ? 0 : (cur ? cur.parent_id : 0));
   // 必须传 excludeId=id：否则保存时自己的 slug 会被判成重名，别名被追加成 xxx-2，旧链接全部失效
   const finalSlug = await uniqueSlug(db, 'categories', slugify(slug || name) || ('cat-' + Date.now() % 1000000), id);
-  await db.prepare('UPDATE categories SET name=?,slug=?,description=? WHERE id=?')
-    .bind(name, finalSlug, description || '', id).run();
+  await db.prepare('UPDATE categories SET name=?,slug=?,description=?,parent_id=? WHERE id=?')
+    .bind(name, finalSlug, description || '', pid, id).run();
   // 回传最终别名：与提交值不同说明被别的分类占了，接口据此提示用户
   return finalSlug;
 }
+// 只有顶级分类能当别人的上级；传进来的 id 无效或不是顶级就返回 0（降级为顶级，不报错）
+async function topCategoryId(db, id, selfId) {
+  const p = await db.prepare('SELECT id,parent_id FROM categories WHERE id=?').bind(id).first();
+  if (!p) return 0;
+  if (selfId && Number(p.id) === Number(selfId)) return 0;   // 不能挂到自己名下
+  if (p.parent_id) return 0;                                  // 二级分类不能再有下级
+  return p.id;
+}
 export async function deleteCategory(db, id) {
+  await ensureCatCols(db);
+  // 删父不删子：子分类自动升为顶级，文章链接还留着，只是地址少了一层（路由会 301 过去）
+  await db.prepare('UPDATE categories SET parent_id=0 WHERE parent_id=?').bind(id).run();
   await db.prepare('UPDATE posts SET category_id=NULL WHERE category_id=?').bind(id).run();
   await db.prepare('DELETE FROM categories WHERE id=?').bind(id).run();
 }
@@ -523,6 +603,8 @@ export async function dumpAll(db) {
 export async function restoreAll(db, data) {
   // 备份里可能带 type / in_nav 两列（新版本导出），目标库若没跑迁移要先补上，否则整批写入失败
   await ensurePostCols(db).catch(() => {});
+  // 新版本导出的备份带 parent_id，目标库没跑 0006 迁移时要先补列，否则整批写入失败
+  await ensureCatCols(db).catch(() => {});
   // 访问统计表可能还没建（老库），先确保存在再清空，否则 DELETE 会报 no such table
   await ensurePvTables(db).catch(() => {});
   await ensureLinkTable(db).catch(() => {});

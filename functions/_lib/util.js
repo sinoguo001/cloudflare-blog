@@ -254,6 +254,13 @@ export function postUrl(s, p) {
   return pat.replace(/\{(slug|id|year|month|day|category)\}/g, (_, k) => v[k] || (k === 'category' ? 'uncategorized' : ''));
 }
 
+// 分类地址（Ver 0.4 二级分类）：顶级 /category/别名，二级 /category/父别名/子别名
+// 优先用 full_slug（父/子），没有就退回自己的别名
+export function catUrl(c) {
+  const s = (c && (c.full_slug || c.slug)) || '';
+  return '/category/' + String(s).replace(/^\/+|\/+$/g, '');
+}
+
 // 独立页面（Ver 0.4）：地址固定为 /p/<slug>，不参与永久链接规则
 export function pageUrl(p) {
   return '/p/' + String((p && p.slug) || '').replace(/^\/+|\/+$/g, '');

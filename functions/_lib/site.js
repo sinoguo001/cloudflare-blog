@@ -3,7 +3,7 @@
 // 路由入口在 functions/[[path]].js，本文件只负责拼 HTML。
 // ============================================================
 import * as db from './db.js';
-import { esc, fmtDate, rfc822, stripHtml, isHexColor, bnNow, postUrl, pageUrl } from './util.js';
+import { esc, fmtDate, rfc822, stripHtml, isHexColor, bnNow, postUrl, pageUrl, catUrl } from './util.js';
 import { codeThemeCss } from './hl.js';
 import { gravatarHash } from './md5.js';
 
@@ -75,6 +75,9 @@ img{max-width:100%}
 .chip{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:4px 14px;font-size:13px;color:var(--text)}
 .chip b{color:var(--muted);font-weight:400}
 .chip:hover{border-color:var(--accent);text-decoration:none}
+/* 二级分类：缩进 + 前置拐角标记，和顶级分类区分开 */
+.chip-sub{margin-left:6px;background:transparent;border-style:dashed;font-size:12px;padding:3px 12px}
+.chip-sub .sub-mark,.cat-card-sub .sub-mark{font-style:normal;color:var(--muted);margin-right:4px}
 /* 文章卡片 */
 .plist{display:grid;gap:18px;margin-top:18px}
 .pc{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;display:grid;grid-template-columns:1fr auto;gap:18px;align-items:center}
@@ -189,6 +192,8 @@ img{max-width:100%}
 .cat-card h3 a{color:var(--text)}
 .cat-card p{margin:0;color:var(--muted);font-size:13.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .cat-card .cnt{color:var(--accent);font-size:12.5px;display:block;margin-top:8px}
+/* 二级分类卡片：缩进一级、虚线边框，和顶级分类区分（必须放在 .cat-card 之后才生效） */
+.cat-card-sub{margin-left:16px;border-style:dashed;background:transparent}
 /* 友情链接 */
 .link-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-top:14px}
 .link-card{display:flex;gap:12px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
@@ -325,14 +330,15 @@ ${themeLink(s)}
 // ---------- 通用片段 ----------
 function catChips(list, base = '/category') {
   if (!list.length) return '';
-  return `<div class="chips">${list.map((c) => `<a class="chip" href="${base}/${esc(c.slug)}">${esc(c.name)}<b> ${c.count || 0}</b></a>`).join('')}</div>`;
+  // base 分两种：分类用 /category（二级分类拼成 父/子），标签用 /tag（只有一级）
+  return `<div class="chips">${list.map((c) => `<a class="chip${c.parent_id ? ' chip-sub' : ''}" href="${base}/${esc(c.full_slug || c.slug)}">${c.parent_id ? '<i class="sub-mark">└</i>' : ''}${esc(c.name)}<b> ${c.count || 0}</b></a>`).join('')}</div>`;
 }
 // p 之后可传设置 Map s；传了就用「永久链接」规则生成地址，否则退回 /post/:slug
 function postCard(p, s) {
   const url = esc(s ? postUrl(s, p) : '/post/' + p.slug);
   const cover = p.cover_key
     ? `<div class="pc-cover"><a href="${url}"><img src="/media/${esc(p.cover_key)}" alt="" loading="lazy"></a></div>` : '';
-  const cat = p.category ? `<a href="/category/${esc(p.category.slug)}">${esc(p.category.name)}</a>` : '';
+  const cat = p.category ? `<a href="${esc(catUrl(p.category))}">${esc(p.category.name)}</a>` : '';
   const excerpt = p.excerpt || stripHtml(p.content_html).slice(0, 260);
   const tags = (p.tags || []).map((t) => `<a class="tag-chip" href="/tag/${esc(t.slug)}">${esc(t.name)}</a>`).join('');
   return `<article class="pc${cover ? '' : ' no-cover'}"><div>
@@ -407,6 +413,14 @@ export function copyrightHtml(s, post, origin) {
   return `<div class="art-cp">${text.split('\n').map(esc).join('<br>')}</div>`;
 }
 
+// 面包屑里的分类段：二级分类显示成「父 / 子」两级，各自可点
+function crumbCat(c) {
+  if (!c) return '';
+  const parent = c.parent_slug
+    ? `<a href="/category/${esc(c.parent_slug)}">${esc(c.parent_name || c.parent_slug)}</a> / ` : '';
+  return `${parent}<a href="${esc(catUrl(c))}">${esc(c.name)}</a> / `;
+}
+
 export function renderArticle(s, post, extra) {
   const cover = post.cover_key
     ? `<div class="art-cover"><img src="/media/${esc(post.cover_key)}" alt="${esc(post.title)}"></div>` : '';
@@ -414,7 +428,7 @@ export function renderArticle(s, post, extra) {
   const meta = [
     `<span>${esc(s.get('author_name'))}</span>`,
     `<time>${fmtDate(post.published_at, true)}</time>`,
-    post.category ? `<a href="/category/${esc(post.category.slug)}">${esc(post.category.name)}</a>` : '',
+    post.category ? `<a href="${esc(catUrl(post.category))}">${esc(post.category.name)}</a>` : '',
     `<span>${post.view_count || 0} 次阅读</span>`,
   ].filter(Boolean).join('<span class="dot">·</span>');
   const pn = extra.siblings;
@@ -423,7 +437,7 @@ export function renderArticle(s, post, extra) {
     ${pn.next ? `<a class="next" href="${esc(postUrl(s, pn.next))}"><small>下一篇 →</small>${esc(pn.next.title)}</a>` : '<span></span>'}
   </nav>`;
   const content = `
-    <p class="crumb"><a href="/">首页</a> / ${post.category ? `<a href="/category/${esc(post.category.slug)}">${esc(post.category.name)}</a> / ` : ''}正文</p>
+    <p class="crumb"><a href="/">首页</a> / ${crumbCat(post.category)}正文</p>
     <article class="article">
       <h1>${esc(post.title)}</h1>
       <div class="art-meta">${meta}</div>
@@ -542,13 +556,16 @@ export function archiveContent(s, posts) {
 // 导航栏「分类」「标签」指向 /categories 与 /tags，此前这两个页面根本不存在（点进去是 404，
 // 页头还因拿不到设置而退化成兜底字）——现在补齐。
 export function renderCategories(s, list) {
+  // 按父子重排：二级分类紧跟在自己的上级后面，一眼看出层级
+  const tree = db.treeCategories(list);
+  const subs = list.filter((c) => c.parent_id).length;
   return layout(s, {
     title: '全部分类', active: 'cat',
     desc: `${String(s.get('site_title') || '').trim()} 的全部分类`,
     content: `<section class="article">
       <h1 style="margin:0 0 6px">全部分类</h1>
-      <p style="color:var(--muted);margin:0 0 18px">共 ${list.length} 个分类</p>
-      ${list.length ? catChips(list, '/category') : '<p style="color:var(--muted)">还没有创建分类。</p>'}
+      <p style="color:var(--muted);margin:0 0 18px">共 ${list.length} 个分类${subs ? `（含 ${subs} 个二级分类）` : ''}</p>
+      ${tree.length ? catChips(tree, '/category') : '<p style="color:var(--muted)">还没有创建分类。</p>'}
     </section>`,
   });
 }
@@ -765,7 +782,7 @@ export async function sitemapHtml(env, s, origin) {
   rows.push(u('/', '首页', 'h', ''));
   rows.push(u('/archive', '归档', '', ''));
   const cats = await db.listCategories(env.DB);
-  for (const c of cats) rows.push(u('/category/' + c.slug, '分类', 'c', ''));
+  for (const c of cats) rows.push(u(catUrl(c), '分类', 'c', ''));
   const tags = await db.listTags(env.DB);
   for (const t of tags) rows.push(u('/tag/' + t.slug, '标签', 't', ''));
   const data = await db.listPosts(env.DB, { status: 'published', per: 1000 });
@@ -819,7 +836,7 @@ export async function sitemapXml(env, s, origin) {
   const u = (loc, lastmod) => `  <url><loc>${origin}${esc(loc)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ''}</url>`;
   const rows = [u('/', ''), u('/archive', ''), u('/categories', ''), u('/tags', ''), u('/links', '')];
   const cats = await db.listCategories(env.DB);
-  for (const c of cats) rows.push(u('/category/' + esc(c.slug), ''));
+  for (const c of cats) rows.push(u(esc(catUrl(c)), ''));
   const tags = await db.listTags(env.DB);
   for (const t of tags) rows.push(u('/tag/' + esc(t.slug), ''));
   const data = await db.listPosts(env.DB, { status: 'published', per: 1000 });
