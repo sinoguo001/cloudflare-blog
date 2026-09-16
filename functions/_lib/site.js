@@ -64,6 +64,15 @@ img{max-width:100%}
 .nav a{padding:6px 12px;border-radius:8px;color:var(--text);font-size:15px}
 .nav a:hover{background:var(--accent-soft);text-decoration:none}
 .nav a.on{background:var(--accent);color:var(--on-accent)}
+/* 分类下拉：顶级分类带二级时，鼠标移上去（或触屏点一下）自动展开 */
+.nav-drop{position:relative;display:inline-block}
+.nav-drop>.caret{font-style:normal;font-size:11px;color:var(--muted);margin-left:3px}
+.nav-drop.on>.caret,.nav-drop:hover>.caret{color:inherit}
+.nav-sub{display:none;position:absolute;left:0;top:100%;z-index:30;min-width:150px;padding:6px;
+  background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(15,23,42,.12)}
+.nav-sub a{display:block;padding:6px 12px;white-space:nowrap;font-size:14.5px;border-radius:7px}
+.nav-sub a::before{content:"└ ";color:var(--muted)}   /* 二级分类前加拐角，和一级区分 */
+.nav-drop:hover>.nav-sub,.nav-drop:focus-within>.nav-sub{display:block}
 .hd-search input{padding:7px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;width:170px;outline:none}
 .hd-search input:focus{border-color:var(--accent)}
 /* 主区 */
@@ -289,6 +298,28 @@ export function layout(s, o) {
   } catch (e) { navPages = []; }
   const navPagesHtml = navPages
     .map((p) => nav(pageUrl(p), p.title, 'p:' + p.slug)).join('');
+  // 导航栏固定项：首页常驻，其余在「基本设置 → 导航栏显示」里开关（老站没设过就是全显示）
+  const navOn = (k) => s.get(k) !== '0';
+  const navBuiltin = [
+    navOn('nav_show_categories') ? nav('/categories', '分类', 'cat') : '',
+    navOn('nav_show_tags') ? nav('/tags', '标签', 'tags') : '',
+    navOn('nav_show_archive') ? nav('/archive', '归档', 'arc') : '',
+    navOn('nav_show_links') ? nav('/links', '友链', 'links') : '',
+  ].join('');
+  // 分类进导航：路由层把 in_nav=1 的顶级分类（含二级）塞进 s，每个请求各用各的数据
+  let navCats = [];
+  try {
+    const raw = JSON.parse(s.get('_nav_cats') || '[]');
+    if (Array.isArray(raw)) navCats = raw;
+  } catch (e) { navCats = []; }
+  const navCatsHtml = navCats.map((c) => {
+    const link = nav(catUrl(c), c.name, 'c:' + c.slug);
+    const kids = (c.children || []).map((k) => nav(catUrl(k), k.name, 'c:' + k.slug)).join('');
+    // 有二级分类就包成下拉：鼠标移上去自动展开（触屏点一下也能展开，靠 :focus-within）
+    return kids
+      ? `<span class="nav-drop"><a href="${esc(catUrl(c))}"${o.active === ('c:' + c.slug) ? ' class="on"' : ''}>${esc(c.name)}<i class="caret">▾</i></a><span class="nav-sub">${kids}</span></span>`
+      : link;
+  }).join('');
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -309,12 +340,10 @@ ${themeLink(s)}
     <span>${esc(title)}<small>${esc(s.get('site_subtitle'))}</small></span></a>
   <nav class="nav">
     ${nav('/', '首页', 'home')}
-    ${nav('/categories', '分类', 'cat')}
-    ${nav('/tags', '标签', 'tags')}
-    ${nav('/archive', '归档', 'arc')}
-    ${nav('/links', '友链', 'links')}
+    ${navCatsHtml}
+    ${navBuiltin}
     ${navPagesHtml}
-    ${nav('/rss.xml', 'RSS', 'rss')}
+    ${navOn('nav_show_rss') ? nav('/rss.xml', 'RSS', 'rss') : ''}
   </nav>
   <form class="hd-search" action="/search" method="get"><input name="q" placeholder="搜索文章…" value="${o.q ? esc(o.q) : ''}"></form>
 </div></header>

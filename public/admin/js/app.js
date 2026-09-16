@@ -896,6 +896,9 @@ async function viewCategories() {
       <div class="field"><label>上级分类</label>
         <select class="inp" id="cat-new-parent"><option value="0">（作为顶级分类）</option></select>
         <div class="hint">选了上级就是二级分类，地址变成 <b>/上级别名/本级别名</b>；二级分类下面不能再建下级。</div></div>
+      <div class="field" id="cat-new-nav-field"><label style="display:flex;align-items:center;gap:8px">
+        <input type="checkbox" id="cat-new-nav" style="width:auto"> 在导航栏显示</label>
+        <div class="hint">勾选后出现在前台页头导航；有二级分类时，鼠标移到它上面会自动展开下拉。</div></div>
       <div class="cat-add-row"><button class="btn p" type="submit">新建</button></div>
     </form>
     <div id="cat-list"></div>
@@ -908,11 +911,12 @@ async function viewCategories() {
     }
     for (const c of list) if (!tree.includes(c)) tree.push(c);
     view().querySelector('#cat-list').innerHTML = !tree.length ? '<div class="empty-note">还没有分类</div>' :
-      `<div class="tbl-w"><table class="tbl"><thead><tr><th>名称</th><th>文章数</th><th>操作</th></tr></thead><tbody>${
+      `<div class="tbl-w"><table class="tbl"><thead><tr><th>名称</th><th>文章数</th><th>导航</th><th>操作</th></tr></thead><tbody>${
       tree.map((c) => `<tr${c.parent_id ? ' class="row-sub"' : ''}><td>${c.parent_id ? '<span class="sub-mark">└</span>' : ''}<b>${esc(c.name)}</b>${
         c.parent_id && c.parent_name ? `<span class="cell-sub">上级：${esc(c.parent_name)}</span>` : ''}
         <div class="cell-sub"><a class="cat-slug" href="${esc(catUrlOf(c))}" target="_blank" rel="noopener" title="在前台打开">${esc(catUrlOf(c))} ↗</a>${c.description ? ' · ' + esc(c.description) : ''}</div></td>
-        <td>${c.count}</td><td><button class="btn sm" data-i="${c.id}" data-n="${esc(c.name)}" data-s="${esc(c.slug)}" data-d="${esc(c.description)}" data-p="${c.parent_id || 0}" data-cat="1">编辑</button>
+        <td>${c.count}</td><td>${c.parent_id ? '<span class="cell-sub">随上级</span>' : (Number(c.in_nav) ? '<span class="tag-on">导航</span>' : '<span class="cell-sub">不显示</span>')}</td>
+        <td><button class="btn sm" data-i="${c.id}" data-n="${esc(c.name)}" data-s="${esc(c.slug)}" data-d="${esc(c.description)}" data-p="${c.parent_id || 0}" data-v="${Number(c.in_nav) ? 1 : 0}" data-cat="1">编辑</button>
         <button class="btn sm d" data-del-cat="${c.id}" data-n="${esc(c.name)}" data-sub="${c.parent_id ? 0 : (list.filter((k) => Number(k.parent_id) === Number(c.id)).length)}">删除</button></td></tr>`).join('')}
       </tbody></table></div>`;
     // 上级下拉：只有顶级分类可选（两级封顶）
@@ -931,9 +935,13 @@ async function viewCategories() {
   const newSlug = view().querySelector('#cat-new-slug');
   const newPrev = view().querySelector('#cat-new-prev');
   const newParent = view().querySelector('#cat-new-parent');
+  const newNav = view().querySelector('#cat-new-nav');
+  const newNavField = view().querySelector('#cat-new-nav-field');
   const syncNewPrev = () => {
     const p = cats.find((c) => String(c.id) === String(newParent.value));
     newPrev.textContent = '/category/' + (p ? p.slug + '/' : '') + (slugifyUi(newSlug.value) || '…');
+    // 二级分类不占导航位（跟着上级在下拉里出现），所以勾选框直接收起来
+    newNavField.style.display = p ? 'none' : '';
   };
   // 名称是纯英文时自动带出别名，省得手打；中文则不动，等用户自己填
   newName.addEventListener('input', () => {
@@ -953,13 +961,14 @@ async function viewCategories() {
     const slug = newSlug.value.trim();
     if (slug && !SLUG_RE.test(slug)) { toast('别名只能用英文字母、数字和连字符 -', 'bad'); newSlug.focus(); return; }
     try {
-      const r = await API.post('/categories', { name, slug, description: '', parent_id: parseInt(newParent.value, 10) || 0 });
+      const r = await API.post('/categories', { name, slug, description: '',
+        parent_id: parseInt(newParent.value, 10) || 0, in_nav: newNav.checked ? 1 : 0 });
       toast(r.slug && !slug && /^cat-\d+$/.test(r.slug)
         ? `分类已创建，但未填别名，系统自动生成了 ${r.slug}，建议编辑改成可读的英文别名`
         : '分类已创建');
       cats = await API.get('/categories');
       renderCats(cats);
-      newName.value = ''; newSlug.value = ''; syncNewPrev();
+      newName.value = ''; newSlug.value = ''; newNav.checked = false; syncNewPrev();
     } catch (e) { toast(e.message, 'bad'); }
   });
   view().querySelector('#cat-list').addEventListener('click', async (ev) => {
@@ -991,6 +1000,9 @@ async function viewCategories() {
           ${cats.filter((c) => !c.parent_id && String(c.id) !== String(eb.dataset.i))
             .map((c) => `<option value="${c.id}"${String(c.id) === String(eb.dataset.p) ? ' selected' : ''}>${esc(c.name)}（/${esc(c.slug)}）</option>`).join('')}
         </select></div>
+        <div class="field" id="cv-field"><label style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="cv" style="width:auto"${eb.dataset.v === '1' ? ' checked' : ''}> 在导航栏显示</label>
+          <div class="hint">二级分类不单独占导航位，鼠标移到它的上级分类上会自动展开下拉。</div></div>
         <div class="field"><label>描述</label><textarea class="txa" id="cd" style="min-height:70px">${eb.dataset.d}</textarea></div>
         <div class="hint" style="margin-bottom:0">别名只能用小写英文字母、数字和 -。
           <b>改了之后旧地址 /category/${esc(oldSlug)} 会失效</b>，已被搜索引擎收录的链接需要重新收录。</div>`,
@@ -1001,8 +1013,10 @@ async function viewCategories() {
         if (!n) { toast('请输入分类名称', 'bad'); return false; }
         const s = body.querySelector('#cs').value.trim();
         if (s && !SLUG_RE.test(s)) { toast('别名只能用英文字母、数字和连字符 -', 'bad'); return false; }
+        const cvEl = body.querySelector('#cv');
+        const pid = parseInt(body.querySelector('#cp').value, 10) || 0;
         payload = { name: n, slug: s, description: body.querySelector('#cd').value.trim(),
-          parent_id: parseInt(body.querySelector('#cp').value, 10) || 0 };
+          parent_id: pid, in_nav: cvEl && !cvEl.disabled && cvEl.checked ? 1 : 0 };
         return true;
       },
     });
@@ -1013,9 +1027,17 @@ async function viewCategories() {
       const csEl = dlgEl.querySelector('#cs');
       const prevEl = dlgEl.querySelector('#cs-prev');
       const cpEl = dlgEl.querySelector('#cp');
+      const cvEl = dlgEl.querySelector('#cv');
+      const cvField = dlgEl.querySelector('#cv-field');
       const sync = () => {
         const p = cats.find((c) => String(c.id) === String(cpEl.value));
         prevEl.textContent = '/category/' + (p ? p.slug + '/' : '') + (slugifyUi(csEl.value) || '…');
+        // 选了上级就是二级分类：导航勾选框禁用并取消勾选（后端也会强制置 0）
+        if (cvEl && cvField) {
+          cvField.style.display = p ? 'none' : '';
+          cvEl.disabled = !!p;
+          if (p) cvEl.checked = false;
+        }
       };
       if (csEl && prevEl && cpEl) {
         csEl.addEventListener('input', sync);
@@ -1461,6 +1483,19 @@ async function viewSettings(tabArg) {
         </div>
       </div>
     </div>
+
+    <div class="card">
+      <div class="sec-title">导航栏显示 <small>页头导航要露出哪些入口</small></div>
+      <div class="nav-toggles">
+        <label><input type="checkbox" id="s-nav_categories"> 分类</label>
+        <label><input type="checkbox" id="s-nav_tags"> 标签</label>
+        <label><input type="checkbox" id="s-nav_archive"> 归档</label>
+        <label><input type="checkbox" id="s-nav_links"> 友链</label>
+        <label><input type="checkbox" id="s-nav_rss"> RSS</label>
+      </div>
+      <p class="hint" style="margin-bottom:0">「首页」固定显示，不提供开关。这里关掉某一项，只是不显示在导航栏，<b>页面地址依然可以访问</b>（如关闭 RSS 后 /rss.xml 照常能订阅）。
+        分类作为单独入口显示，由「<a href="#/categories">分类</a>」里各分类的「在导航栏显示」控制；二级分类不单独占位，鼠标移到它的上级分类上会自动展开下拉。</p>
+    </div>
   </div>
 
   <div class="set-pane" data-pane="post">
@@ -1645,6 +1680,10 @@ async function viewSettings(tabArg) {
   v.querySelector('#s-allow').checked = s.allow_comments !== '0';
   v.querySelector('#s-audit').checked = s.comment_audit !== '0';
   v.querySelector('#s-captcha').checked = s.captcha !== '0';
+  // ---- 导航栏开关：没设过（老站）默认全开，与升级前一致 ----
+  for (const k of ['categories', 'tags', 'archive', 'links', 'rss']) {
+    v.querySelector('#s-nav_' + k).checked = s['nav_show_' + k] !== '0';
+  }
 
   // ---- 邮件通知：服务商预设 / 授权码提醒 / 测试发送 ----
   const mpSel = v.querySelector('#s-mail_provider');
@@ -1971,6 +2010,12 @@ async function viewSettings(tabArg) {
       allow_comments: v.querySelector('#s-allow').checked,
       comment_audit: v.querySelector('#s-audit').checked,
       captcha: v.querySelector('#s-captcha').checked,
+      // 导航栏开关：关掉只是不显示在导航里，页面地址照常可访问
+      nav_show_categories: v.querySelector('#s-nav_categories').checked,
+      nav_show_tags: v.querySelector('#s-nav_tags').checked,
+      nav_show_archive: v.querySelector('#s-nav_archive').checked,
+      nav_show_links: v.querySelector('#s-nav_links').checked,
+      nav_show_rss: v.querySelector('#s-nav_rss').checked,
       logo_image: logoIn.value.trim(),
       favicon_image: favIn.value.trim(),
       mail_enabled: v.querySelector('#s-mail_enabled').checked,

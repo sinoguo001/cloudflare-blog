@@ -145,6 +145,12 @@ async function front(ctx, url, seg, method, path) {
   // layout() 再从 s 里取，避免用模块级全局变量导致并发请求互相覆盖。
   const navPages = await db.listPages(env.DB, { status: 'published', inNav: true });
   s.set('_nav_pages', JSON.stringify(navPages.map((p) => ({ title: p.title, slug: p.slug }))));
+  // 导航里的分类：只取勾了「在导航栏显示」的顶级分类，二级分类跟随父项在下拉里出现
+  const navCats = await db.navCategories(env.DB).catch(() => []);
+  s.set('_nav_cats', JSON.stringify(navCats.map((c) => ({
+    name: c.name, slug: c.slug, full_slug: c.full_slug,
+    children: (c.children || []).map((k) => ({ name: k.name, slug: k.slug, full_slug: k.full_slug })),
+  }))));
   const per = Math.min(20, Math.max(1, parseInt(s.get('per_page'), 10) || 8));
   const user = await userFromRequest(env, ctx.request);
   const pageNum = (p) => Math.max(1, parseInt(p, 10) || 1);
@@ -200,7 +206,8 @@ async function front(ctx, url, seg, method, path) {
     const headName = cat.parent_id ? `${cat.parent_name || cat.parent_slug} / ${cat.name}` : cat.name;
     const makeUrl = (n) => (n <= 1 ? want : `${want}/page/${n}`);
     return html(site.renderListPage(s, {
-      head: `分类：${headName}`, active: 'cat', title: cat.name,
+      // active 用 c:<别名>：导航里对应的分类项（含二级）才能高亮
+      head: `分类：${headName}`, active: 'c:' + cat.slug, title: cat.name,
       desc: cat.description || '', extra: subNav,
       itemsHtml, empty: '该分类下暂无文章', page, pages: data.pages, makeUrl,
     }));
@@ -804,6 +811,10 @@ async function api(ctx, url, seg, method) {
     if (b.allow_comments != null) await db.setSetting(dbx, 'allow_comments', b.allow_comments ? '1' : '0');
     if (b.comment_audit != null) await db.setSetting(dbx, 'comment_audit', b.comment_audit ? '1' : '0');
     if (b.captcha != null) await db.setSetting(dbx, 'captcha', b.captcha ? '1' : '0');
+    // ---- 导航栏显示开关：关掉只是不出现在页头导航，页面地址照常可访问 ----
+    for (const k of ['categories', 'tags', 'archive', 'links', 'rss']) {
+      if (b['nav_show_' + k] != null) await db.setSetting(dbx, 'nav_show_' + k, b['nav_show_' + k] ? '1' : '0');
+    }
     // ---- 邮件通知 ----
     // 端口必须是该服务商真开了的（163 没有 587、Office365 没有 465）。
     // 存了不支持的组合，现象是「连上就断」或「干等到超时」，与账号密码无关、极难排查，所以入库前拦住。
@@ -924,8 +935,8 @@ async function api(ctx, url, seg, method) {
         if (!p) return err('上级分类不存在');
         if (p.parent_id) return err('只支持两级分类：不能把分类挂在二级分类下面');
       }
-      const r = await db.createCategory(dbx, { name, slug: slugRaw, description: String(b.description || '').slice(0, 200), parent_id: pid });
-      return json({ ok: true, id: r.id, slug: r.slug, parent_id: r.parent_id });
+      const r = await db.createCategory(dbx, { name, slug: slugRaw, description: String(b.description || '').slice(0, 200), parent_id: pid, in_nav: b.in_nav });
+      return json({ ok: true, id: r.id, slug: r.slug, parent_id: r.parent_id, in_nav: r.in_nav });
     }
     if (seg.length === 2 && /^\d+$/.test(seg[1])) {
       const id = parseInt(seg[1], 10);
@@ -947,7 +958,7 @@ async function api(ctx, url, seg, method) {
           if (p.parent_id) return err('只支持两级分类：不能把分类挂在二级分类下面');
           if (Number(p.id) === Number(id)) return err('上级不能是它自己');
         }
-        const slug = await db.updateCategory(dbx, id, { name, slug: slugRaw, description: String(b.description || '').slice(0, 200), parent_id: pid });
+        const slug = await db.updateCategory(dbx, id, { name, slug: slugRaw, description: String(b.description || '').slice(0, 200), parent_id: pid, in_nav: b.in_nav });
         return json({ ok: true, slug });
       }
       if (method === 'DELETE') {

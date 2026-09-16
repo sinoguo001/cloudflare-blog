@@ -234,6 +234,12 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .sub-mark{display:inline-block;color:var(--mut);margin-right:5px;font-style:normal}
 .tbl tr.row-sub td:first-child{padding-left:20px}
 .tbl tr.row-sub{background:rgba(0,0,0,.018)}
+/* 设置页「导航栏显示」开关组 + 分类列表里的「导航」小标签 */
+.nav-toggles{display:flex;flex-wrap:wrap;gap:14px 22px;margin:4px 0 10px}
+.nav-toggles label{display:flex;align-items:center;gap:7px;font-size:14px;cursor:pointer}
+.nav-toggles input{width:auto}
+.tag-on{display:inline-block;background:#eef2ff;color:var(--ac);border-radius:6px;
+  padding:1px 8px;font-size:12px}
 
 /* 邮件通知：授权码提醒条与测试结果的成功 / 失败色 */
 .mail-notice{background:#fff7ed;border:1px solid #fed7aa;border-left:3px solid #f59e0b;border-radius:8px;

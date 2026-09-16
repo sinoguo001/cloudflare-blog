@@ -64,6 +64,8 @@ export async function ensureCatCols(db) {
     const cols = new Set(((r && r.results) || []).map((x) => x.name));
     if (!cols.size) return;
     if (!cols.has('parent_id')) await db.prepare('ALTER TABLE categories ADD COLUMN parent_id INTEGER NOT NULL DEFAULT 0').run();
+    // 导航栏开关：默认 0，升级后导航栏与旧版一致
+    if (!cols.has('in_nav')) await db.prepare('ALTER TABLE categories ADD COLUMN in_nav INTEGER NOT NULL DEFAULT 0').run();
     catColsReady = true;
   } catch (e) { /* 补列失败时按「全是顶级分类」继续跑，不阻断浏览 */ }
 }
@@ -296,25 +298,37 @@ export function treeCategories(list) {
   for (const c of list) if (!out.includes(c)) out.push(c);
   return out;
 }
-export async function createCategory(db, { name, slug, description, parent_id }) {
+// 导航栏要显示的分类：in_nav=1 的顶级分类，自带的二级分类挂在 children 里
+// （二级分类不单独占导航位，只在父分类的下拉里出现）
+export async function navCategories(db) {
+  const all = await listCategories(db);
+  return all
+    .filter((c) => !c.parent_id && Number(c.in_nav) === 1)
+    .map((t) => ({ ...t, children: all.filter((c) => Number(c.parent_id) === Number(t.id)) }));
+}
+export async function createCategory(db, { name, slug, description, parent_id, in_nav }) {
   await ensureCatCols(db);
   const t = bnNow();
   // 上级只能是顶级分类：这样天然不会出现三层，也不会成环
   const pid = parent_id ? await topCategoryId(db, parent_id) : 0;
+  // 二级分类不占导航位（跟着父分类在下拉里出现），所以强制置 0，避免存了不生效的脏数据
+  const nav = pid ? 0 : (in_nav ? 1 : 0);
   const finalSlug = await uniqueSlug(db, 'categories', slugify(slug || name) || ('cat-' + Date.now() % 1000000));
-  const r = await db.prepare('INSERT INTO categories(name,slug,description,parent_id,created_at) VALUES(?,?,?,?,?)')
-    .bind(name, finalSlug, description || '', pid, t).run();
-  return { id: r.meta.last_row_id, slug: finalSlug, parent_id: pid };
+  const r = await db.prepare('INSERT INTO categories(name,slug,description,parent_id,in_nav,created_at) VALUES(?,?,?,?,?,?)')
+    .bind(name, finalSlug, description || '', pid, nav, t).run();
+  return { id: r.meta.last_row_id, slug: finalSlug, parent_id: pid, in_nav: nav };
 }
-export async function updateCategory(db, id, { name, slug, description, parent_id }) {
+export async function updateCategory(db, id, { name, slug, description, parent_id, in_nav }) {
   await ensureCatCols(db);
-  const cur = await db.prepare('SELECT parent_id FROM categories WHERE id=?').bind(id).first();
+  const cur = await db.prepare('SELECT parent_id,in_nav FROM categories WHERE id=?').bind(id).first();
   // 上级只接受「顶级分类」或「回到顶级」：传了非顶级就沿用原值
   const pid = parent_id ? await topCategoryId(db, parent_id, id) : (parent_id === 0 ? 0 : (cur ? cur.parent_id : 0));
+  // 变成二级分类就自动退出导航栏；没传 in_nav 时保持原值
+  const nav = pid ? 0 : (in_nav == null ? Number(cur ? cur.in_nav : 0) || 0 : (in_nav ? 1 : 0));
   // 必须传 excludeId=id：否则保存时自己的 slug 会被判成重名，别名被追加成 xxx-2，旧链接全部失效
   const finalSlug = await uniqueSlug(db, 'categories', slugify(slug || name) || ('cat-' + Date.now() % 1000000), id);
-  await db.prepare('UPDATE categories SET name=?,slug=?,description=?,parent_id=? WHERE id=?')
-    .bind(name, finalSlug, description || '', pid, id).run();
+  await db.prepare('UPDATE categories SET name=?,slug=?,description=?,parent_id=?,in_nav=? WHERE id=?')
+    .bind(name, finalSlug, description || '', pid, nav, id).run();
   // 回传最终别名：与提交值不同说明被别的分类占了，接口据此提示用户
   return finalSlug;
 }
