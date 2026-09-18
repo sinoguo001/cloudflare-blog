@@ -166,13 +166,11 @@ function viewSetup() {
   </div></div>`;
   const logoEl = app.querySelector('#setup-logo');
   const titleIn = app.querySelector('#st [name="site_title"]');
-  const accentIn = app.querySelector('#st [name="accent"]');
+  // 预览方块底色固定品牌蓝（与实际页头/favicon 一致），只有站名首字会跟着输入变
   const syncLogo = () => {
     logoEl.textContent = (titleIn.value || '').trim()[0] || '云';
-    logoEl.style.background = accentIn.value || '#2563eb';
   };
   titleIn.addEventListener('input', syncLogo);
-  accentIn.addEventListener('input', syncLogo);
   syncLogo();
   app.querySelector('#st').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -1499,7 +1497,7 @@ async function viewSettings(tabArg) {
           <div class="field">
             <label>页头 Logo（建议高度 ≥ 72px 的 PNG / WebP，透明底更佳）</label>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <span id="logo-prev" style="width:38px;height:38px;border-radius:9px;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
+              <span id="logo-prev" style="width:38px;height:38px;border-radius:9px;background:#2563eb;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
               <input class="inp" id="s-logo_image" placeholder="留空则使用默认：站点名称首字方块" style="flex:1;min-width:190px">
               <label class="btn" style="cursor:pointer;margin:0">上传<input type="file" id="logo-file" accept="image/*" hidden></label>
               <button class="btn" type="button" id="logo-clear">清除</button>
@@ -1508,13 +1506,13 @@ async function viewSettings(tabArg) {
           <div class="field">
             <label>浏览器标签图标 Favicon（建议正方形，≥ 64×64）</label>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <span id="fav-prev" style="width:38px;height:38px;border-radius:9px;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
+              <span id="fav-prev" style="width:38px;height:38px;border-radius:9px;background:#2563eb;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
               <input class="inp" id="s-favicon_image" placeholder="留空则自动沿用 Logo，再无则用默认首字图标" style="flex:1;min-width:190px">
               <label class="btn" style="cursor:pointer;margin:0">上传<input type="file" id="fav-file" accept="image/*" hidden></label>
               <button class="btn" type="button" id="fav-clear">清除</button>
             </div>
           </div>
-          <p class="hint" style="margin-bottom:0">上传的图片存入 R2，地址会自动填入左侧输入框，<b>需点下方「保存全部设置」才生效</b>。两者都留空时，页头与标签页图标会显示默认的首字方块（改站点名称或主题色会自动跟随）。</p>
+          <p class="hint" style="margin-bottom:0">上传的图片存入 R2，地址会自动填入左侧输入框，<b>需点下方「保存全部设置」才生效</b>。两者都留空时，页头与标签页图标会显示默认的首字方块：底色固定为品牌蓝（不随主题色变化），方块里的字取站点名称首字（改站点名称会自动跟随）。</p>
         </div>
         <div class="card">
           <div class="sec-title">对外订阅与收录</div>

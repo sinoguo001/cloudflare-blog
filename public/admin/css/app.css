@@ -10,7 +10,8 @@ body{margin:0;background:var(--bg);color:var(--text);
 a{color:var(--ac);text-decoration:none}
 button{font-family:inherit}
 .boot{padding:80px;text-align:center;color:var(--mut)}
-.brand-mark{width:30px;height:30px;border-radius:8px;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;margin-right:8px;vertical-align:middle}
+/* 品牌方块底色固定 #2563eb，不随主题色变（与前台页头、动态 favicon 同一套） */
+.brand-mark{width:30px;height:30px;border-radius:8px;background:#2563eb;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;margin-right:8px;vertical-align:middle}
 
 /* 登录 / 初始化 */
 .auth-wrap{max-width:430px;margin:9vh auto;padding:0 16px}

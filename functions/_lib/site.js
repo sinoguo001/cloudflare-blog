@@ -69,7 +69,7 @@ img{max-width:100%}
 .hd{background:var(--card);border-bottom:1px solid var(--line)}
 .hd-in{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding:14px 0}
 .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:20px;color:var(--text);margin-right:auto}
-.brand-mark{width:34px;height:34px;border-radius:9px;background:var(--accent);color:var(--on-accent);display:inline-flex;align-items:center;justify-content:center;font-weight:800}
+.brand-mark{width:34px;height:34px;border-radius:9px;background:#2563eb;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800}
 .brand-img{height:36px;width:auto;max-width:170px;object-fit:contain;display:block}
 .brand small{display:block;font-weight:400;font-size:12px;color:var(--muted);line-height:1.2}
 .nav{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
@@ -275,7 +275,9 @@ textarea.lf-input{min-height:86px;resize:vertical;line-height:1.7}
 }
 `;
 
-// ---------- 站点标识（logo / favicon）----------
+// 品牌蓝：默认图标（页头首字方块 + 动态 favicon）的固定底色。
+// 只认用户上传的 logo_image / favicon_image，主题色改了它不动。
+export const BRAND_BLUE = '#2563eb';
 // 图标字符：站点标题首字，取不到时回退品牌字「云」，保证各页面（含 404）永远一致。
 export function brandChar(s) {
   return (String(s.get('site_title') || '').trim()[0] || '云');
@@ -296,11 +298,12 @@ export function faviconMime(href) {
     : /\.webp(\?|$)/i.test(href) ? 'image/webp'
     : /\.ico(\?|$)/i.test(href) ? 'image/x-icon' : '';
 }
-// 动态 favicon：与页头 .brand-mark 同源（同色、同字），改站点名或主题色自动跟随
+// 动态 favicon：与页头 .brand-mark 同源（同字、同底色）。
+// 底色固定品牌蓝，不跟主题色走 —— 换了主题色标签图标不会跟着变色，只有用户上传自定义图标才变。
 export function faviconSvg(s) {
   const ch = esc(brandChar(s));
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-<rect width="64" height="64" rx="14" fill="${accentOf(s)}"/>
+<rect width="64" height="64" rx="14" fill="${BRAND_BLUE}"/>
 <text x="32" y="33" text-anchor="middle" dominant-baseline="central" font-size="38" font-weight="700"
  fill="#fff" font-family="system-ui,-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">${ch}</text>
 </svg>`;
