@@ -15,6 +15,24 @@ let editor = null; // 当前编辑器实例
 let dirty = false; // 文章是否有未保存修改（全局守卫用）
 let draftSaver = null; // 由编辑器页注入的“保存草稿”函数（Ctrl+S 用）
 
+// ---------- 主题色：让后台配色跟着设置走 ----------
+// 后台 CSS 用的是 --ac 系列变量（前台是 --accent），此前只写死在 :root 里，
+// 结果设置页改了主题色后台纹丝不动，只有动态 favicon 变了——因为它由服务端
+// 直接取设置值渲染，压根不走 CSS 变量。故后台登录后拉一次设置并写到 :root 上。
+// 混白比例与服务端 site.js 的 accentVars() 对齐，前后台观感才一致。
+function applyAccent(hex) {
+  const c = /^#[0-9a-fA-F]{6}$/.test(String(hex || '')) ? hex : '#2563eb';
+  const r = parseInt(c.slice(1, 3), 16), g = parseInt(c.slice(3, 5), 16), b = parseInt(c.slice(5, 7), 16);
+  const mix = (t) => `rgb(${Math.round(r + (255 - r) * t)},${Math.round(g + (255 - g) * t)},${Math.round(b + (255 - b) * t)})`;
+  const st = document.documentElement.style;
+  st.setProperty('--ac', c);
+  st.setProperty('--ac-soft', mix(0.94));
+  st.setProperty('--ac-soft-2', mix(0.9));
+  st.setProperty('--ac-line', mix(0.86));
+  st.setProperty('--ac-ring', `rgba(${r},${g},${b},.12)`);
+  return c;
+}
+
 // ---------- 邮件服务商预设（与 functions/_lib/mail.js 的 MAIL_PROVIDERS 对应） ----------
 // 选服务商后自动填服务器 / 端口 / 加密方式，并把「授权码」提示显示出来
 // ports / secures = 该服务商**实际开放**的端口与加密方式（按各家官方帮助文档核对，2026-09）。
@@ -1481,7 +1499,7 @@ async function viewSettings(tabArg) {
           <div class="field">
             <label>页头 Logo（建议高度 ≥ 72px 的 PNG / WebP，透明底更佳）</label>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <span id="logo-prev" style="width:38px;height:38px;border-radius:9px;background:var(--accent);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
+              <span id="logo-prev" style="width:38px;height:38px;border-radius:9px;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
               <input class="inp" id="s-logo_image" placeholder="留空则使用默认：站点名称首字方块" style="flex:1;min-width:190px">
               <label class="btn" style="cursor:pointer;margin:0">上传<input type="file" id="logo-file" accept="image/*" hidden></label>
               <button class="btn" type="button" id="logo-clear">清除</button>
@@ -1490,7 +1508,7 @@ async function viewSettings(tabArg) {
           <div class="field">
             <label>浏览器标签图标 Favicon（建议正方形，≥ 64×64）</label>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <span id="fav-prev" style="width:38px;height:38px;border-radius:9px;background:var(--accent);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
+              <span id="fav-prev" style="width:38px;height:38px;border-radius:9px;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
               <input class="inp" id="s-favicon_image" placeholder="留空则自动沿用 Logo，再无则用默认首字图标" style="flex:1;min-width:190px">
               <label class="btn" style="cursor:pointer;margin:0">上传<input type="file" id="fav-file" accept="image/*" hidden></label>
               <button class="btn" type="button" id="fav-clear">清除</button>
@@ -1695,6 +1713,7 @@ async function viewSettings(tabArg) {
   set('s-site_title', s.site_title); set('s-site_subtitle', s.site_subtitle);
   set('s-author_name', s.author_name); set('s-seo_desc', s.seo_desc);
   set('s-accent', s.accent || '#2563eb'); set('s-per_page', s.per_page || '8');
+  applyAccent(s.accent || '#2563eb');
   set('s-footer_text', s.footer_text);
   set('s-beian', s.beian);
   set('s-copyright', s.copyright);
@@ -1958,6 +1977,10 @@ async function viewSettings(tabArg) {
   cpIn.addEventListener('input', cpSync);
   cpSync();
 
+  // ---- 主题色：边选边变（只改 :root 变量，不写库；未保存刷新会回到已保存值）----
+  const accentIn = v.querySelector('#s-accent');
+  accentIn.addEventListener('input', () => applyAccent(accentIn.value));
+
   // ---- 站点图标：预览 / 上传 / 清除 ----
   const logoIn = v.querySelector('#s-logo_image');
   const favIn = v.querySelector('#s-favicon_image');
@@ -2112,6 +2135,8 @@ async function boot() {
     return;
   }
   if (!state.installed) { viewSetup(); return; }
+  // 后台配色跟随主题色：任一页面刷新后都重新取一次，不必先进设置页
+  API.get('/settings').then((s) => applyAccent(s && s.accent)).catch(() => {});
   window.addEventListener('hashchange', router);
   await router();
 }

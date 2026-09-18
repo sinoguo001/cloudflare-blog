@@ -25,6 +25,18 @@ function avatarUrl(s, email, size = 80) {
 const ACCENT = '#2563eb';
 export function accentOf(s) { return isHexColor(s.get('accent')) ? s.get('accent') : ACCENT; }
 
+// 主题色配套色：主色一改，浅底 / 极浅底 / 主色上的文字色必须跟着变，
+// 否则会出现「红按钮配蓝底」「深色主色上写白字看不清」这类半变不变的样子。
+// 混白比例与后台 applyAccent 保持一致，两边观感才统一。
+export function accentVars(hex) {
+  const c = isHexColor(hex) ? hex : ACCENT;
+  const r = parseInt(c.slice(1, 3), 16), g = parseInt(c.slice(3, 5), 16), b = parseInt(c.slice(5, 7), 16);
+  const mix = (t) => `rgb(${Math.round(r + (255 - r) * t)},${Math.round(g + (255 - g) * t)},${Math.round(b + (255 - b) * t)})`;
+  // sRGB 相对亮度：亮色主色上用深色字，暗色主色上用白字
+  const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return `--accent:${c};--accent-soft:${mix(0.92)};--tint:${mix(0.94)};--on-accent:${lum > 0.62 ? '#1f2937' : '#fff'}`;
+}
+
 // 当前激活主题的样式表外链；内置 default 主题无独立文件，返回空
 export function themeLink(s, base = '') {
   const id = (s.get('active_theme') || '').trim();
@@ -344,7 +356,7 @@ export function layout(s, o) {
 <meta name="description" content="${esc(desc)}">
 <link rel="icon" href="${esc(faviconHref(s))}"${faviconMime(faviconHref(s)) ? ` type="${faviconMime(faviconHref(s))}"` : ''}>
 <link rel="alternate" type="application/rss+xml" title="${esc(title)}" href="/rss.xml">
-<style>:root{--accent:${accent}}${THEME_VARS}${FRONT_CSS}${codeThemeCss(s.get('code_theme'))}</style>
+<style>${THEME_VARS}:root{${accentVars(accent)}}${FRONT_CSS}${codeThemeCss(s.get('code_theme'))}</style>
 ${themeLink(s)}
 <!-- 全站加载：文章页用它上报阅读量，所有页面用它上报 PV（后台是独立静态页，不走这里） -->
 <script src="/js/site.js" defer></script>
@@ -936,7 +948,7 @@ export function previewDoc(s, post, origin = '') {
 <base href="${esc(origin)}/">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>预览</title>
-<style>:root{--accent:${accentOf(s)}}${THEME_VARS}
+<style>${THEME_VARS}:root{${accentVars(accentOf(s))}}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.8 var(--font-body)}
 .wrap{max-width:820px;margin:0 auto;padding:28px 22px}
 h1{font-size:30px;line-height:1.4;margin:0 0 6px}
