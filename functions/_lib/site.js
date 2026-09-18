@@ -287,9 +287,16 @@ function brandMark(s) {
   const img = String(s.get('logo_image') || '').trim();
   return img ? `<img class="brand-img" src="${esc(img)}" alt="">` : `<span class="brand-mark">${esc(brandChar(s))}</span>`;
 }
+// 动态图标的版本号：每次改 faviconSvg 的画法（换底色、换形状）都要 +1。
+// 它进 URL，URL 一变浏览器与 CDN 就都不会再拿旧缓存 —— 否则改了颜色，浏览器标签里
+// 那张旧图能赖上几小时（浏览器对 favicon 有独立缓存，Ctrl+F5 都刷不掉）。
+export const FAVICON_VER = '2';
 // 自定义图标地址：favicon 优先用 favicon_image，没设则复用 logo_image，都没设则用动态 /favicon.svg
 export function faviconHref(s) {
-  return String(s.get('favicon_image') || s.get('logo_image') || '/favicon.svg').trim();
+  const custom = String(s.get('favicon_image') || s.get('logo_image') || '').trim();
+  if (custom) return custom; // 用户自己的图片：原样用，不加参数
+  // 默认动态图标：把版本号与首字拼进 URL，改画法或改站名都能立刻甩掉旧缓存
+  return `/favicon.svg?v=${FAVICON_VER}-${encodeURIComponent(brandChar(s))}`;
 }
 export function faviconMime(href) {
   return /\.svg(\?|$)/i.test(href) ? 'image/svg+xml'

@@ -17,14 +17,14 @@
 
 ### Ver 0.4（最新）
 
-0.4 版本新增了以下功能：
+0.4 版本新增了以下功能，并修了两个显示问题：
 
 1. **独立页面** — 后台新增「页面」菜单，可写「关于我」这类固定页，地址固定 `/p/别名`；不进首页 / 归档 / 搜索 / RSS（仍进站点地图），只有标题与正文，不带发布时间和评论，可选是否在导航栏显示
 2. **分类 / 标签拆成两个菜单，分类支持二级** — 二级分类的别名同样可自定义，地址 `/category/父/子`；父分类页把自己和子分类下的文章一起列出；删掉父分类时，子分类自动升为顶级
 3. **导航栏可自定义** — 「设置 → 基本设置」可开关分类 / 标签 / 归档 / 友链 / RSS（首页固定显示，关掉只是不显示在导航，地址照常可访问）；分类页可勾选「在导航栏显示」，顶级分类下有二级时鼠标移上去自动下拉
 4. **文章加密** — 编辑页加「加密」复选框与明文密码框（默认不勾）；加密后前台只显示标题与密码框，密码输对后同浏览器 180 天内免密，**博主登录态免密**；列表与搜索不外露摘要和封面，RSS 不含加密文章
-
-> 本次新增 4 张表的字段改动（`posts.type` / `posts.in_nav` / `posts.password`、`categories.parent_id` / `categories.in_nav`），**升级时请在 D1 Console 依次执行 `migrations/0005~0008.sql`**；忘了跑也不会报错——代码探测到缺列会自动补，只是少了索引。
+5. **修复：主题色改了不生效** — 前台注入顺序被默认色盖掉、后台那套变量从来没被写过值，两处都已修好，前台 / 后台 / 编辑器预览一起跟随
+6. **修复：favicon 卡在旧颜色** — 动态图标被 CDN 缓存数小时、浏览器还单独缓存一份；现改为链接带版本号 + 关闭 CDN 缓存。同时定死一条规则：**主题色只管界面**，favicon 与页头「云」字方块恒为品牌蓝，除非你自己上传图标
 
 <details>
 <summary><b>Ver 0.3（旧版记录，点击展开）</b></summary>
@@ -187,8 +187,8 @@ cloudflare-blog/
 ├── CHANGELOG.md             # 完整更新历史（倒序），README 只放最新版本摘要
 ├── wrangler.example.toml    # 命令行部署的配置模板（复制为 wrangler.toml 并填 database_id 后用）；Git 部署不要提交 wrangler.toml，否则会锁死网页绑定
 ├── migrations/0001_init.sql # 数据库建表 + 默认设置（命令行迁移用）
-├── migrations/d1-console.sql # 去注释压缩版（D1 网页 Console 粘贴用，见免本地部署"建表坑"）
-├── migrations/0005~0008.sql # Ver 0.4 起的增量迁移（页面 / 二级分类 / 导航 / 加密），D1 Console 逐条执行即可
+├── migrations/d1-console.sql # 最新完整结构（9 表 + 8 索引 + 默认设置），D1 网页 Console 整段粘贴一次成型
+├── migrations/0005~0008.sql # 老库升级的增量迁移（页面 / 二级分类 / 导航 / 加密），新装不必跑
 ├── themes-example/          # 示例主题（可整个拖入后台安装）
 │   ├── ocean-blue/          #   浅色主题：theme.json + style.css
 │   └── ink-night/           #   深色主题
@@ -287,6 +287,9 @@ node --experimental-sqlite .pages-smoke.mjs       # 独立页面：/p/别名 可
 node --experimental-sqlite .subcat-smoke.mjs      # 二级分类：层级路由与 301、父页归集子文章、删父提子
 node --experimental-sqlite .nav-smoke.mjs         # 导航栏：五项开关、分类 in_nav、二级分类下拉
 node --experimental-sqlite .lock-smoke.mjs        # 文章加密：锁屏渲染、密码校验与 Cookie、RSS 排除
+node --experimental-sqlite .accent-smoke.mjs      # 主题色：注入顺序、后台变量写入、浅色主色转深字
+node --experimental-sqlite .brand-smoke.mjs       # 品牌图标：favicon 与页头恒为品牌蓝、自定义图标让位、缓存版本号
+node --experimental-sqlite .migr-smoke.mjs        # 建库脚本：d1-console.sql 与迁移链结构等价、可重复执行
 ```
 
 > 涉数据库的脚本需要 Node 20+ 的 `--experimental-sqlite`：会在内存里建一张真库、直接调用 `onRequest` 跑端到端请求，不碰线上数据。
@@ -375,7 +378,7 @@ my-theme/
 7. **Deployments** 里对最新一次点 Retry（重新部署，让绑定生效），随后打开 `https://<项目名>.pages.dev/admin` 完成初始化向导即可。
 
 > ⚠️ **D1 网页 Console 建表坑（2026-09 实测）**：把 `migrations/0001_init.sql` 原样复制到 Console 执行会失败——文件开头的 `--` 注释行与行内注释会被 Console 的多语句解析误判，报 `The request is malformed: Requests without any query are not supported`（看起来像"没粘贴成功"，实际已粘贴、只是解析失败）。典型特征是：单独跑 `SELECT 1;` 正常、整段大 SQL 必失败。
-> **正确做法**：改用同目录 `migrations/d1-console.sql`（已去掉全部注释与空行、每条语句独立一行，与 Console 完全兼容），整段粘贴一次执行即可；若个别情况仍报错，把建表语句（前 10 句）与最后的 INSERT 默认设置分两次执行。
+> **正确做法**：改用同目录 `migrations/d1-console.sql`（已去掉全部注释与空行、每条语句独立一行，与 Console 完全兼容），整段粘贴一次执行即可；若个别情况仍报错，把内容上下分成两半、分两次执行（本文件无注释、每条语句独立一行，从任意位置断开都不会切坏语句）。**新装跑这一个文件就够，`0005~0008.sql` 是给老库升级用的。**
 > 命令行部署（wrangler d1 migrations apply）不受此问题影响，照常使用 `0001_init.sql`。
 
 > ⚠️ **绑定锁坑（2026-09 实测）**：第 5 步忘记删除 `wrangler.toml` 时，Bindings 页会出现提示“此项目的绑定在通过 wrangler.toml 进行管理”，Add binding 按钮被禁用。原因：Pages 检测到仓库存在 `wrangler.toml` 就把绑定管理权交给配置文件，网页添加入口随之关闭；Git 部署时该文件仅会读取绑定段，而本项目的 `wrangler.toml` 已不含任何绑定——**删掉它网页绑定立即解锁**（若删除后页面仍提示，刷新一次 Bindings 页即可）。其余文件照常上传即可（注意 `migrations/0001_init.sql` 仅命令行迁移使用，网页建表请用 `d1-console.sql`）。

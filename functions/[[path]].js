@@ -104,12 +104,18 @@ async function handle(ctx) {
   if (path === '/robots.txt') {
     return new Response(site.robotsTxt(url.origin), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
   }
-  // 动态 favicon：与页头 logo 同源（同字同色），改站点名或主题色自动跟随；
-  // 后台若上传了自定义 favicon / logo，页面 link 会直接指向图片，不再走这里。
+  // 动态 favicon：与页头 logo 同源（同字、同底色），底色固定品牌蓝。
+  // ⚠️ 不缓存：Cloudflare 默认会给它缓存到 4 小时，改了颜色浏览器标签里还是旧的
+  // （favicon 由浏览器自己拉，Ctrl+F5 也刷不掉）。cdn-cache-control 直接把 CDN 缓存关掉，
+  // 站点 link 里又带了 ?v= 版本号（见 site.faviconHref），两层缓存一起破。
   if (path === '/favicon.svg') {
     const s = await db.settingsMap(env.DB);
     return new Response(site.faviconSvg(s), {
-      headers: { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'public, max-age=3600' },
+      headers: {
+        'content-type': 'image/svg+xml; charset=utf-8',
+        'cache-control': 'public, max-age=60',
+        'cdn-cache-control': 'no-store',
+      },
     });
   }
   // 判别函数见 util.wantsFeedHtml（浏览器 Accept 普遍含 application/xml，不能用它反推阅读器）
