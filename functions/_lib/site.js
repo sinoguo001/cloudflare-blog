@@ -146,6 +146,21 @@ img{max-width:100%}
 .art-body table{border-collapse:collapse;margin:1.2em 0;width:100%;font-size:15px}
 .art-body th,.art-body td{border:1px solid var(--line);padding:8px 12px}
 .art-body th{background:var(--tint)}
+/* 加密文章：列表里的锁标记与提示 */
+.lock-mark{font-size:15px;margin-right:4px}
+.lock-note{color:var(--muted)!important;font-style:normal}
+/* 密码页 */
+.lock-box{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:34px 30px;text-align:center;margin-top:6px}
+.lock-ico{font-size:36px;line-height:1;margin-bottom:10px}
+.lock-tip{color:var(--text-soft);font-size:15px;margin:0 0 18px}
+.lock-form{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.lock-inp{border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:10px;
+  padding:10px 14px;font-size:15px;width:min(260px,70vw);outline:none}
+.lock-inp:focus{border-color:var(--accent)}
+.lock-inp.bad{border-color:var(--danger,#dc2626)}
+.lock-btn{background:var(--accent);color:var(--on-accent);border:0;border-radius:10px;padding:10px 22px;
+  font-size:15px;cursor:pointer}
+.lock-err{color:var(--danger,#dc2626);font-size:13.5px;margin:14px 0 0}
 /* 上/下一篇 */
 .pn{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:22px}
 .pn a{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;font-size:14px}
@@ -365,11 +380,15 @@ function catChips(list, base = '/category') {
 // p 之后可传设置 Map s；传了就用「永久链接」规则生成地址，否则退回 /post/:slug
 function postCard(p, s) {
   const url = esc(s ? postUrl(s, p) : '/post/' + p.slug);
-  const cover = p.cover_key
-    ? `<div class="pc-cover"><a href="${url}"><img src="/media/${esc(p.cover_key)}" alt="" loading="lazy"></a></div>` : '';
+  // 加密文章：摘要不能外泄（列表、RSS 都只看得到标题）
+  const locked = !!p.locked;
+  const excerpt = locked ? '' : (p.excerpt || stripHtml(p.content_html).slice(0, 260));
+  const tags = locked ? '' : (p.tags || []).map((t) => `<a class="tag-chip" href="/tag/${esc(t.slug)}">${esc(t.name)}</a>`).join('');
+  // 加密文章：分类仍可显示（不泄露正文），标签与封面不外露
   const cat = p.category ? `<a href="${esc(catUrl(p.category))}">${esc(p.category.name)}</a>` : '';
-  const excerpt = p.excerpt || stripHtml(p.content_html).slice(0, 260);
-  const tags = (p.tags || []).map((t) => `<a class="tag-chip" href="/tag/${esc(t.slug)}">${esc(t.name)}</a>`).join('');
+  // 封面同样不外露：图里常常就有正文内容
+  const cover = (!locked && p.cover_key)
+    ? `<div class="pc-cover"><a href="${url}"><img src="/media/${esc(p.cover_key)}" alt="" loading="lazy"></a></div>` : '';
   return `<article class="pc${cover ? '' : ' no-cover'}"><div>
     <div class="pc-meta">
       <time>${fmtDate(p.published_at || p.created_at)}</time>
@@ -377,8 +396,9 @@ function postCard(p, s) {
       <span class="dot">·</span><span>阅读 ${p.view_count || 0}</span>
       <span class="dot">·</span><span>${p.comment_count || 0} 评论</span>
     </div>
-    <h2 class="pc-title"><a href="${url}">${esc(p.title)}</a></h2>
-    ${excerpt ? `<p class="pc-excerpt">${esc(excerpt)}</p>` : ''}
+    <h2 class="pc-title">${locked ? '<span class="lock-mark">🔒</span>' : ''}<a href="${url}">${esc(p.title)}</a></h2>
+    ${locked ? '<p class="pc-excerpt lock-note">本文已加密，需输入密码访问</p>'
+      : (excerpt ? `<p class="pc-excerpt">${esc(excerpt)}</p>` : '')}
     ${tags ? `<div class="pc-tags">${tags}</div>` : ''}
   </div>${cover}</article>`;
 }
@@ -478,6 +498,29 @@ export function renderArticle(s, post, extra) {
     ${pnHtml}
     ${renderComments(s, post, extra.comments, extra.cfg)}`;
   return layout(s, { content, title: post.title, active: 'home', bodySlug: post.slug });
+}
+
+// ---------- 加密文章的密码页（Ver 0.4 ④） ----------
+// 只给标题 + 密码框：正文、标签、评论、上下篇、版权一律不输出，
+// bodySlug 留空，前端也就不会上报阅读量。
+export function renderLocked(s, post, wrong) {
+  const url = postUrl(s, post);
+  const content = `
+    <p class="crumb"><a href="/">首页</a> / 正文</p>
+    <article class="article">
+      <h1>${esc(post.title)}</h1>
+      <div class="lock-box">
+        <div class="lock-ico">🔒</div>
+        <p class="lock-tip">本文已加密，请输入访问密码</p>
+        <form class="lock-form" method="post" action="${esc(url)}">
+          <input class="lock-inp${wrong ? ' bad' : ''}" type="password" name="post_password"
+            placeholder="访问密码" autocomplete="current-password" autofocus>
+          <button class="lock-btn" type="submit">解锁阅读</button>
+        </form>
+        ${wrong ? '<p class="lock-err">密码不正确，请重试</p>' : ''}
+      </div>
+    </article>`;
+  return layout(s, { content, title: post.title, active: 'home', bodySlug: '', desc: '' });
 }
 
 // 独立页面（Ver 0.4）：只有标题与正文 —— 不带发布时间、分类、阅读数、标签、评论、
@@ -770,7 +813,8 @@ ${body}
 
 // 浏览器直接打开 /rss.xml 时展示的排版页
 export async function rssHtml(env, s, origin) {
-  const data = await db.listPosts(env.DB, { status: 'published', per: 50 });
+  // 加密文章不进 RSS：订阅是明文分发，收进去等于把密码绕过去
+  const data = await db.listPosts(env.DB, { status: 'published', unlockedOnly: true, per: 50 });
   const now = bnNow(); // UTC+8 'YYYY-MM-DD HH:MM:SS'
   const siteTitle = s.get('site_title') || '云尚博客';
   const items = data.items.map((p) => {
@@ -835,7 +879,8 @@ export async function sitemapHtml(env, s, origin) {
 
 // ---------- XML（给阅读器与搜索引擎的标准数据）----------
 export async function rssXml(env, s, origin) {
-  const data = await db.listPosts(env.DB, { status: 'published', per: 50 });
+  // 加密文章不进 RSS：订阅是明文分发，收进去等于把密码绕过去
+  const data = await db.listPosts(env.DB, { status: 'published', unlockedOnly: true, per: 50 });
   const items = data.items.map((p) => {
     const body = (p.content_html || '').replace(/\]\]>/g, ']]&gt;');
     const cat = p.category ? `<category>${esc(p.category.name)}</category>` : '';

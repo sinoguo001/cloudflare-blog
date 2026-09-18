@@ -48,11 +48,16 @@ export async function ensurePostCols(db) {
     if (!cols.size) return;                      // 表还没建（未初始化），等下次请求再试
     if (!cols.has('type')) await db.prepare("ALTER TABLE posts ADD COLUMN type TEXT NOT NULL DEFAULT 'post'").run();
     if (!cols.has('in_nav')) await db.prepare('ALTER TABLE posts ADD COLUMN in_nav INTEGER NOT NULL DEFAULT 1').run();
+    // 文章访问密码（空串=不加密）
+    if (!cols.has('password')) await db.prepare("ALTER TABLE posts ADD COLUMN password TEXT NOT NULL DEFAULT ''").run();
     postColsReady = true;
     // 顺带补 categories：文章查询要联父分类别名，少这一列会整站 500
     await ensureCatCols(db);
   } catch (e) { /* 补列失败不阻断浏览：没有这两列时页面功能不可用，但文章照常 */ }
 }
+
+// 访问密码：空=不加密；不传（null/undefined）表示「本次不改」，与「主动清空」区分开
+export const postPass = (v) => (v == null ? '' : String(v).slice(0, 64));
 
 // ---------- categories 表结构兜底（Ver 0.4 二级分类） ----------
 // parent_id 由 migrations/0006_subcats.sql 建立，没跑迁移时这里自动补，避免整站 500。
@@ -84,6 +89,8 @@ export const catFullSlug = (c) =>
 function rowOf(p) {
   return {
     ...p,
+    // 是否加密：前台据此隐藏摘要与正文。只暴露布尔值，不因此泄露密码本身
+    locked: !!String(p.password || ''),
     category: p.category_id ? {
       id: p.category_id, name: p.cat_name, slug: p.cat_slug,
       full_slug: (p.cat_parent_slug ? p.cat_parent_slug + '/' : '') + (p.cat_slug || ''),
@@ -97,12 +104,13 @@ function rowOf(p) {
 // type：'post' 文章（默认）| 'page' 独立页面 | 'all' 两者都要
 // 默认只取文章：首页 / 分类 / 标签 / 归档 / 搜索 / RSS 都不该出现「关于我」这类页面，
 // 除非调用方显式传 type，页面由此天然与文章流隔离。
-export async function listPosts(db, { status = 'published', type = 'post', cat, tag, q, inNav, page = 1, per = 8 } = {}) {
+export async function listPosts(db, { status = 'published', type = 'post', cat, tag, q, inNav, unlockedOnly, page = 1, per = 8 } = {}) {
   await ensurePostCols(db);
   await ensureCatCols(db);
   const where = [], b = [];
   if (status && status !== 'all') { where.push('p.status=?'); b.push(status); }
   if (type && type !== 'all') { where.push('p.type=?'); b.push(type); }
+  if (unlockedOnly) where.push("(p.password IS NULL OR p.password='')");
   if (inNav) where.push('p.in_nav=1');
   if (cat) {
     await ensureCatCols(db);
@@ -175,10 +183,11 @@ export async function createPost(db, f) {
   const type = f.type === 'page' ? 'page' : 'post';
   const inNav = f.in_nav == null ? 1 : (f.in_nav ? 1 : 0);
   const r = await db.prepare(
-    `INSERT INTO posts(title,slug,excerpt,content_md,content_html,cover_key,status,category_id,type,in_nav,created_at,updated_at,published_at)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO posts(title,slug,excerpt,content_md,content_html,cover_key,status,category_id,type,in_nav,password,created_at,updated_at,published_at)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(f.title, f.slug || '', f.excerpt || '', f.content_md || '', f.content_html || '',
-    f.cover_key || null, f.status || 'draft', f.category_id || null, type, inNav, t, t,
+    f.cover_key || null, f.status || 'draft', f.category_id || null, type, inNav,
+    postPass(f.password), t, t,
     f.status === 'published' ? (f.published_at || t) : null).run();
   const id = r.meta.last_row_id;
   let slug = slugify(f.slug) || ((type === 'page' ? 'page-' : 'post-') + id);
@@ -206,6 +215,9 @@ export async function updatePost(db, id, f) {
     f.cover_key || null, f.status || old.status, f.category_id || null, t, published_at];
   if (f.type) { sets.push('type=?'); vals.push(f.type === 'page' ? 'page' : 'post'); }
   if (f.in_nav != null) { sets.push('in_nav=?'); vals.push(f.in_nav ? 1 : 0); }
+  // 只有显式传了才改密码：文章编辑器每次都传（未勾选传空串＝取消加密），
+  // 页面编辑器不传，就不会把已有密码冲掉
+  if (f.password != null) { sets.push('password=?'); vals.push(postPass(f.password)); }
   await db.prepare(
     `UPDATE posts SET ${sets.join(',')} WHERE id=?`
   ).bind(...vals, id).run();

@@ -278,6 +278,7 @@ async function viewPosts() {
       const cat = p.category ? `<a class="cell-sub" href="#/categories">${esc(p.category.name)}</a>` : '';
       const tags = (p.tags || []).map((t) => `<span class="tag-mini">${esc(t.name)}</span>`).join('');
       const st = p.status === 'published' ? '<span class="st published">已发布</span>' : '<span class="st draft">草稿</span>';
+      const lockTag = p.locked ? '<span class="tag-mini lock">🔒 加密</span>' : '';
       const btnPub = p.status === 'published'
         ? `<button class="btn sm g" data-act="unpub" data-id="${p.id}" data-slug="${esc(p.slug)}">下线</button>`
         : `<button class="btn sm ok" data-act="pub" data-id="${p.id}">发布</button>`;
@@ -285,7 +286,7 @@ async function viewPosts() {
       const purl = p.url || ('/post/' + p.slug);
       const viewL = p.status === 'published' ? `<a class="btn sm g" href="${esc(purl)}" target="_blank" rel="noopener">查看</a>` : '';
       return `<tr>
-        <td><div class="cell-title">${esc(p.title)}${st}</div>
+        <td><div class="cell-title">${esc(p.title)}${st}${lockTag}</div>
           <div class="cell-sub">${esc(purl)} ${cat ? ' · ' + cat : ''}</div></td>
         <td>${tags || '<span class="cell-sub">无标签</span>'}</td>
         <td style="white-space:nowrap">${fmtTime(p.published_at || p.updated_at)}</td>
@@ -351,6 +352,8 @@ async function viewEditor(id, kind = 'post') {
   let post = null;
   const cats = isPage ? [] : (await API.get('/categories').catch(() => []));
   if (id) post = await API.get('/posts/' + id); // 单篇读取：后端路由为 GET /api/posts/:id
+  // 阅读密码：明文回填显示 —— 博主自己看得见，省得每次重设都要再输一遍
+  const pw = String(post?.password || '');
 
   shell(`
   <div class="page-head"><h1>${id ? (isPage ? '编辑页面' : '编辑文章') : (isPage ? '新建页面' : '写文章')}</h1>
@@ -365,6 +368,8 @@ async function viewEditor(id, kind = 'post') {
       <span class="f2">标签 <input id="e-tags" placeholder="多个标签用逗号分隔" value="${esc((post?.tags || []).map((t) => t.name).join(',') || '')}"></span>`}
       <span class="f2">别名 <input id="e-slug" placeholder="留空自动生成（英文数字 -）" value="${esc(post?.slug || '')}">
         <a id="e-slug-rand" href="javascript:;" title="随机生成">🎲</a></span>
+      ${isPage ? '' : `<span class="f2"><label><input type="checkbox" id="e-lock"${pw ? ' checked' : ''}> 加密</label>
+        <input id="e-pass" type="text" placeholder="阅读密码" value="${esc(pw)}"${pw ? '' : ' disabled'} style="max-width:150px" autocomplete="off"></span>`}
       ${isPage ? `<span class="f2"><label><input type="checkbox" id="e-innav" ${(post ? Number(post.in_nav) : 1) ? 'checked' : ''}> 在站点导航显示</label></span>`
     : `<span class="f2">封面 <input type="file" id="e-cover" accept="image/*" style="max-width:190px">
         <span id="e-cover-prev" style="display:${post?.cover_key ? '' : 'none'}"><img src="/media/${esc(post?.cover_key || '')}" style="height:34px;border-radius:6px;vertical-align:middle">
@@ -417,6 +422,18 @@ async function viewEditor(id, kind = 'post') {
   const coverDel = view().querySelector('#e-cover-del');
   if (coverDel) coverDel.addEventListener('click', () => { coverKey = null; coverPrev(); });
 
+  // 加密开关：勾上才让填密码（明文输入，只输一遍）；取消勾选立刻禁用并清空
+  const lockEl = view().querySelector('#e-lock');
+  const passEl = view().querySelector('#e-pass');
+  if (lockEl && passEl) {
+    const syncLock = () => {
+      passEl.disabled = !lockEl.checked;
+      if (!lockEl.checked) passEl.value = '';
+      else passEl.focus();
+    };
+    lockEl.addEventListener('change', syncLock);
+  }
+
   const updateStatus = (st) => {
     view().querySelector('#e-status').textContent = st === 'published' ? '当前状态：已发布' : '当前状态：草稿（仅你可见）';
     view().querySelector('#e-status').style.color = st === 'published' ? '#15803d' : '#b45309';
@@ -427,7 +444,7 @@ async function viewEditor(id, kind = 'post') {
   dirty = false;
   const markDirty = () => { dirty = true; };
   // 只给页面上真实存在的元素绑（页面编辑器没有分类 / 标签）
-  ['#e-title', '#e-tags', '#e-slug', '#e-cat', '#e-innav'].forEach((s) => {
+  ['#e-title', '#e-tags', '#e-slug', '#e-cat', '#e-innav', '#e-lock', '#e-pass'].forEach((s) => {
     const em = view().querySelector(s);
     if (em) em.addEventListener('input', markDirty);
   });
@@ -442,6 +459,11 @@ async function viewEditor(id, kind = 'post') {
     const tagEl = view().querySelector('#e-tags');   // 页面没有标签 / 分类，取不到就留空
     const catEl = view().querySelector('#e-cat');
     const navEl = view().querySelector('#e-innav');
+    const lkEl = view().querySelector('#e-lock');
+    const psEl = view().querySelector('#e-pass');
+    const useLock = !!(lkEl && lkEl.checked);
+    // 勾了加密却没填密码：直接拦下，否则会存成空密码（等于没加密）还看不出来
+    if (useLock && !(psEl && psEl.value.trim())) throw new Error('勾选加密后请填写阅读密码');
     const tags = tagEl ? tagEl.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean) : [];
     return {
       title,
@@ -451,6 +473,8 @@ async function viewEditor(id, kind = 'post') {
       tags,
       cover_key: coverKey,
       excerpt: '',
+      // 只有文章有加密开关：页面不传 password，后端就不会覆盖已有值
+      ...(isPage ? {} : { password: useLock ? psEl.value.trim() : '' }),
       // type / in_nav 只有页面才提交：文章不传，后端就不会改动它
       ...(isPage ? { type: 'page', in_nav: navEl ? (navEl.checked ? 1 : 0) : 1 } : {}),
     };

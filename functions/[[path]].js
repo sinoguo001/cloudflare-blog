@@ -4,7 +4,8 @@
 //       rss.xml / sitemap.xml / robots.txt、后台静态资源(经 ASSETS)
 // ============================================================
 import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, isEmail, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard,
-  normalizePermalink, permalinkOf, permalinkRegex, postUrl, pageUrl, catUrl, permalinkVarsMatch } from './_lib/util.js';
+  normalizePermalink, permalinkOf, permalinkRegex, postUrl, pageUrl, catUrl, permalinkVarsMatch,
+  sha256Hex, safeEqual, postPassCookie } from './_lib/util.js';
 // cloudflare:sockets 必须静态 import：Pages Functions 的打包器只稳妥支持顶层静态导入，
 // 动态 import('cloudflare:sockets') 在真机上可能加载失败，表现为接口直接 5xx。
 // 传给 mail.js 而不是让它自己 import —— 这样本地 Node 测试仍能注入假 socket。
@@ -270,8 +271,9 @@ async function front(ctx, url, seg, method, path) {
       total = data.total;
       itemsHtml = data.items.map((p) => `<article class="pc no-cover"><div>
         <div class="pc-meta"><time>${esc(p.published_at || '').slice(0, 10)}</time><span class="dot">·</span><span>${p.view_count || 0} 阅读</span></div>
-        <h2 class="pc-title"><a href="${esc(postUrl(s, p))}">${esc(p.title)}</a></h2>
-        ${p.excerpt ? `<p class="pc-excerpt">${esc(p.excerpt)}</p>` : ''}</div></article>`).join('');
+        <h2 class="pc-title">${p.locked ? '<span class="lock-mark">🔒</span>' : ''}<a href="${esc(postUrl(s, p))}">${esc(p.title)}</a></h2>
+        ${p.locked ? '<p class="pc-excerpt lock-note">本文已加密，需输入密码访问</p>'
+    : (p.excerpt ? `<p class="pc-excerpt">${esc(p.excerpt)}</p>` : '')}</div></article>`).join('');
     }
     return html(site.renderListPage(s, {
       head: q ? `“${esc(q)}” 的搜索结果` : '搜索', active: '', title: '搜索', q,
@@ -293,7 +295,8 @@ async function front(ctx, url, seg, method, path) {
 
   // 文章页：按「永久链接」规则解析（放在所有固定路由之后，保证 /archive、/search 等
   // 系统路径永远优先；命中不了再兜底旧地址 /post/:slug(.html) 并 301 到当前规范地址）
-  const pr = await permalinkRoute(env, s, path, user, url.origin);
+  // 传 request：加密文章要读表单密码、读解锁 Cookie
+  const pr = await permalinkRoute(env, s, path, user, url.origin, ctx.request, method);
   if (pr) return pr;
 
   // 404
@@ -307,7 +310,7 @@ const redirect301 = (loc) => new Response(null, {
 // 路径可能是百分号编码（中文别名）；解码失败就按原样匹配，不能让异常变成 500
 const safeDecode = (p) => { try { return decodeURIComponent(p); } catch (e) { return p; } };
 
-async function permalinkRoute(env, s, path, user, origin) {
+async function permalinkRoute(env, s, path, user, origin, request, method) {
   const p0 = safeDecode(path);
   const { re, keys } = permalinkRegex(permalinkOf(s));
   const m = re.exec(p0);
@@ -336,6 +339,27 @@ async function permalinkRoute(env, s, path, user, origin) {
   if (post.status !== 'published' && !user) return html(site.render404(s), 404);
   if (post.status !== 'published') {
     post.content_html = `<div class="empty" style="padding:14px;margin-bottom:14px">此文章为<b>草稿</b>，仅你可见 · <a href="/admin#/posts/${post.id}">回后台编辑</a></div>` + post.content_html;
+  }
+  // ---------- 加密文章（Ver 0.4 ④）----------
+  // 博主本人免密；访客要输密码，输对了写 Cookie，之后同浏览器直接放行。
+  // Cookie 里只存密码的 SHA-256，不下发明文。
+  if (String(post.password || '') && !user) {
+    const okHash = await sha256Hex(post.password);
+    const ck = readCookie(request, postPassCookie(post.id));
+    if (!(ck && safeEqual(ck, okHash))) {
+      if (method === 'POST') {
+        const form = await request.formData().catch(() => null);
+        const pw = String((form && form.get('post_password')) || '');
+        if (pw && safeEqual(await sha256Hex(pw), okHash)) {
+          const r = new Response(null, { status: 303, headers: { location: postUrl(s, post) } });
+          r.headers.set('set-cookie',
+            `${postPassCookie(post.id)}=${okHash}; Path=/; Max-Age=15552000; HttpOnly; SameSite=Lax`);
+          return r;
+        }
+        return html(site.renderLocked(s, post, true));
+      }
+      return html(site.renderLocked(s, post, false));
+    }
   }
   const [siblings, comments, cfg] = await Promise.all([
     db.siblings(env.DB, post),
@@ -1002,6 +1026,8 @@ async function api(ctx, url, seg, method) {
       // 带上按当前永久链接规则算出的地址，后台列表直接展示，不必再拼 /post/:slug
       const sm = await db.settingsMap(dbx);
       data.items = data.items.map((p) => ({ ...p, url: p.type === 'page' ? pageUrl(p) : postUrl(sm, p) }));
+      // 未登录一律不带密码：这个接口 status=published 是公开的，带出去等于把锁拆了
+      if (!user) data.items.forEach((p) => { delete p.password; });
       return json(data);
     }
     // 新建 POST /api/posts
@@ -1019,6 +1045,7 @@ async function api(ctx, url, seg, method) {
         title, slug: body.slug, status,
         type: body.type === 'page' ? 'page' : 'post',
         in_nav: body.in_nav,   // 未传时 db 层默认 1（导航显示）
+        password: body.password,   // 未传＝不加密；页面不加密
         category_id: body.category_id ? parseInt(body.category_id, 10) : null,
         content_md: contentMd, content_html: contentHtml, excerpt,
         cover_key: body.cover_key || null, tags: Array.isArray(body.tags) ? body.tags : [],
@@ -1031,7 +1058,12 @@ async function api(ctx, url, seg, method) {
       const id = parseInt(seg[1], 10);
       const post = await db.getPost(dbx, { id });
       if (!post) return err('文章不存在', 404);
-      if (method === 'GET') return json({ ...post, url: post.type === 'page' ? pageUrl(post) : postUrl(await db.settingsMap(dbx), post) });
+      // 密码只有文章编辑器会传（未勾选＝空串＝取消加密）；不传就不动已有密码
+      if (method === 'GET') {
+        const out = { ...post, url: post.type === 'page' ? pageUrl(post) : postUrl(await db.settingsMap(dbx), post) };
+        if (!user) delete out.password;
+        return json(out);
+      }
       if (method === 'DELETE') {
         await db.deletePost(dbx, id);
         return json({ ok: true });
@@ -1051,6 +1083,7 @@ async function api(ctx, url, seg, method) {
           // type / in_nav 只在显式传了才改：文章编辑不传，就不会被误改成页面
           ...(body.type ? { type: body.type === 'page' ? 'page' : 'post' } : {}),
           ...(body.in_nav != null ? { in_nav: body.in_nav ? 1 : 0 } : {}),
+          ...(body.password != null ? { password: body.password } : {}),
           category_id: body.category_id ? parseInt(body.category_id, 10) : null,
           content_md: contentMd, content_html: contentHtml, excerpt,
           cover_key: body.cover_key || null,

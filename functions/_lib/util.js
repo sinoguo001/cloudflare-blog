@@ -68,6 +68,24 @@ export function paginate(page, per, total) {
   return { p, pages, offset: (p - 1) * per };
 }
 
+// ---------- 文章加密（Ver 0.4 ④） ----------
+// Cookie 里只放密码的 SHA-256：就算被人拿到 Cookie，也反推不出原文密码。
+// 库里存明文是为了后台能回填显示（用户要求「只输入一遍」，且博主自己看得到）。
+export const postPassCookie = (id) => 'pp' + String(id);
+export async function sha256Hex(str) {
+  const buf = new TextEncoder().encode(String(str || ''));
+  const d = await crypto.subtle.digest('SHA-256', buf);
+  return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+// 恒定时间比较：长度相等时逐字符异或，避免用 === 提前返回造成时序差异
+export function safeEqual(a, b) {
+  const x = String(a || ''), y = String(b || '');
+  if (x.length !== y.length) return false;
+  let d = 0;
+  for (let i = 0; i < x.length; i++) d |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return d === 0;
+}
+
 export async function readJson(req) {
   try { return await req.json(); } catch (e) { return null; }
 }
