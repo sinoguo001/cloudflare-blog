@@ -72,10 +72,15 @@ html[data-theme="dark"] .hd-search input,html[data-theme="dark"] .cform input,
 html[data-theme="dark"] .cform textarea,html[data-theme="dark"] .lock-inp{background:var(--card);color:var(--text);border-color:var(--line)}
 html[data-theme="dark"] .pc-cover img,html[data-theme="dark"] .art-cover img{background:var(--card)}
 /* 切换按钮：白天露太阳、夜里露月亮 */
-.theme-btn,.search-btn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;
-  border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--muted);cursor:pointer}
+.theme-btn,.search-btn{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;
+  border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--muted);cursor:pointer}
 .theme-btn:hover,.search-btn:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
-.theme-btn svg,.search-btn svg{width:17px;height:17px;display:block}
+.theme-btn svg,.search-btn svg{width:20px;height:20px;display:block}
+/* 展开后搜索图标变成「关闭」（×），再点一下收起 */
+.search-btn .ico-close{display:none}
+.search-btn.on{border-color:var(--accent);color:var(--accent)}
+.search-btn.on .ico-search{display:none}
+.search-btn.on .ico-close{display:block}
 html[data-theme="dark"] .ico-sun,html[data-theme="light"] .ico-moon{display:none}
 `;
 
@@ -115,16 +120,13 @@ img{max-width:100%}
 .nav-sub a{display:block;padding:6px 12px;white-space:nowrap;font-size:14.5px;border-radius:7px}
 .nav-sub a::before{content:"└ ";color:var(--muted)}   /* 二级分类前加拐角，和一级区分 */
 .nav-drop:hover>.nav-sub,.nav-drop:focus-within>.nav-sub{display:block}
-/* 导航搜索：常驻的只有一个图标，点开才在顶栏下方展开整条搜索栏（省横向空间）。
-   面板本体始终在 DOM 里（只是 display:none），所以键盘 / 读屏与无 JS 时都还能搜。 */
-.hd-searchbar{display:none;border-top:1px solid var(--line);padding:12px 0 14px}
-.hd-searchbar.open{display:block}
-.hd-search{display:flex;gap:8px}
-.hd-search input{flex:1;min-width:0;padding:9px 13px;border:1px solid var(--line);border-radius:9px;
+/* 导航搜索：平时导航栏里只有一个放大镜图标，点它就在**导航栏内**原地展开输入框。
+   窄屏（≤640px）放不下，靠 nav 的 flex-wrap 整行落到下一行，等于「展开在下面」。 */
+.hd-search{display:none;align-items:center;gap:6px;margin-left:2px}
+.hd-search.open{display:inline-flex}
+.hd-search input{width:168px;padding:7px 12px;border:1px solid var(--line);border-radius:9px;
   font-size:14px;background:var(--bg);color:var(--text);outline:none}
 .hd-search input:focus{border-color:var(--accent)}
-.hd-search .sbtn{padding:9px 18px;border:1px solid var(--line);border-radius:9px;background:var(--accent);
-  color:var(--on-accent);font:inherit;font-size:14px;cursor:pointer;white-space:nowrap}
 /* 主区 */
 .main{padding:26px 0 60px}
 .hero{padding:24px 0 4px}
@@ -320,7 +322,8 @@ textarea.lf-input{min-height:86px;resize:vertical;line-height:1.7}
 @media (max-width:640px){
  .pc{grid-template-columns:1fr}.pc-cover img{width:100%;height:auto;max-height:180px}
  .article{padding:22px 18px}.comments{padding:20px 18px}.cmt-child{margin-left:20px}
- .hd-search input{width:100%}
+ .hd-search.open{display:flex;width:100%;order:9}   /* 顶栏放不下：整行落到导航下方 */
+ .hd-search input{flex:1;width:auto;min-width:0}
 }
 `;
 
@@ -372,8 +375,11 @@ const SUN_SVG = `<svg class="ico-sun" viewBox="0 0 24 24" fill="none" stroke="cu
 const MOON_SVG = `<svg class="ico-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.3A8.5 8.5 0 1 1 9.7 3.5a6.8 6.8 0 0 0 10.8 10.8Z"/></svg>`;
 // 导航搜索图标：点它才在顶栏下方展开输入框（用 <a href="/search"> 以便无 JS 时仍能进搜索页）
-const SEARCH_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+const SEARCH_SVG = `<svg class="ico-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
   stroke-linecap="round" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="M15.5 15.5 21 21"/></svg>`;
+// 展开后把放大镜换成「×」，提示再点一下是收起
+const CLOSE_SVG = `<svg class="ico-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+  stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>`;
 
 // ---------- 页面骨架 ----------
 export function layout(s, o) {
@@ -450,16 +456,14 @@ ${themeLink(s)}
     <button type="button" class="theme-btn" id="theme-toggle" aria-label="切换深色模式" title="切换深色 / 浅色">
       ${SUN_SVG}${MOON_SVG}
     </button>
-    <a class="search-btn" id="search-toggle" href="/search" role="button"
-      aria-label="搜索文章" aria-expanded="${o.q ? 'true' : 'false'}" title="搜索">${SEARCH_SVG}</a>
+    <form class="hd-search${o.q ? ' open' : ''}" id="search-bar" action="/search" method="get">
+      <input name="q" placeholder="搜索文章…" aria-label="搜索文章" value="${o.q ? esc(o.q) : ''}">
+    </form>
+    <button type="button" class="search-btn${o.q ? ' on' : ''}" id="search-toggle"
+      aria-label="搜索文章" aria-expanded="${o.q ? 'true' : 'false'}" title="搜索">${SEARCH_SVG}${CLOSE_SVG}</button>
   </nav>
-</div>
-<div class="hd-searchbar${o.q ? ' open' : ''}" id="search-bar"><div class="wrap">
-  <form class="hd-search" action="/search" method="get">
-    <input name="q" placeholder="搜索文章…" aria-label="搜索文章" value="${o.q ? esc(o.q) : ''}">
-    <button class="sbtn" type="submit">搜索</button>
-  </form>
-</div></div></header>
+</div></header>
+<noscript><style>.hd-search{display:inline-flex}.search-btn{display:none}</style></noscript>
 <main class="main"><div class="wrap">${o.content}</div></main>
 <footer class="ft"><div class="wrap">
   ${footer ? footer + '<br>' : ''}© ${year} ${esc(title)} · 由 Cloudflare Pages 驱动

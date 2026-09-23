@@ -56,11 +56,11 @@
     var inp = bar.querySelector('input[name="q"]');
     function setOpen(on) {
       bar.classList[on ? 'add' : 'remove']('open');
+      btn.classList[on ? 'add' : 'remove']('on');   // 放大镜变「×」
       btn.setAttribute('aria-expanded', on ? 'true' : 'false');
     }
     function isOpen() { return bar.classList.contains('open'); }
-    btn.addEventListener('click', function (e) {
-      e.preventDefault();               // 拦掉 href="/search" 的跳转
+    btn.addEventListener('click', function () {
       setOpen(!isOpen());
       if (isOpen() && inp) { try { inp.focus(); inp.select(); } catch (err) { /* 老浏览器 */ } }
     });
