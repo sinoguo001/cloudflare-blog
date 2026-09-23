@@ -15,6 +15,7 @@ import { mailConfigFrom, mailConfigError, renderMail, sendMailWithTimeout, descr
 import { CODE_THEMES } from './_lib/hl.js';
 import * as db from './_lib/db.js';
 import * as site from './_lib/site.js';
+import * as feed from './_lib/feed.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
@@ -25,6 +26,11 @@ const jset = (data, cookie, status = 200) => {
   if (cookie) r.headers.set('Set-Cookie', cookie);
   return r;
 };
+
+// 友圈（Ver 0.4 ⑫）：前台访问 /friends 时，若距上次抓取超过这个分钟数，
+// 就用 waitUntil 在后台补一轮 —— 访客不等抓取，但数据会自己变新。
+const FRIEND_TTL_MIN = 30;
+const FRIEND_PER_PAGE = 20;
 
 export async function onRequest(ctx) {
   try {
@@ -261,6 +267,29 @@ async function front(ctx, url, seg, method, path) {
     return html(site.renderLinks(s, { links, captcha: s.get('captcha') !== '0' }));
   }
 
+  // 友圈 /friends（Ver 0.4 ⑫）：把订阅的别人家的文章按发布时间倒序展示
+  if (seg[0] === 'friends'
+    && (seg.length === 1 || (seg.length === 3 && seg[1] === 'page' && /^\d+$/.test(seg[2])))) {
+    const dbx = env.DB;
+    const page = seg.length === 3 ? Math.max(1, parseInt(seg[2], 10) || 1) : 1;
+    const [total, feeds] = await Promise.all([
+      db.countFriendPosts(dbx).catch(() => 0),
+      db.listFeeds(dbx, { enabledOnly: true }).catch(() => []),
+    ]);
+    const posts = await db.listFriendPosts(dbx, {
+      limit: FRIEND_PER_PAGE, offset: (page - 1) * FRIEND_PER_PAGE,
+    }).catch(() => []);
+    // 数据过期就在后台补一轮，本次渲染不等它：抓取再慢也不该让访客干等
+    const lastAt = await db.getSetting(dbx, 'friends_refresh_at', '').catch(() => '');
+    if (feeds.length && feed.feedStale(lastAt, FRIEND_TTL_MIN)) {
+      ctx.waitUntil(feed.refreshFeeds(env, { limit: 3 }).catch(() => {}));
+    }
+    return html(site.renderFriends(s, {
+      posts, feeds, total, page,
+      pages: Math.max(1, Math.ceil(total / FRIEND_PER_PAGE)),
+    }));
+  }
+
   // 分类总览 /categories、标签总览 /tags（导航栏指向这两个地址，此前缺失导致 404）
   if ((seg[0] === 'categories' || seg[0] === 'tags') && seg.length === 1) {
     const isCat = seg[0] === 'categories';
@@ -268,7 +297,8 @@ async function front(ctx, url, seg, method, path) {
     return html(isCat ? site.renderCategories(s, list) : site.renderTags(s, list));
   }
 
-  // 搜索
+  // 搜索（只有一页：取前 20 条，没有 /search/page/n 路由，所以不传 pages，
+  // 分页条会自动不渲染——以前这里传了个返回空串的 makeUrl，反而渲染出一个点不动的空分页条）
   if (seg[0] === 'search' && seg.length === 1) {
     const q = (url.searchParams.get('q') || '').trim().slice(0, 60);
     let itemsHtml = '', total = 0;
@@ -284,7 +314,7 @@ async function front(ctx, url, seg, method, path) {
     return html(site.renderListPage(s, {
       head: q ? `“${esc(q)}” 的搜索结果` : '搜索', active: '', title: '搜索', q,
       desc: q ? `共找到 ${total} 篇文章` : '输入关键词搜索文章标题与摘要',
-      itemsHtml, empty: q ? '没有找到相关文章' : '请输入搜索词', makeUrl: () => '',
+      itemsHtml, empty: q ? '没有找到相关文章' : '请输入搜索词',
     }));
   }
 
@@ -979,6 +1009,86 @@ async function api(ctx, url, seg, method) {
       }
       if (method === 'DELETE') {
         await db.deleteLink(dbx, id);
+        return json({ ok: true });
+      }
+    }
+    return err('接口不存在', 404);
+  }
+
+  // --- 友圈订阅管理（Ver 0.4 ⑫）---
+  if (seg[0] === 'feeds') {
+    if (method === 'GET' && seg.length === 1) {
+      const [items, total, lastAt] = await Promise.all([
+        db.listFeeds(dbx),
+        db.countFeeds(dbx),
+        db.getSetting(dbx, 'friends_refresh_at', ''),
+      ]);
+      return json({ items, total, last_refresh: lastAt });
+    }
+    if (method === 'POST' && seg.length === 1) {
+      const b = (await readJson(request)) || {};
+      const url = String(b.url || '').trim().slice(0, 300);
+      if (!url) return err('请填写 RSS 地址');
+      if (!/^https?:\/\/\S+$/i.test(url)) return err('RSS 地址需以 http:// 或 https:// 开头');
+      if (!feed.isFetchableUrl(url)) return err('这个地址不允许：只支持公网 http / https 地址');
+      if (await db.findFeedByUrl(dbx, url)) return err('这个 RSS 地址已经订阅过了');
+      const id = await db.addFeed(dbx, {
+        name: String(b.name || '').trim().slice(0, 40),
+        url,
+        site_url: String(b.site_url || '').trim().slice(0, 300),
+        avatar: String(b.avatar || '').trim().slice(0, 300),
+        description: String(b.description || '').trim().slice(0, 120),
+        sort: Math.max(0, Math.min(9999, parseInt(b.sort, 10) || 0)),
+        enabled: b.enabled === false || b.enabled === 0 ? 0 : 1,
+      });
+      // 加完立刻抓一次：博主当场就知道成没成、抓到几篇，不用等下一个刷新周期
+      const r = (await feed.refreshFeeds(env, { ids: [id], timeoutMs: 8000 }))[0] || {};
+      const row = await db.getFeed(dbx, id);
+      return json({
+        ok: true, id,
+        fetched: r.ok ? (r.count || 0) : 0,
+        error: r.ok ? '' : (r.error || '抓取失败'),
+        name: (row && row.name) || '',
+        site_url: (row && row.site_url) || '',
+      });
+    }
+    // 刷新：POST /api/feeds/refresh 刷全部，POST /api/feeds/<id>/refresh 刷单条
+    if (method === 'POST' && seg.length === 2 && seg[1] === 'refresh') {
+      return json({ ok: true, results: await feed.refreshFeeds(env, { limit: 20 }) });
+    }
+    if (method === 'POST' && seg.length === 3 && /^\d+$/.test(seg[1]) && seg[2] === 'refresh') {
+      const results = await feed.refreshFeeds(env, { ids: [parseInt(seg[1], 10)], limit: 1 });
+      return json({ ok: !!(results[0] && results[0].ok), results });
+    }
+    if (seg.length === 2 && /^\d+$/.test(seg[1])) {
+      const id = parseInt(seg[1], 10);
+      const cur = await db.getFeed(dbx, id);
+      if (!cur) return err('订阅不存在', 404);
+      if (method === 'PATCH') {
+        const b = (await readJson(request)) || {};
+        const patch = {};
+        if (b.name != null) patch.name = String(b.name).trim().slice(0, 40);
+        ['site_url', 'avatar'].forEach((k) => {
+          if (b[k] != null) patch[k] = String(b[k]).trim().slice(0, 300);
+        });
+        if (b.description != null) patch.description = String(b.description).trim().slice(0, 120);
+        if (b.url != null) {
+          const u = String(b.url).trim().slice(0, 300);
+          if (!feed.isFetchableUrl(u)) return err('这个地址不允许：只支持公网 http / https 地址');
+          const dup = await db.findFeedByUrl(dbx, u);
+          if (dup && dup.id !== id) return err('这个 RSS 地址已经订阅过了');
+          patch.url = u;
+        }
+        if (b.sort != null) patch.sort = Math.max(0, Math.min(9999, parseInt(b.sort, 10) || 0));
+        if (b.enabled != null) patch.enabled = (b.enabled === false || b.enabled === 0) ? 0 : 1;
+        if (!Object.keys(patch).length) return err('没有要修改的字段');
+        await db.updateFeed(dbx, id, patch);
+        // 换了地址就顺手重抓一次，免得列表里还挂着旧源的文章
+        if (patch.url && patch.url !== cur.url) await feed.refreshFeeds(env, { ids: [id], timeoutMs: 8000 });
+        return json({ ok: true });
+      }
+      if (method === 'DELETE') {
+        await db.deleteFeed(dbx, id);
         return json({ ok: true });
       }
     }

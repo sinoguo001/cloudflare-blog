@@ -17,3 +17,8 @@ CREATE TABLE IF NOT EXISTS links(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT
 CREATE INDEX IF NOT EXISTS idx_links_status ON links(status, sort, id DESC);
 CREATE INDEX IF NOT EXISTS idx_links_url ON links(url);
 CREATE TABLE IF NOT EXISTS post_likes(post_id INTEGER NOT NULL, vid TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(post_id,vid));
+CREATE TABLE IF NOT EXISTS friend_feeds(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, site_url TEXT NOT NULL DEFAULT '', avatar TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', sort INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, last_fetch TEXT NOT NULL DEFAULT '', last_status INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_ffeed_enabled ON friend_feeds(enabled, sort, id);
+CREATE TABLE IF NOT EXISTS friend_posts(id INTEGER PRIMARY KEY AUTOINCREMENT, feed_id INTEGER NOT NULL, guid TEXT NOT NULL, title TEXT NOT NULL, link TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', published_at TEXT NOT NULL, fetched_at TEXT NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fpost_uniq ON friend_posts(feed_id, guid);
+CREATE INDEX IF NOT EXISTS idx_fpost_time ON friend_posts(published_at DESC, id DESC);

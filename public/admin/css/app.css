@@ -221,6 +221,20 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .lk-time{flex:none;white-space:nowrap}
 .lk-apply{margin-top:6px;font-size:13px;color:var(--mut);background:#f8f9fb;border-radius:8px;padding:6px 10px}
 .lk-ops{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
+/* 「朋友」页：两块内容的分区标题 + 友圈订阅列表（Ver 0.4 ⑫） */
+.sec-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:16px;margin:26px 0 10px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.sec-h .sec-sub{font-size:12.5px;font-weight:400;color:var(--mut)}
+.sec-h .btn{margin-left:auto}
+.fd-item{margin-bottom:12px}
+.fd-h{display:flex;gap:12px;align-items:flex-start}
+.fd-ava{width:38px;height:38px;flex:none;border-radius:9px;background:var(--ac-soft-2);color:var(--ac);display:inline-flex;align-items:center;justify-content:center;font-weight:800;overflow:hidden}
+.fd-ava img{width:100%;height:100%;object-fit:cover}
+.fd-t{flex:1;min-width:0;word-break:break-all}
+.fd-t b{font-size:15px;margin-right:6px}
+.fd-url a{color:var(--ac)}
+.fd-err{color:var(--bad)}
+.fd-ops{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
+.chk-line{display:flex;align-items:center;gap:7px;font-size:13.5px;cursor:pointer}
 /* 仪表盘里的友链申请提醒：与评论待审（红）区分开，用橙色 */
 .dash-warn-link{border-color:#fed7aa;background:#fffcf6;animation:dashBlinkLink 1.6s ease-in-out infinite}
 .dash-warn-link .dash-warn-h b{color:#b45309}

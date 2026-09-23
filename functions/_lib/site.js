@@ -318,6 +318,17 @@ textarea.lf-input{min-height:86px;resize:vertical;line-height:1.7}
 /* 蜜罐：正常用户看不到也不会填，机器人填了就静默丢弃 */
 .lf-hp{position:absolute!important;left:-9999px!important;width:1px;height:1px;overflow:hidden}
 @media(max-width:640px){.link-form{padding:16px 14px}.lf-grid{grid-template-columns:1fr}}
+/* 友圈（Ver 0.4 ⑫）：别人的文章，给标题 + 来源 + 摘要，点标题跳到对方站点 */
+.fr-item{display:flex;gap:13px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:15px 17px;margin-bottom:12px}
+.fr-item:hover{border-color:var(--accent)}
+.fr-ava{width:38px;height:38px;flex:none;border-radius:10px;background:var(--accent-soft);color:var(--accent);display:inline-flex;align-items:center;justify-content:center;font-weight:800;overflow:hidden}
+.fr-ava img{width:100%;height:100%;object-fit:cover}
+.fr-body{flex:1;min-width:0}
+.fr-title{display:block;font-size:16.5px;font-weight:600;color:var(--text);line-height:1.5}
+.fr-title:hover{color:var(--accent);text-decoration:none}
+.fr-meta{display:flex;align-items:center;flex-wrap:wrap;gap:5px;color:var(--muted);font-size:12.5px;margin-top:5px}
+.fr-meta a{color:var(--accent)}
+.fr-sum{margin:7px 0 0;color:var(--muted);font-size:13.5px;line-height:1.7}
 .empty{background:var(--card);border:1px dashed var(--line);border-radius:12px;padding:34px;text-align:center;color:var(--muted);margin-top:18px}
 /* 页脚 */
 .ft{border-top:1px solid var(--line);background:var(--card);color:var(--muted);font-size:13.5px;padding:20px 0;text-align:center}
@@ -406,11 +417,17 @@ export function layout(s, o) {
     .map((p) => nav(pageUrl(p), p.title, 'p:' + p.slug)).join('');
   // 导航栏固定项：首页常驻，其余在「基本设置 → 导航栏显示」里开关（老站没设过就是全显示）
   const navOn = (k) => s.get(k) !== '0';
+  // 「朋友」是一个下拉（Ver 0.4 ⑫）：装「友链」与「友圈」两块，鼠标移上去展开。
+  // 父项自己也能点（去友链），触屏点一下同样能展开（.nav-drop 的 :focus-within 兜底）。
+  const onFriends = o.active === 'links' || o.active === 'friends';
+  const navFriends = navOn('nav_show_links')
+    ? `<span class="nav-drop"><a href="/links"${onFriends ? ' class="on"' : ''}>朋友<i class="caret">▾</i></a><span class="nav-sub"><a href="/links"${o.active === 'links' ? ' class="on"' : ''}>友链</a><a href="/friends"${o.active === 'friends' ? ' class="on"' : ''}>友圈</a></span></span>`
+    : '';
   const navBuiltin = [
     navOn('nav_show_categories') ? nav('/categories', '分类', 'cat') : '',
     navOn('nav_show_tags') ? nav('/tags', '标签', 'tags') : '',
     navOn('nav_show_archive') ? nav('/archive', '归档', 'arc') : '',
-    navOn('nav_show_links') ? nav('/links', '友链', 'links') : '',
+    navFriends,
   ].join('');
   // 分类进导航：路由层把 in_nav=1 的顶级分类（含二级）塞进 s，每个请求各用各的数据
   let navCats = [];
@@ -513,17 +530,30 @@ function postCard(p, s) {
     ${tags ? `<div class="pc-tags">${tags}</div>` : ''}
   </div>${cover}</article>`;
 }
-function pagination(page, pages, base, pageSize) {
-  if (pages <= 1) return '';
-  const link = (n) => (n === 1 ? base : `${base}${pageSize ? 'page/' : ''}${n}`).replace(/(\/)\1/g, '$1');
-  const wrap = base === '/' ? 'page/' : '';
-  const item = (n) => (n === page ? `<span class="cur">${n}</span>` : `<a href="${base}${wrap}${n}">${n}</a>`);
+// 唯一的分页条实现（首页 / 分类 / 标签 / 友圈共用），别再各写一份 —— 复制出去的版本迟早会
+// 跟这里长得不一样，前面那个 bug 就是这么来的。
+// makeUrl 决定「第 n 页」的地址：优先传函数（分类 / 标签 / 友圈这类地址不规则的页面必须传），
+// 也可以只给一个前缀字符串（首页传 '/'）。第 1 页一律回退到列表第一页，不产出 /page/1 这种重复地址。
+// Ver 0.4 修复：此前这里只认 base 字符串，调用方辛辛苦苦算好的 makeUrl 被整个忽略，
+// 于是分类页、标签页从第 2 页起链接变成 "undefinedpage/1"，点了原地踏步。
+export function pagination(page, pages, makeUrl) {
+  // pages 不是有效数字（例如搜索页只有一页、调用方压根没传 pages）就整块不渲染，
+  // 否则会冒出一个只有两个灰按钮、什么都点不了的空白分页条。
+  if (!Number.isFinite(pages) || pages <= 1) return '';
+  const href = typeof makeUrl === 'function'
+    ? makeUrl
+    : (n) => {
+      const base = String(makeUrl || '/').replace(/\/+$/, '');
+      return n <= 1 ? (base || '/') : `${base}/page/${n}`;
+    };
+  // 手改地址栏翻到越界页（page/99）时把当前页夹回范围内，免得数字区一片空白
+  const cur = Number.isFinite(page) ? Math.min(Math.max(1, Math.floor(page)), pages) : 1;
   let nums = '';
-  const from = Math.max(1, page - 2), to = Math.min(pages, page + 2);
-  for (let n = from; n <= to; n++) nums += item(n);
-  const fmt = (base === '/' ? `/page/${page - 1}` : `${base}page/${page - 1}`).replace('/page/1', base === '/' ? '/' : base);
-  const prev = page > 1 ? `<a href="${fmt}">‹ 上一页</a>` : `<span class="dim">‹ 上一页</span>`;
-  const next = page < pages ? `<a href="${base}${wrap}${page + 1}">下一页 ›</a>` : `<span class="dim">下一页 ›</span>`;
+  for (let n = Math.max(1, cur - 2); n <= Math.min(pages, cur + 2); n++) {
+    nums += n === cur ? `<span class="cur">${n}</span>` : `<a href="${href(n)}">${n}</a>`;
+  }
+  const prev = cur > 1 ? `<a href="${href(cur - 1)}">‹ 上一页</a>` : '<span class="dim">‹ 上一页</span>';
+  const next = cur < pages ? `<a href="${href(cur + 1)}">下一页 ›</a>` : '<span class="dim">下一页 ›</span>';
   return `<nav class="pager">${prev}${nums}${next}</nav>`;
 }
 
@@ -531,22 +561,24 @@ function pagination(page, pages, base, pageSize) {
 export function renderHome(s, data, page) {
   // ⚠️ 必须写成箭头函数：map 会把下标当第二个参数传进来，直接传 postCard 会把 s 顶掉
   const items = data.items.map((p) => postCard(p, s)).join('');
+  // 首页第 1 页就是 /，不做成 /page/1（两条地址同内容，搜索引擎算重复页）
+  const homeUrl = (n) => (n <= 1 ? '/' : `/page/${n}`);
   const content = `
     <section class="hero"><h1>最新文章</h1></section>
     ${catChips(data.categories)}
-    ${items ? `<div class="plist">${items}</div>` + pagination(page, data.pages, '/', 1)
-      : `<div class="empty">还没有发布文章</div>`}
-    ${pagination(page, data.pages, '/', 1) ? '' : ''}`;
+    ${items ? `<div class="plist">${items}</div>` + pagination(page, data.pages, homeUrl)
+      : `<div class="empty">还没有发布文章</div>`}`;
   return layout(s, { content, active: 'home', bodySlug: '' });
 }
 
 export function renderListPage(s, o) {
-  // o: {head, desc, itemsHtml, page, pages, base}
+  // o: {head, desc, itemsHtml, page, pages, makeUrl}
+  // makeUrl(n) 由调用方给：分类 / 标签的地址规则各不相同，分页条不能自己猜
   return layout(s, {
     active: o.active, q: o.q, title: o.title,
     content: `<section class="page-head"><h1>${o.head}</h1>${o.desc ? `<p class="desc">${o.desc}</p>` : ''}${o.extra || ''}</section>
     ${o.itemsHtml ? `<div class="plist">${o.itemsHtml}</div>` : (o.extra ? '' : `<div class="empty">${o.empty || '暂无内容'}</div>`)}
-    ${pagination(o.page, o.pages, o.base, o.pageSize)}`,
+    ${pagination(o.page, o.pages, o.makeUrl)}`,
   });
 }
 
@@ -857,6 +889,42 @@ export function renderLinks(s, { links = [], captcha = true } = {}) {
   });
 }
 
+// ---------- 友圈（Ver 0.4 ⑫） ----------
+// 展示订阅到的别人的文章：标题跳原文（外链，加 nofollow），来源跳对方站点。
+// 摘要抓取时已清洗成纯文本，这里只做转义，不信任任何 HTML。
+function friendCard(p) {
+  const name = String(p.feed_name || '').trim() || '未命名站点';
+  const ch = (name[0] || '?').toUpperCase();
+  const avatar = p.feed_avatar
+    ? `<img src="${esc(p.feed_avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+    : esc(ch);
+  const site = p.feed_site
+    ? `<a href="${esc(p.feed_site)}" target="_blank" rel="noopener noreferrer">${esc(name)}</a>`
+    : `<span>${esc(name)}</span>`;
+  const time = String(p.published_at || '').slice(0, 16);
+  return `<article class="fr-item">
+    <span class="fr-ava">${avatar}</span>
+    <div class="fr-body">
+      <a class="fr-title" href="${esc(p.link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(p.title)}</a>
+      <div class="fr-meta">${site}<span class="dot">·</span><time>${esc(time)}</time>${p.author ? `<span class="dot">·</span><span>${esc(p.author)}</span>` : ''}</div>
+      ${p.summary ? `<p class="fr-sum">${esc(p.summary)}</p>` : ''}
+    </div></article>`;
+}
+export function renderFriends(s, { posts = [], feeds = [], total = 0, page = 1, pages = 1 } = {}) {
+  const desc = feeds.length
+    ? `来自 ${feeds.length} 个朋友的站点，共 ${total} 篇文章 · 按发布时间倒序`
+    : '订阅朋友们的站点，把他们的新文章汇总到这里';
+  const body = posts.length
+    ? `<div class="fr-list">${posts.map(friendCard).join('')}</div>`
+      + pagination(page, pages, (n) => (n <= 1 ? '/friends' : `/friends/page/${n}`))
+    : '<div class="empty">友圈还是空的。站长可在后台「朋友 → 友圈」里添加朋友的 RSS 地址。</div>';
+  return layout(s, {
+    title: '友圈', active: 'friends',
+    desc: `${String(s.get('site_title') || '').trim()} 的朋友们最近写了什么`,
+    content: `<section class="page-head"><h1>友圈</h1><p class="desc">${esc(desc)}</p></section>${body}`,
+  });
+}
+
 export function render404(s) {
   return layout(s || new Map(), {
     content: `<section class="empty" style="margin-top:60px"><h1 style="font-size:40px">404</h1><p>页面不存在或已被删除。</p><a href="/">← 返回首页</a></section>`,
@@ -1038,7 +1106,7 @@ ${items}
 
 export async function sitemapXml(env, s, origin) {
   const u = (loc, lastmod) => `  <url><loc>${origin}${esc(loc)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ''}</url>`;
-  const rows = [u('/', ''), u('/archive', ''), u('/categories', ''), u('/tags', ''), u('/links', '')];
+  const rows = [u('/', ''), u('/archive', ''), u('/categories', ''), u('/tags', ''), u('/links', ''), u('/friends', '')];
   const cats = await db.listCategories(env.DB);
   for (const c of cats) rows.push(u(esc(catUrl(c)), ''));
   const tags = await db.listTags(env.DB);

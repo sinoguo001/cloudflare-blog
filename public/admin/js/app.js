@@ -202,7 +202,7 @@ function shell(contentHtml) {
       <a href="#/posts" data-nav="posts">文章</a>
       <a href="#/pages" data-nav="pages">页面</a>
       <a href="#/comments" data-nav="comments">评论<span class="badge" id="badge-pending" style="display:none"></span></a>
-      <a href="#/links" data-nav="links">友链<span class="badge" id="badge-links" style="display:none"></span></a>
+      <a href="#/links" data-nav="links">朋友<span class="badge" id="badge-links" style="display:none"></span></a>
       <a href="#/categories" data-nav="categories">分类</a>
       <a href="#/tags" data-nav="tags">标签</a>
       <a href="#/media" data-nav="media">图片库</a>
@@ -827,18 +827,67 @@ async function linkDialog(l) {
   });
   return res === 'ok' ? out : null;
 }
+
+// ================= 友圈订阅（Ver 0.4 ⑫） =================
+// 编辑 / 新增订阅共用弹窗：fields 为初始值，返回 null 表示取消
+async function feedDialog(f) {
+  const isNew = !f;
+  const v = f || { name: '', url: '', site_url: '', avatar: '', description: '', sort: 0, enabled: 1 };
+  const out = {};
+  const res = await dialog({
+    title: isNew ? '添加 RSS 订阅' : '编辑 RSS 订阅',
+    bodyHtml: `
+      <div class="field"><label>RSS 地址 *（需以 http:// 或 https:// 开头）</label><input class="inp" id="fdf-url" maxlength="300" placeholder="https://example.com/feed.xml" value="${esc(v.url)}"></div>
+      <div class="field"><label>显示名称（留空则自动取对方站点名）</label><input class="inp" id="fdf-name" maxlength="40" value="${esc(v.name || '')}"></div>
+      <div class="field"><label>站点地址（选填，点来源时跳这里）</label><input class="inp" id="fdf-site" maxlength="300" placeholder="https://example.com" value="${esc(v.site_url || '')}"></div>
+      <div class="field"><label>头像地址（选填，不填用名称首字方块）</label><input class="inp" id="fdf-avatar" maxlength="300" value="${esc(v.avatar || '')}"></div>
+      <div class="field"><label>备注（选填，只有后台自己看得到）</label><input class="inp" id="fdf-desc" maxlength="120" value="${esc(v.description || '')}"></div>
+      <div class="field"><label>排序（数字越小越靠前）</label><input class="inp" id="fdf-sort" type="number" min="0" max="9999" style="width:140px" value="${v.sort || 0}"></div>
+      <div class="field"><label class="chk-line"><input type="checkbox" id="fdf-enabled"${v.enabled ? ' checked' : ''}> 启用（取消勾选＝暂停订阅，前台不再显示它的文章）</label></div>`,
+    actions: [{ val: 'ok', label: isNew ? '添加并抓取' : '保存', cls: 'p' }, { val: 'cancel', label: '取消', cls: 'g' }],
+    onSubmit: (body) => {
+      const g = (id) => body.querySelector('#' + id).value.trim();
+      out.url = g('fdf-url');
+      if (!/^https?:\/\/\S+$/i.test(out.url)) return false;   // 与服务端同口径，别等服务端来回
+      out.name = g('fdf-name');
+      out.site_url = g('fdf-site');
+      out.avatar = g('fdf-avatar');
+      out.description = g('fdf-desc');
+      out.sort = parseInt(g('fdf-sort'), 10) || 0;
+      out.enabled = body.querySelector('#fdf-enabled').checked ? 1 : 0;
+      return true;
+    },
+  });
+  return res === 'ok' ? out : null;
+}
+// 订阅状态：暂停 > 失败 > 待抓取 > 正常
+function friendSt(f) {
+  if (!f.enabled) return { cls: 'draft', text: '已暂停' };
+  if (f.last_error) return { cls: 'pending', text: '抓取失败' };
+  if (!f.last_fetch) return { cls: 'draft', text: '待抓取' };
+  return { cls: 'published', text: '正常' };
+}
+
 async function viewLinks() {
-  pageTitle('友链');
+  pageTitle('朋友');
   showLoading();
-  shell(`<div class="page-head"><h1>友情链接</h1>
+  shell(`<div class="page-head"><h1>朋友</h1>
     <div class="spacer">
-      <a class="btn g" href="/links" target="_blank" rel="noopener">前台页面 ↗</a>
-      <button class="btn p" id="lk-new">＋ 新增友链</button>
+      <a class="btn g" href="/links" target="_blank" rel="noopener">前台友链 ↗</a>
+      <a class="btn g" href="/friends" target="_blank" rel="noopener">前台友圈 ↗</a>
     </div></div>
+
+    <h2 class="sec-h">友情链接<span class="sec-sub">读者申请与互换的站点</span>
+      <button class="btn p sm" id="lk-new">＋ 新增友链</button></h2>
     <div class="tabs" id="lk-tabs">
       <button data-t="pending">待审核</button><button data-t="approved">已展示</button><button data-t="rejected">已拒绝</button><button data-t="all">全部</button>
     </div>
-    <div id="lk-list"><div class="loading">加载中…</div></div>`);
+    <div id="lk-list"><div class="loading">加载中…</div></div>
+
+    <h2 class="sec-h">友圈 · RSS 订阅<span class="sec-sub" id="fd-sub">订阅朋友的 RSS，他们的新文章会汇总到前台友圈</span>
+      <button class="btn g sm" id="fd-refresh">↻ 全部刷新</button>
+      <button class="btn p sm" id="fd-new">＋ 添加订阅</button></h2>
+    <div id="fd-list"><div class="loading">加载中…</div></div>`);
 
   const load = async () => {
     const box = view().querySelector('#lk-list');
@@ -922,6 +971,116 @@ async function viewLinks() {
     } catch (e) { toast(e.message, 'bad'); }
   });
   load();
+
+  // ---- 友圈：RSS 订阅 ----
+  const loadFeeds = async () => {
+    const box = view().querySelector('#fd-list');
+    box.innerHTML = '<div class="loading">加载中…</div>';
+    try {
+      const r = await API.get('/feeds');
+      const sub = view().querySelector('#fd-sub');
+      if (sub) {
+        sub.textContent = r.items.length
+          ? `共 ${r.items.length} 个订阅${r.last_refresh ? ` · 上次刷新 ${r.last_refresh.slice(0, 16)}` : ''}`
+          : '订阅朋友的 RSS，他们的新文章会汇总到前台友圈';
+      }
+      if (!r.items.length) {
+        box.innerHTML = '<div class="empty-note">还没有订阅。点上方「＋ 添加订阅」填朋友的 RSS 地址即可。</div>';
+        return;
+      }
+      box.innerHTML = r.items.map((f) => {
+        const st = friendSt(f);
+        const ch = (String(f.name || '').trim()[0] || '?').toUpperCase();
+        const ava = f.avatar
+          ? `<img src="${esc(f.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+          : esc(ch);
+        const meta = [
+          f.post_count ? `已抓 ${f.post_count} 篇` : '还没抓到文章',
+          f.latest_at ? `最新 ${String(f.latest_at).slice(0, 16)}` : '',
+          f.last_fetch ? `上次刷新 ${String(f.last_fetch).slice(0, 16)}` : '从未刷新',
+        ].filter(Boolean).join(' · ');
+        return `<div class="card fd-item">
+          <div class="fd-h">
+            <span class="fd-ava">${ava}</span>
+            <div class="fd-t">
+              <b>${esc(f.name || '（未命名，刷新后会取对方站点名）')}</b>
+              <span class="st ${st.cls}">${st.text}</span>
+              <div class="hint fd-url">RSS：<a href="${esc(f.url)}" target="_blank" rel="noopener noreferrer">${esc(f.url)} ↗</a>${f.site_url ? ` · 站点：<a href="${esc(f.site_url)}" target="_blank" rel="noopener noreferrer">${esc(f.site_url)} ↗</a>` : ''}</div>
+              <div class="hint">${esc(meta)}</div>
+              ${f.description ? `<div class="hint">${esc(f.description)}</div>` : ''}
+              ${f.last_error ? `<div class="hint fd-err">上次失败：${esc(f.last_error)}</div>` : ''}
+            </div>
+            <span class="hint">排序 ${f.sort || 0}</span>
+          </div>
+          <div class="fd-ops">
+            <button class="btn sm" data-o="refresh" data-id="${f.id}">刷新</button>
+            <button class="btn sm v" data-o="edit" data-id="${f.id}">编辑</button>
+            <button class="btn sm g" data-o="toggle" data-id="${f.id}" data-on="${f.enabled ? 1 : 0}">${f.enabled ? '暂停' : '启用'}</button>
+            <button class="btn sm d" data-o="del" data-id="${f.id}">删除</button>
+          </div>
+        </div>`;
+      }).join('');
+      box.querySelectorAll('button[data-o]').forEach((b) => b.addEventListener('click', async () => {
+        const id = parseInt(b.dataset.id, 10);
+        const o = b.dataset.o;
+        try {
+          if (o === 'refresh') {
+            b.disabled = true;
+            b.textContent = '抓取中…';
+            const r = await API.post('/feeds/' + id + '/refresh', {});
+            const one = (r.results || [])[0] || {};
+            toast(one.ok ? `抓取完成，共 ${one.count || 0} 篇文章` : ('抓取失败：' + (one.error || '未知原因')), one.ok ? '' : 'bad');
+          } else if (o === 'edit') {
+            const cur = (await API.get('/feeds')).items.find((x) => x.id === id);
+            const d = await feedDialog(cur);
+            if (!d) return;
+            await API.patch('/feeds/' + id, d);
+            toast('已保存');
+          } else if (o === 'toggle') {
+            const on = b.dataset.on === '1';
+            await API.patch('/feeds/' + id, { enabled: on ? 0 : 1 });
+            toast(on ? '已暂停，前台不再显示它的文章' : '已启用');
+          } else if (o === 'del') {
+            if (!(await confirmDanger('确定删除这个订阅？它抓回来的文章会一起删掉。', '删除订阅'))) return;
+            await API.del('/feeds/' + id);
+            toast('已删除');
+          }
+          loadFeeds();
+        } catch (e) {
+          toast(e.message, 'bad');
+          loadFeeds();
+        }
+      }));
+    } catch (e) { box.innerHTML = `<div class="empty-note">${esc(e.message)}</div>`; }
+  };
+  view().querySelector('#fd-new').addEventListener('click', async () => {
+    try {
+      const d = await feedDialog(null);
+      if (!d) return;
+      const r = await API.post('/feeds', d);
+      toast(r.fetched
+        ? `已添加 ✓ 抓到 ${r.fetched} 篇文章，前台友圈已能看到`
+        : `已添加，但抓取失败：${r.error || '未知原因'}（可在列表里点「刷新」重试）`, r.fetched ? '' : 'bad');
+      loadFeeds();
+    } catch (e) { toast(e.message, 'bad'); }
+  });
+  view().querySelector('#fd-refresh').addEventListener('click', async (ev) => {
+    const b = ev.currentTarget;
+    b.disabled = true;
+    b.textContent = '刷新中…';
+    try {
+      const r = await API.post('/feeds/refresh', {});
+      const list = r.results || [];
+      const ok = list.filter((x) => x.ok).length;
+      const bad = list.length - ok;
+      toast(`刷完了：成功 ${ok} 个${bad ? `，失败 ${bad} 个（原因见列表）` : ''}`, bad ? 'bad' : '');
+      loadFeeds();
+    } catch (e) {
+      toast(e.message, 'bad');
+      loadFeeds();
+    }
+  });
+  loadFeeds();
 }
 
 // ================= 分类（支持二级） =================
@@ -1565,11 +1724,12 @@ async function viewSettings(tabArg) {
         <label><input type="checkbox" id="s-nav_categories"> 分类</label>
         <label><input type="checkbox" id="s-nav_tags"> 标签</label>
         <label><input type="checkbox" id="s-nav_archive"> 归档</label>
-        <label><input type="checkbox" id="s-nav_links"> 友链</label>
+        <label><input type="checkbox" id="s-nav_links"> 朋友</label>
         <label><input type="checkbox" id="s-nav_rss"> RSS</label>
       </div>
       <p class="hint" style="margin-bottom:0">「首页」固定显示，不提供开关。这里关掉某一项，只是不显示在导航栏，<b>页面地址依然可以访问</b>（如关闭 RSS 后 /rss.xml 照常能订阅）。
-        分类作为单独入口显示，由「<a href="#/categories">分类</a>」里各分类的「在导航栏显示」控制；二级分类不单独占位，鼠标移到它的上级分类上会自动展开下拉。</p>
+        分类作为单独入口显示，由「<a href="#/categories">分类</a>」里各分类的「在导航栏显示」控制；二级分类不单独占位，鼠标移到它的上级分类上会自动展开下拉。
+        勾上「朋友」后，导航里是一个下拉，鼠标移上去会展开「友链」与「友圈」两项。</p>
     </div>
   </div>
 

@@ -718,6 +718,141 @@ export async function recentLinkApplies(db, ip, seconds = 3600) {
   return r ? r.n : 0;
 }
 
+// ---------- 友圈（Ver 0.4 ⑫）：订阅别人的 RSS ----------
+// 表结构与 migrations/0011_friends.sql 一致，首次读写时自动建立，无需手工跑迁移。
+const FEED_DDL = `CREATE TABLE IF NOT EXISTS friend_feeds(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+  site_url TEXT NOT NULL DEFAULT '', avatar TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '', sort INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_fetch TEXT NOT NULL DEFAULT '', last_status INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`;
+const FPOST_DDL = `CREATE TABLE IF NOT EXISTS friend_posts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  feed_id INTEGER NOT NULL, guid TEXT NOT NULL,
+  title TEXT NOT NULL, link TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '',
+  published_at TEXT NOT NULL, fetched_at TEXT NOT NULL)`;
+
+let friendReady = false;
+export async function ensureFriendTables(db) {
+  if (friendReady) return;
+  await db.prepare(FEED_DDL).run();
+  await db.prepare(FPOST_DDL).run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_ffeed_enabled ON friend_feeds(enabled, sort, id)').run();
+  await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_fpost_uniq ON friend_posts(feed_id, guid)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_fpost_time ON friend_posts(published_at DESC, id DESC)').run();
+  friendReady = true;
+}
+
+const FEED_COLS = 'id,name,url,site_url,avatar,description,sort,enabled,last_fetch,last_status,last_error,created_at,updated_at';
+// 顺带带出「已抓文章数」和「最新一篇的时间」，后台列表直接显示，省一次请求
+export async function listFeeds(db, { enabledOnly = false } = {}) {
+  await ensureFriendTables(db);
+  const r = await db.prepare(
+    `SELECT ${FEED_COLS},
+       (SELECT COUNT(*) FROM friend_posts fp WHERE fp.feed_id = friend_feeds.id) AS post_count,
+       (SELECT MAX(fp.published_at) FROM friend_posts fp WHERE fp.feed_id = friend_feeds.id) AS latest_at
+     FROM friend_feeds${enabledOnly ? ' WHERE enabled=1' : ''} ORDER BY sort ASC, id ASC`
+  ).all();
+  return r.results || [];
+}
+export async function countFeeds(db) {
+  await ensureFriendTables(db);
+  const r = await db.prepare('SELECT COUNT(*) n FROM friend_feeds').first();
+  return r ? r.n : 0;
+}
+export async function getFeed(db, id) {
+  await ensureFriendTables(db);
+  return db.prepare(`SELECT ${FEED_COLS} FROM friend_feeds WHERE id=?`).bind(id).first();
+}
+// 同一个订阅地址不重复添加（忽略末尾斜杠差异）
+export async function findFeedByUrl(db, url) {
+  await ensureFriendTables(db);
+  const norm = String(url || '').trim().replace(/\/+$/, '');
+  const r = await db.prepare(`SELECT ${FEED_COLS} FROM friend_feeds`).all();
+  return ((r && r.results) || []).find((x) => String(x.url).trim().replace(/\/+$/, '') === norm) || null;
+}
+export async function addFeed(db, d) {
+  await ensureFriendTables(db);
+  const now = bnNow();
+  const r = await db.prepare(
+    `INSERT INTO friend_feeds(name,url,site_url,avatar,description,sort,enabled,created_at,updated_at)
+     VALUES(?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    d.name || '', d.url, d.site_url || '', d.avatar || '', d.description || '',
+    parseInt(d.sort, 10) || 0, d.enabled === 0 || d.enabled === false ? 0 : 1, now, now,
+  ).run();
+  return (r && r.meta && r.meta.last_row_id) || (r && r.lastInsertRowid) || 0;
+}
+export async function updateFeed(db, id, patch) {
+  await ensureFriendTables(db);
+  const allow = ['name', 'url', 'site_url', 'avatar', 'description', 'sort', 'enabled'];
+  const keys = Object.keys(patch || {}).filter((k) => allow.includes(k));
+  if (!keys.length) return 0;
+  const sql = `UPDATE friend_feeds SET ${keys.map((k) => `${k}=?`).join(',')}, updated_at=? WHERE id=?`;
+  await db.prepare(sql).bind(...keys.map((k) => patch[k]), bnNow(), id).run();
+  return 1;
+}
+// 抓取结果回写：只放行这几个键，避免把任意字段写进库
+export async function markFeedResult(db, id, patch) {
+  await ensureFriendTables(db);
+  const allow = ['name', 'site_url', 'avatar', 'last_fetch', 'last_status', 'last_error'];
+  const keys = Object.keys(patch || {}).filter((k) => allow.includes(k));
+  if (!keys.length) return 0;
+  const sql = `UPDATE friend_feeds SET ${keys.map((k) => `${k}=?`).join(',')}, updated_at=? WHERE id=?`;
+  await db.prepare(sql).bind(...keys.map((k) => patch[k]), bnNow(), id).run();
+  return 1;
+}
+// 删订阅要连它的文章一起删，否则朋友列表没了、文章还挂在友圈里
+export async function deleteFeed(db, id) {
+  await ensureFriendTables(db);
+  await db.prepare('DELETE FROM friend_posts WHERE feed_id=?').bind(id).run();
+  await db.prepare('DELETE FROM friend_feeds WHERE id=?').bind(id).run();
+}
+// 抓回来的文章入库：同源同篇按 guid 覆盖（更新标题/摘要），不会重复堆
+const KEEP_PER_FEED = 30;
+export async function saveFeedItems(db, feedId, items, now) {
+  await ensureFriendTables(db);
+  const st = db.prepare(
+    `INSERT INTO friend_posts(feed_id,guid,title,link,summary,author,published_at,fetched_at)
+     VALUES(?,?,?,?,?,?,?,?)
+     ON CONFLICT(feed_id,guid) DO UPDATE SET
+       title=excluded.title, link=excluded.link, summary=excluded.summary,
+       author=excluded.author, published_at=excluded.published_at, fetched_at=excluded.fetched_at`
+  );
+  for (const it of (items || []).slice(0, 20)) {
+    await st.bind(feedId, it.guid, it.title, it.link, it.summary || '', it.author || '',
+      it.published_at, now).run();
+  }
+  // 每个源只留最近的若干条，老文章自动淘汰，免得库无限长大
+  await db.prepare(
+    `DELETE FROM friend_posts WHERE feed_id=? AND id NOT IN
+       (SELECT id FROM friend_posts WHERE feed_id=? ORDER BY published_at DESC, id DESC LIMIT ?)`
+  ).bind(feedId, feedId, KEEP_PER_FEED).run();
+  return (items || []).length;
+}
+// 前台友圈流：只取「启用中」的订阅；停用某个源，它的文章就一起消失
+export async function listFriendPosts(db, { limit = 20, offset = 0 } = {}) {
+  await ensureFriendTables(db);
+  const r = await db.prepare(
+    `SELECT fp.id,fp.title,fp.link,fp.summary,fp.author,fp.published_at,
+       f.id AS feed_id, f.name AS feed_name, f.site_url AS feed_site, f.avatar AS feed_avatar
+     FROM friend_posts fp JOIN friend_feeds f ON f.id = fp.feed_id
+     WHERE f.enabled=1 ORDER BY fp.published_at DESC, fp.id DESC LIMIT ? OFFSET ?`
+  ).bind(limit, offset).all();
+  return r.results || [];
+}
+export async function countFriendPosts(db) {
+  await ensureFriendTables(db);
+  const r = await db.prepare(
+    'SELECT COUNT(*) n FROM friend_posts fp JOIN friend_feeds f ON f.id=fp.feed_id WHERE f.enabled=1'
+  ).first();
+  return r ? r.n : 0;
+}
+
 // 独立页面（type='page'）：前台导航、站点地图与后台「页面」列表都走这里
 export async function listPages(db, { status = 'published', inNav = false } = {}) {
   const r = await listPosts(db, { status, type: 'page', inNav, per: 200 });
@@ -750,6 +885,9 @@ export async function dumpAll(db) {
     links: await g('SELECT * FROM links').catch(() => []),
     // 点赞进备份：pv_visitor 只是 UV 去重的临时明细，点赞是内容的一部分，丢了读者会察觉
     post_likes: await g('SELECT * FROM post_likes').catch(() => []),
+    // 友圈订阅与抓回来的文章：都是博主一条条加出来的，换库时要能带走
+    friend_feeds: await g('SELECT * FROM friend_feeds').catch(() => []),
+    friend_posts: await g('SELECT * FROM friend_posts').catch(() => []),
   };
 }
 // 恢复：先清空再按原 id 回填（自动续接自增序列）
@@ -762,10 +900,12 @@ export async function restoreAll(db, data) {
   await ensurePvTables(db).catch(() => {});
   await ensureLinkTable(db).catch(() => {});
   await ensureLikeTable(db).catch(() => {});
+  await ensureFriendTables(db).catch(() => {});
   const clear = [
     'DELETE FROM post_tags', 'DELETE FROM comments', 'DELETE FROM posts',
     'DELETE FROM categories', 'DELETE FROM tags', 'DELETE FROM pv_daily', 'DELETE FROM links',
     'DELETE FROM post_likes',
+    'DELETE FROM friend_posts', 'DELETE FROM friend_feeds',
     "DELETE FROM settings WHERE key NOT IN ('admin_username','admin_pass_salt','admin_pass_hash','admin_pass_iter')",
   ];
   const stmts = clear.map((s) => db.prepare(s));
@@ -786,6 +926,9 @@ export async function restoreAll(db, data) {
   if (data.pv_daily) await run(data.pv_daily, 'pv_daily');
   if (data.links) await run(data.links, 'links');
   if (data.post_likes) await run(data.post_likes, 'post_likes');
+  // 先订源后文章：friend_posts.feed_id 指向 friend_feeds.id
+  if (data.friend_feeds) await run(data.friend_feeds, 'friend_feeds');
+  if (data.friend_posts) await run(data.friend_posts, 'friend_posts');
   for (let i = 0; i < chunk.length; i += 40) await db.batch(chunk.slice(i, i + 40));
   return chunk.length;
 }
