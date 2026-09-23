@@ -56,6 +56,36 @@ export const THEME_VARS = `
 --font-code:Consolas,Menlo,Monaco,"Courier New",monospace}
 `;
 
+// ---------- 夜间模式（Ver 0.4 ⑧） ----------
+// 关键：选择器写成 html[data-theme="dark"] 而不是 :root。
+// 属性选择器特异性（0,1,1）高于 :root（0,1,0），所以无论主题的 style.css 在它之前还是
+// 之后加载、无论用户装的是哪套主题，这套暗色变量都能压住对方 —— 换主题也一样生效。
+// 不覆盖 --accent：主题色是用户在后台设的，夜里也照用（只把配套底色换成暗色）。
+export const DARK_VARS = `
+html[data-theme="dark"]{
+--bg:#0e1219;--card:#161d29;--text:#dbe4f0;--text-soft:#a8b6c9;--muted:#76879d;
+--accent-soft:#1d2c47;--tint:#1f2937;--on-accent:#0b1220;
+--quote-bg:#1b2434;--quote-text:#c4d2e4;--code-bg:#080c13;--code-text:#cfe3ff;--inline-code-bg:#243047;
+--line:#2a3548;--admin:#c084fc;--admin-soft:#33244d;--admin-text:#d8b4fe;--ok:#4ade80;--bad:#f87171}
+/* 暗底上输入框要跟着变，否则白底黑字在夜里像贴了块膏药 */
+html[data-theme="dark"] .hd-search input,html[data-theme="dark"] .cform input,
+html[data-theme="dark"] .cform textarea,html[data-theme="dark"] .lock-inp{background:var(--card);color:var(--text);border-color:var(--line)}
+html[data-theme="dark"] .pc-cover img,html[data-theme="dark"] .art-cover img{background:var(--card)}
+/* 切换按钮：白天露太阳、夜里露月亮 */
+.theme-btn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;
+  border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--muted);cursor:pointer}
+.theme-btn:hover{border-color:var(--accent);color:var(--accent)}
+.theme-btn svg{width:17px;height:17px;display:block}
+html[data-theme="dark"] .ico-sun,html[data-theme="light"] .ico-moon{display:none}
+`;
+
+// ---------- 全站灰度（Ver 0.4 ⑨） ----------
+// 类选择器 + !important：装了任何主题、主题里写了什么 filter，都压不住它。
+// 只加在 <html> 上，一次过滤整棵子树（含图片与代码块）；Safari 需要 -webkit- 前缀。
+export const GRAY_CSS = `
+html.gray{-webkit-filter:grayscale(1)!important;filter:grayscale(1)!important}
+`;
+
 // ---------- 前台骨架样式（颜色一律引用主题变量） ----------
 export const FRONT_CSS = `
 *{box-sizing:border-box}
@@ -131,6 +161,17 @@ img{max-width:100%}
 .art-cover img{border-radius:12px;border:1px solid var(--line)}
 .art-cp{margin-top:22px;padding:13px 16px;background:var(--tint);border-left:3px solid var(--accent);border-radius:0 10px 10px 0;font-size:13.5px;line-height:1.85;color:var(--muted);word-break:break-word}
 .art-cp a{color:var(--accent)}
+/* 点赞（Ver 0.4 ⑦）：切换语义，已赞时整颗按钮变主色 */
+.like-bar{display:flex;align-items:center;gap:12px;margin:26px 0 2px;flex-wrap:wrap}
+.like-btn{display:inline-flex;align-items:center;gap:7px;padding:7px 18px;border:1px solid var(--line);
+  border-radius:999px;background:var(--card);color:var(--text-soft);font:inherit;font-size:15px;cursor:pointer}
+.like-btn:hover{border-color:var(--accent);color:var(--accent)}
+.like-ico{font-size:17px;line-height:1;color:var(--muted)}
+.like-btn.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.like-btn.on .like-ico{color:var(--accent)}
+.like-btn[disabled]{opacity:.55;cursor:default}
+.like-tip{font-size:13px;color:var(--muted)}
+.like-count-mini{color:var(--muted)}
 /* 独立页面（/p/<slug>）：只留更新时间，去掉发布时间 / 分类 / 阅读数 */
 .page-upd{margin:-4px 0 20px;font-size:13px;color:var(--muted)}
 /* 正文排版 */
@@ -316,6 +357,13 @@ export function faviconSvg(s) {
 </svg>`;
 }
 
+// 夜间模式切换按钮里的两个图标：白天露太阳、夜里露月亮（CSS 按 data-theme 二选一显示）
+const SUN_SVG = `<svg class="ico-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+  stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/>
+  <path d="M12 2.6v2.2M12 19.2v2.2M4.2 12H2M22 12h-2.2M5.6 5.6 4 4M20 20l-1.6-1.6M18.4 5.6 20 4M4 20l1.6-1.6"/></svg>`;
+const MOON_SVG = `<svg class="ico-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.3A8.5 8.5 0 1 1 9.7 3.5a6.8 6.8 0 0 0 10.8 10.8Z"/></svg>`;
+
 // ---------- 页面骨架 ----------
 export function layout(s, o) {
   const title = s.get('site_title');
@@ -357,8 +405,10 @@ export function layout(s, o) {
       ? `<span class="nav-drop"><a href="${esc(catUrl(c))}"${o.active === ('c:' + c.slug) ? ' class="on"' : ''}>${esc(c.name)}<i class="caret">▾</i></a><span class="nav-sub">${kids}</span></span>`
       : link;
   }).join('');
+  // 全站灰度：后台「基本设置」开关，默认关（Ver 0.4 ⑨）
+  const gray = s.get('gray_mode') === '1';
   return `<!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light"${gray ? ' class="gray"' : ''}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -366,7 +416,12 @@ export function layout(s, o) {
 <meta name="description" content="${esc(desc)}">
 <link rel="icon" href="${esc(faviconHref(s))}"${faviconMime(faviconHref(s)) ? ` type="${faviconMime(faviconHref(s))}"` : ''}>
 <link rel="alternate" type="application/rss+xml" title="${esc(title)}" href="/rss.xml">
-<style>${THEME_VARS}:root{${accentVars(accent)}}${FRONT_CSS}${codeThemeCss(s.get('code_theme'))}</style>
+<style>${THEME_VARS}:root{${accentVars(accent)}}${FRONT_CSS}${DARK_VARS}${GRAY_CSS}${codeThemeCss(s.get('code_theme'))}</style>
+<!-- 夜间模式要在第一帧就定下来，否则刷新时会先闪一下白底再变暗；
+     这段必须内联在 head 里，放到 /js/site.js（defer）就来不及了。 -->
+<script>(function(){try{var t=localStorage.getItem('blog_theme');
+if(t!=='dark'&&t!=='light')t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches)?'dark':'light';
+document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 ${themeLink(s)}
 <!-- 全站加载：文章页用它上报阅读量，所有页面用它上报 PV（后台是独立静态页，不走这里） -->
 <script src="/js/site.js" defer></script>
@@ -381,6 +436,9 @@ ${themeLink(s)}
     ${navBuiltin}
     ${navPagesHtml}
     ${navOn('nav_show_rss') ? nav('/rss.xml', 'RSS', 'rss') : ''}
+    <button type="button" class="theme-btn" id="theme-toggle" aria-label="切换深色模式" title="切换深色 / 浅色">
+      ${SUN_SVG}${MOON_SVG}
+    </button>
   </nav>
   <form class="hd-search" action="/search" method="get"><input name="q" placeholder="搜索文章…" value="${o.q ? esc(o.q) : ''}"></form>
 </div></header>
@@ -417,6 +475,7 @@ function postCard(p, s) {
       ${cat ? `<span class="dot">·</span>${cat}` : ''}
       <span class="dot">·</span><span>阅读 ${p.view_count || 0}</span>
       <span class="dot">·</span><span>${p.comment_count || 0} 评论</span>
+      ${p.likes ? `<span class="dot">·</span><span class="like-count-mini">♥ ${p.likes}</span>` : ''}
     </div>
     <h2 class="pc-title">${locked ? '<span class="lock-mark">🔒</span>' : ''}<a href="${url}">${esc(p.title)}</a></h2>
     ${locked ? '<p class="pc-excerpt lock-note">本文已加密，需输入密码访问</p>'
@@ -492,6 +551,21 @@ function crumbCat(c) {
   return `${parent}<a href="${esc(catUrl(c))}">${esc(c.name)}</a> / `;
 }
 
+// ---------- 点赞（Ver 0.4 ⑦） ----------
+// 只带文章 id：点赞是「切换」语义，同一访客再点一次就是取消，所以按钮不需要知道当前状态以外的东西。
+// 加密文章与独立页面不渲染（前者连正文都看不到，后者没有文章的互动属性）。
+export function likeBar(post) {
+  if (!post || post.type === 'page' || post.locked) return '';
+  const n = post.likes || 0;
+  return `<div class="like-bar">
+    <button type="button" class="like-btn${post.liked ? ' on' : ''}" data-like="${post.id}"
+      aria-label="点赞" aria-pressed="${post.liked ? 'true' : 'false'}">
+      <span class="like-ico">♥</span><span class="like-n">${n}</span>
+    </button>
+    <span class="like-tip">${post.liked ? '已赞，再点一次取消' : '觉得有用就点个赞'}</span>
+  </div>`;
+}
+
 export function renderArticle(s, post, extra) {
   const cover = post.cover_key
     ? `<div class="art-cover"><img src="/media/${esc(post.cover_key)}" alt="${esc(post.title)}"></div>` : '';
@@ -514,6 +588,7 @@ export function renderArticle(s, post, extra) {
       <div class="art-meta">${meta}</div>
       ${cover}
       <div class="art-body">${post.content_html}</div>
+      ${likeBar(post)}
       ${tags ? `<div class="pc-tags" style="margin-top:18px">${tags}</div>` : ''}
       ${copyrightHtml(s, post, extra.origin)}
     </article>
@@ -809,14 +884,14 @@ footer a{color:#2563eb;text-decoration:none}
 @media (max-width:640px){body{padding:16px 10px}.items{padding:8px 6px}.it{padding:15px 12px}th,td{padding-left:16px;padding-right:16px}}
 `;
 
-// RSS / Sitemap 页面共用骨架
-function feedLayout({ icon, title, sub, home, bar, body, foot }) {
+// RSS / Sitemap 页面共用骨架（浏览器直接打开时的排版页，给阅读器与爬虫的仍是标准 XML）
+function feedLayout({ icon, title, sub, home, bar, body, foot, gray }) {
   return `<!doctype html>
-<html lang="zh-CN"><head>
+<html lang="zh-CN" data-theme="light"${gray ? ' class="gray"' : ''}><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>
-<style>${FEED_CSS}</style>
+<style>${FEED_CSS}${GRAY_CSS}</style>
 </head><body>
 <div class="page"><div class="card">
 <header>
@@ -857,6 +932,7 @@ export async function rssHtml(env, s, origin) {
     body: items ? `<div class="items">${items}</div>` : '<div class="empty">还没有文章</div>',
     foot: `此页面由服务器直接生成，仅供浏览器阅读；订阅器请使用原始地址。
 <a href="${origin}/rss.xml?format=xml">RSS 源</a> · <a href="${origin}/sitemap.xml">站点地图</a> · <a href="${origin}">回到首页</a>`,
+    gray: s.get('gray_mode') === '1',
   });
 }
 
@@ -896,6 +972,7 @@ export async function sitemapHtml(env, s, origin) {
       : '<div class="empty">暂无内容</div>',
     foot: `此页面由服务器直接生成，仅供浏览器阅读；搜索引擎请使用原始地址。
 <a href="${origin}/sitemap.xml?format=xml">Sitemap 源</a> · <a href="${origin}/rss.xml">RSS 订阅</a> · <a href="${origin}">回到首页</a>`,
+    gray: s.get('gray_mode') === '1',
   });
 }
 
@@ -954,11 +1031,13 @@ Sitemap: ${origin}/sitemap.xml
 
 // 预览用：后台编辑器 iframe 内嵌的文章样式文档
 export function previewDoc(s, post, origin = '') {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+  // 灰度与夜间同样作用于预览：不然后台开了全站灰度，编辑器里看着还是彩色的
+  const gray = s.get('gray_mode') === '1';
+  return `<!doctype html><html lang="zh-CN" data-theme="light"${gray ? ' class="gray"' : ''}><head><meta charset="utf-8">
 <base href="${esc(origin)}/">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>预览</title>
-<style>${THEME_VARS}:root{${accentVars(accentOf(s))}}
+<style>${THEME_VARS}:root{${accentVars(accentOf(s))}}${DARK_VARS}${GRAY_CSS}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.8 var(--font-body)}
 .wrap{max-width:820px;margin:0 auto;padding:28px 22px}
 h1{font-size:30px;line-height:1.4;margin:0 0 6px}

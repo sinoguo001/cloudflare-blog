@@ -30,6 +30,55 @@
     }).catch(function () {});
   }
 
+  // ---- 夜间模式切换（Ver 0.4 ⑧）----
+  // 首帧的属性由 <head> 里的内联脚本定好（跟随系统偏好或上次的手动选择），
+  // 这里只负责点击后切换并存进 localStorage；下次访问仍按存的来。
+  (function dayNight() {
+    var tb = document.getElementById('theme-toggle');
+    if (!tb) return;
+    function cur() {
+      return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+    }
+    tb.addEventListener('click', function () {
+      var next = cur() === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      try { localStorage.setItem('blog_theme', next); } catch (e) { /* 隐私模式下写不了，本次仍生效 */ }
+      tb.setAttribute('aria-pressed', next === 'dark' ? 'true' : 'false');
+    });
+  })();
+
+  // ---- 文章点赞（Ver 0.4 ⑦）----
+  // 服务端已按访客 Cookie 回填「我赞过没」，这里只负责点击后的切换与数字更新。
+  // 同一访客再点一次是取消，所以不需要额外的防重复逻辑。
+  (function likes() {
+    var btn = document.querySelector('.like-btn[data-like]');
+    if (!btn) return;
+    var num = btn.querySelector('.like-n');
+    var tip = document.querySelector('.like-tip');
+    var busy = false;
+    btn.addEventListener('click', function () {
+      if (busy) return;
+      busy = true;
+      btn.disabled = true;
+      fetch('/api/like', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: parseInt(btn.dataset.like, 10) }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (d) {
+          busy = false;
+          btn.disabled = false;
+          if (typeof d.likes !== 'number') return;           // 出错就保持原样，不乱改数字
+          num.textContent = d.likes;
+          btn.classList.toggle('on', !!d.liked);
+          btn.setAttribute('aria-pressed', d.liked ? 'true' : 'false');
+          if (tip) tip.textContent = d.liked ? '已赞，再点一次取消' : '觉得有用就点个赞';
+        })
+        .catch(function () { busy = false; btn.disabled = false; });
+    });
+  })();
+
   // ---- 友链申请表单（/links 页）----
   var lkForm = document.getElementById('lk-form');
   if (lkForm) {

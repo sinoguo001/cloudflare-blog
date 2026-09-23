@@ -98,6 +98,10 @@ function rowOf(p) {
     } : null,
     tags: [],
     comment_count: 0,
+    // 点赞数：由 fillExtras 批量回填（表还没建或查询失败就是 0，不影响浏览）
+    likes: p.like_count ? Number(p.like_count) : 0,
+    // 当前访客是否已赞：仅在文章详情页单独查询后覆盖，列表页恒为 false
+    liked: false,
   };
 }
 
@@ -163,6 +167,11 @@ async function fillExtras(db, items) {
     const it = items.find((x) => x.id === c.pid);
     if (it) it.comment_count = c.n;
   }
+  // 点赞数：单独查一次并 try 包住——点赞表还没建起来时只是显示不出数字，文章照常能看
+  try {
+    const lc = await likeCounts(db, ids);
+    for (const it of items) it.likes = lc[it.id] || 0;
+  } catch (e) { /* 点赞挂了不连累正文 */ }
 }
 
 export async function getPost(db, { id, slug } = {}) {
@@ -232,6 +241,62 @@ export async function deletePost(db, id) {
   await db.prepare('DELETE FROM comments WHERE post_id=?').bind(id).run();
   await db.prepare('DELETE FROM post_tags WHERE post_id=?').bind(id).run();
   await db.prepare('DELETE FROM posts WHERE id=?').bind(id).run();
+  // 点赞记录跟着删：不清会留下孤儿行，日后新建文章复用 id 时会凭空多出赞
+  try { await db.prepare('DELETE FROM post_likes WHERE post_id=?').bind(id).run(); } catch (e) { /* 表没建过就算了 */ }
+}
+
+// ---------- 文章点赞（Ver 0.4 ⑦） ----------
+// 设计取舍：
+// - 独立一张表，不给 posts 加 likes 冗余列：冗余列要和维护点赞表同步，两处写入一旦
+//   不一致就很难查；COUNT 查询在博客这个量级下开销可以忽略。
+// - 同一访客（blog_vid Cookie）对同一篇文章只能赞一次，再点一次是取消，所以不需要
+//   额外的限频逻辑——重复点击天然在「赞 / 取消」之间摆动。
+// - 表由代码首次用到时自动建立（CREATE TABLE IF NOT EXISTS），不强制跑迁移；
+//   老库不跑 0009 也能用，只是少了索引（本表主键即索引）。
+const LIKE_DDL = `CREATE TABLE IF NOT EXISTS post_likes(
+  post_id INTEGER NOT NULL, vid TEXT NOT NULL, created_at TEXT NOT NULL,
+  PRIMARY KEY(post_id,vid))`;
+
+let likeReady = false; // 同一 isolate 内只建一次，避免每个请求都跑 DDL
+export async function ensureLikeTable(db) {
+  if (likeReady) return;
+  await db.prepare(LIKE_DDL).run();
+  likeReady = true;
+}
+
+// 批量取点赞数：返回 { 文章id: 数量 }，没被赞过的文章不在结果里（调用方按 0 处理）
+export async function likeCounts(db, ids) {
+  const out = {};
+  if (!ids || !ids.length) return out;
+  await ensureLikeTable(db);
+  const ph = ids.map(() => '?').join(',');
+  const r = await db.prepare(
+    `SELECT post_id, COUNT(*) n FROM post_likes WHERE post_id IN (${ph}) GROUP BY post_id`
+  ).bind(...ids).all();
+  for (const x of r.results || []) out[x.post_id] = x.n;
+  return out;
+}
+
+// 切换点赞：返回 { liked, likes }；liked 为 true 表示这次点完是「已赞」
+export async function toggleLike(db, postId, vid) {
+  await ensureLikeTable(db);
+  const has = await db.prepare('SELECT 1 FROM post_likes WHERE post_id=? AND vid=?').bind(postId, vid).first();
+  if (has) {
+    await db.prepare('DELETE FROM post_likes WHERE post_id=? AND vid=?').bind(postId, vid).run();
+  } else {
+    await db.prepare('INSERT INTO post_likes(post_id,vid,created_at) VALUES(?,?,?)')
+      .bind(postId, vid, bnNow()).run();
+  }
+  return await likeState(db, postId, vid);
+}
+
+// 只读当前状态：给文章详情页回填「我赞过没」
+export async function likeState(db, postId, vid) {
+  await ensureLikeTable(db);
+  const mine = vid
+    ? await db.prepare('SELECT 1 FROM post_likes WHERE post_id=? AND vid=?').bind(postId, vid).first() : null;
+  const c = await db.prepare('SELECT COUNT(*) n FROM post_likes WHERE post_id=?').bind(postId).first();
+  return { liked: !!mine, likes: c ? c.n : 0 };
 }
 
 // 仅切换发布/下线状态（不触碰正文，保留首次发布时间）
@@ -623,6 +688,8 @@ export async function dumpAll(db) {
     // 访问统计只备份按天汇总（pv_daily），访客明细 pv_visitor 是去重用的临时数据，不进备份
     pv_daily: await g('SELECT * FROM pv_daily').catch(() => []),
     links: await g('SELECT * FROM links').catch(() => []),
+    // 点赞进备份：pv_visitor 只是 UV 去重的临时明细，点赞是内容的一部分，丢了读者会察觉
+    post_likes: await g('SELECT * FROM post_likes').catch(() => []),
   };
 }
 // 恢复：先清空再按原 id 回填（自动续接自增序列）
@@ -634,9 +701,11 @@ export async function restoreAll(db, data) {
   // 访问统计表可能还没建（老库），先确保存在再清空，否则 DELETE 会报 no such table
   await ensurePvTables(db).catch(() => {});
   await ensureLinkTable(db).catch(() => {});
+  await ensureLikeTable(db).catch(() => {});
   const clear = [
     'DELETE FROM post_tags', 'DELETE FROM comments', 'DELETE FROM posts',
     'DELETE FROM categories', 'DELETE FROM tags', 'DELETE FROM pv_daily', 'DELETE FROM links',
+    'DELETE FROM post_likes',
     "DELETE FROM settings WHERE key NOT IN ('admin_username','admin_pass_salt','admin_pass_hash','admin_pass_iter')",
   ];
   const stmts = clear.map((s) => db.prepare(s));
@@ -656,6 +725,7 @@ export async function restoreAll(db, data) {
   if (data.comments) await run(data.comments, 'comments');
   if (data.pv_daily) await run(data.pv_daily, 'pv_daily');
   if (data.links) await run(data.links, 'links');
+  if (data.post_likes) await run(data.post_likes, 'post_likes');
   for (let i = 0; i < chunk.length; i += 40) await db.batch(chunk.slice(i, i + 40));
   return chunk.length;
 }

@@ -376,6 +376,13 @@ async function permalinkRoute(env, s, path, user, origin, request, method) {
       captcha: s.get('captcha') !== '0',   // 未设置即默认开启
     }),
   ]);
+  // 点赞状态按访客回填：首屏就能显示「我已赞过」，不必等 JS 拉一次接口
+  // （没有 Cookie 说明是首次访问，那就是未赞，不用查）
+  const vid = readCookie(request, 'blog_vid');
+  if (vid) {
+    const st = await db.likeState(env.DB, post.id, String(vid).slice(0, 40)).catch(() => null);
+    if (st) { post.likes = st.likes; post.liked = st.liked; }
+  }
   return html(site.renderArticle(s, post, { siblings, comments, cfg, origin }));
 }
 
@@ -462,6 +469,34 @@ async function api(ctx, url, seg, method) {
     const b = (await readJson(request)) || {};
     if (b.slug) await db.incView(dbx, String(b.slug).slice(0, 120));
     return json({ ok: true });
+  }
+
+  // --- 文章点赞（公开） ---
+  // 同一访客（blog_vid）对同一篇文章只能赞一次，再点一次是取消，所以天然不需要额外限频。
+  // 加密文章与独立页面不给赞：前者连正文都看不到，后者没有「文章」的互动属性。
+  if (seg[0] === 'like' && method === 'POST' && seg.length === 1) {
+    if (hitGuard(request)) return json({ ok: true, ignored: true }); // 蜘蛛 / 脚本请求：不写库、不下发 Cookie
+    const b = (await readJson(request)) || {};
+    let post = null;
+    const id = parseInt(b.id, 10);
+    if (id) post = await db.getPost(dbx, { id });
+    else if (b.slug) post = await db.getPost(dbx, { slug: String(b.slug).slice(0, 120) });
+    if (!post || post.status !== 'published' || post.type === 'page') return err('文章不存在', 404);
+    if (post.locked) return err('加密文章不支持点赞', 403);
+    let vid = readCookie(request, 'blog_vid');
+    let cookie = '';
+    if (!vid) {
+      vid = newVisitorId();
+      cookie = `blog_vid=${vid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`;
+    }
+    let st = { likes: 0, liked: false };
+    try {
+      st = await db.toggleLike(dbx, post.id, String(vid).slice(0, 40));
+    } catch (e) {
+      console.error('like error:', e);
+      return err('点赞失败，请稍后再试', 500);
+    }
+    return jset({ ok: true, likes: st.likes, liked: st.liked }, cookie);
   }
 
   // --- 站点访问上报（公开）：全站 PV / UV，按天聚合 ---
@@ -845,6 +880,8 @@ async function api(ctx, url, seg, method) {
     for (const k of ['categories', 'tags', 'archive', 'links', 'rss']) {
       if (b['nav_show_' + k] != null) await db.setSetting(dbx, 'nav_show_' + k, b['nav_show_' + k] ? '1' : '0');
     }
+    // ---- 全站灰度：默认关，启用后整站转灰（优先级高于主题） ----
+    if (b.gray_mode != null) await db.setSetting(dbx, 'gray_mode', b.gray_mode ? '1' : '0');
     // ---- 邮件通知 ----
     // 端口必须是该服务商真开了的（163 没有 587、Office365 没有 465）。
     // 存了不支持的组合，现象是「连上就断」或「干等到超时」，与账号密码无关、极难排查，所以入库前拦住。

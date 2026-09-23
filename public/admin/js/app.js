@@ -1521,6 +1521,14 @@ async function viewSettings(tabArg) {
           <div class="field"><label>站点地图（提交给搜索引擎）</label><input class="inp" readonly value="${esc(location.origin)}/sitemap.xml" onfocus="this.select()"></div>
           <div class="field"><label>站点主页</label><input class="inp" readonly value="${esc(location.origin)}" onfocus="this.select()"></div>
         </div>
+        <div class="card">
+          <div class="sec-title">全站灰度 <small>整个站点转为黑白</small></div>
+          <div class="nav-toggles">
+            <label><input type="checkbox" id="s-gray_mode"> 启用全站灰度</label>
+          </div>
+          <p class="hint" style="margin-bottom:0">启用后前台与编辑器预览里的所有内容（含图片、代码块配色）统一变灰。
+            <b>此项优先级最高：更换主题、改主题色都不会影响它</b>，取消勾选即可恢复。默认不启用。</p>
+        </div>
       </div>
     </div>
 
@@ -1725,6 +1733,8 @@ async function viewSettings(tabArg) {
   for (const k of ['categories', 'tags', 'archive', 'links', 'rss']) {
     v.querySelector('#s-nav_' + k).checked = s['nav_show_' + k] !== '0';
   }
+  // ---- 全站灰度：默认关，只有明确存了 '1' 才勾上 ----
+  v.querySelector('#s-gray_mode').checked = s.gray_mode === '1';
 
   // ---- 邮件通知：服务商预设 / 授权码提醒 / 测试发送 ----
   const mpSel = v.querySelector('#s-mail_provider');
@@ -2061,6 +2071,8 @@ async function viewSettings(tabArg) {
       nav_show_archive: v.querySelector('#s-nav_archive').checked,
       nav_show_links: v.querySelector('#s-nav_links').checked,
       nav_show_rss: v.querySelector('#s-nav_rss').checked,
+      // 全站灰度：优先级最高的显示设置，换主题也不受影响
+      gray_mode: v.querySelector('#s-gray_mode').checked,
       logo_image: logoIn.value.trim(),
       favicon_image: favIn.value.trim(),
       mail_enabled: v.querySelector('#s-mail_enabled').checked,
