@@ -860,6 +860,30 @@ export async function listPages(db, { status = 'published', inNav = false } = {}
 }
 
 // ---------- 归档 / 全量导出（备份用） ----------
+// 归档页顶部的规模统计（Ver 0.4 ⑭）：文章 / 分类 / 标签 / 评论四项来自固定表，一次查询取齐；
+// 友链与友圈订阅是可选表（老库、极端情况下没建起来），单独查并各自兜底 —— 少一项统计
+// 只是少个数字，绝不能让整个归档页 500。
+export async function archiveStats(db) {
+  await ensurePostCols(db);
+  const r = await db.prepare(
+    // 只算文章：独立页面（type='page'）没有发布时间，纳入统计会让「文章总数」虚高
+    `SELECT
+       (SELECT COUNT(*) FROM posts WHERE status='published' AND type='post') AS posts,
+       (SELECT COUNT(*) FROM categories) AS cats,
+       (SELECT COUNT(*) FROM tags) AS tags,
+       (SELECT COUNT(*) FROM comments WHERE status='approved') AS comments`).first();
+  const out = {
+    posts: Number((r && r.posts) || 0),
+    cats: Number((r && r.cats) || 0),
+    tags: Number((r && r.tags) || 0),
+    comments: Number((r && r.comments) || 0),
+    links: 0,
+    feeds: 0,
+  };
+  out.links = await countLinksByStatus(db).then((x) => Number(x.approved) || 0).catch(() => 0);
+  out.feeds = await countFeeds(db).catch(() => 0);
+  return out;
+}
 export async function archivePosts(db) {
   await ensurePostCols(db);
   const r = await db.prepare(

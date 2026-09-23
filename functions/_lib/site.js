@@ -265,14 +265,40 @@ img{max-width:100%}
 /* 归档/标签页等 */
 .page-head h1{font-size:27px;margin:0 0 4px}
 .page-head .desc{color:var(--muted);font-size:14.5px;margin:0 0 16px}
-.arc-y{margin-bottom:22px}
-.arc-y>h2{font-size:20px;border-bottom:2px solid var(--line);padding-bottom:8px;margin:0 0 12px}
-.arc-m{margin:6px 0 4px;font-weight:600;color:var(--text-soft)}
-.arc-m ul{margin:4px 0 10px;padding-left:22px}
-.arc-m li{margin:3px 0}
-.arc-m a{color:var(--text)}
-.arc-m a:hover{color:var(--accent)}
-.arc-m time{color:var(--muted);font-size:13px;margin-right:10px}
+/* 归档（Ver 0.4 ⑭）：顶部规模统计 → 分类/热门标签分布 → 可按年、按月折叠的时间线。
+   折叠用原生 <details>，脚本没跑也能点开；展开与否靠 [open] 属性，箭头纯 CSS 旋转。 */
+.arc-hero h1{display:flex;align-items:center;gap:10px}
+.arc-hero h1 svg{width:26px;height:26px;flex:none;color:var(--accent)}
+.arc-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin:0 0 16px}
+.arc-stat{display:flex;flex-direction:column;gap:3px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.arc-stat b{font-size:24px;line-height:1.15;color:var(--accent);font-variant-numeric:tabular-nums}
+.arc-stat span{font-size:12.5px;color:var(--muted)}
+.arc-block{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 22px;margin:0 0 16px}
+.arc-h2{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 12px;font-size:14.5px;font-weight:600;color:var(--text-soft)}
+.arc-more{font-size:13px;font-weight:400;color:var(--muted)}
+.arc-more:hover{color:var(--accent);text-decoration:none}
+.arc-block .chips{margin:0}
+.arc-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 10px}
+.arc-tabs{display:inline-flex;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:3px}
+.arc-tabs a{padding:5px 16px;border-radius:8px;font-size:13.5px;color:var(--text-soft)}
+.arc-tabs a:hover{color:var(--text);text-decoration:none}
+.arc-tabs a.on{background:var(--accent);color:var(--on-accent)}
+.arc-sum{font-size:13px;color:var(--muted)}
+.arc-g{border-top:1px solid var(--line)}
+.arc-g:first-child{border-top:0}
+.arc-gh{display:flex;align-items:center;gap:10px;padding:12px 2px;cursor:pointer;list-style:none}
+.arc-gh::-webkit-details-marker{display:none}
+.arc-gh:hover .arc-gt{color:var(--accent)}
+.arc-chev{width:8px;height:8px;flex:none;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(-45deg);transition:transform .18s}
+.arc-g[open] .arc-chev{transform:rotate(45deg)}
+.arc-gt{font-size:16px;font-weight:600}
+.arc-gc{margin-left:auto;font-size:13px;color:var(--muted)}
+.arc-gb{padding:0 0 12px 18px}
+.arc-i{display:flex;align-items:baseline;gap:12px;padding:5px 0}
+.arc-d{flex:none;width:50px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.arc-link{color:var(--text);font-size:15px}
+.arc-link:hover{color:var(--accent)}
+@media(max-width:640px){.arc-block{padding:16px 14px}.arc-gb{padding-left:8px}}
 .tags-cloud{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px}
 .tag-pill{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 16px;font-size:14px;color:var(--text)}
 .tag-pill b{color:var(--muted);font-weight:400;font-size:12.5px}
@@ -762,25 +788,120 @@ export function renderComments(s, post, comments, cfg) {
   </section>`;
 }
 
-// ---------- 归档 ----------
-export function archiveContent(s, posts) {
-  const years = {};
-  for (const p of posts) {
-    const d = (p.published_at || '').slice(0, 7);
-    const y = d.slice(0, 4);
-    (years[y] = years[y] || {})[d] = years[y][d] || [];
-    years[y][d].push(p);
+// ---------- 归档（Ver 0.4 ⑭） ----------
+// 结构：站点规模统计 → 分类与热门标签分布 → 时间线。
+// 时间线分「按年份 / 按月份」两种（?view=month 切换，服务端渲染，不依赖脚本）；
+// 折叠用原生 <details>，脚本没跑也能点开；默认只展开最新的一组。
+const ARC_ICO = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4.5h7.2L18 8.3V19H7a1.5 1.5 0 0 1-1.5-1.5V6A1.5 1.5 0 0 1 7 4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 4.5V8h4M8.5 11h6M8.5 14h6M8.5 17h3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+// 分组键：年份视图取 yyyy，月份视图取 yyyy-mm；没发布时间的归一组放最后（正常不会有）
+function arcGroups(posts, view) {
+  const g = new Map();
+  for (const p of posts || []) {
+    const d = String(p.published_at || '');
+    const key = d.slice(0, view === 'month' ? 7 : 4) || '0';
+    if (!g.has(key)) g.set(key, []);
+    g.get(key).push(p);
   }
-  const yearsArr = Object.keys(years).sort((a, b) => b - a);
-  // 无文章时返回空串：空态交给 renderListPage 统一渲染（否则归档页会同时出现列表和「还没有发布文章」）
-  if (!yearsArr.length) return '';
-  return yearsArr.map((y) => `
-    <section class="arc-y"><h2>${y}</h2>
-      ${Object.keys(years[y]).sort((a, b) => b - a).map((m) => `
-        <div class="arc-m">${m}
-          <ul>${years[y][m].map((p) => `<li><time>${(p.published_at || '').slice(0, 10)}</time><a href="${esc(postUrl(s, p))}">${esc(p.title)}</a></li>`).join('')}</ul>
-        </div>`).join('')}
-    </section>`).join('');
+  // 新的在前；'0'（无日期）字典序最小，这样排完自然落到最后
+  return [...g.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+}
+
+function arcGroupTitle(key, view) {
+  if (key === '0') return '未标注日期';
+  if (view === 'month') return `${key.slice(0, 4)} 年 ${parseInt(key.slice(5, 7), 10)} 月`;
+  return `${key} 年`;
+}
+
+function arcItem(s, p, view) {
+  const d = String(p.published_at || '');
+  const day = d.slice(0, 10);
+  // 年份视图的分组只有年，条目得带上月；月份视图分组已是当月，条目只留「日」
+  const label = (view === 'month' ? d.slice(8, 10) : d.slice(5, 10)) || day || '—';
+  return `<article class="arc-i"><time class="arc-d"${day ? ` datetime="${esc(day)}"` : ''}>${esc(label)}</time>`
+    + `<a class="arc-link" href="${esc(postUrl(s, p))}">${esc(p.title)}</a></article>`;
+}
+
+// 记住各分组的展开状态。纯增强：脚本没跑就回到「只展开最新一组」的默认样子，不影响阅读。
+// 分组数量变了（发了新文章、跨了新年份）就丢弃记忆，避免状态错位。
+const ARC_KEEP = '<script>(function(){try{'
+  + "var g=document.querySelectorAll('details.arc-g');if(g.length<2)return;var k='arc-open';var v=null;"
+  + "try{v=JSON.parse(localStorage.getItem(k)||'null')}catch(e){v=null}"
+  + 'if(v&&v.length===g.length){for(var i=0;i<g.length;i++)g[i].open=!!v[i]}'
+  + 'var save=function(){var a=[];for(var j=0;j<g.length;j++)a.push(g[j].open);'
+  + "try{localStorage.setItem(k,JSON.stringify(a))}catch(e){}};"
+  + "for(var n=0;n<g.length;n++)g[n].addEventListener('toggle',save)}catch(e){}})();</script>";
+
+export function renderArchive(s, { posts = [], stats = {}, cats = [], tags = [], view = 'year' } = {}) {
+  const list = (posts || []).filter(Boolean);
+  const siteTitle = String(s.get('site_title') || '').trim() || '本站';
+  const sub = String(s.get('site_subtitle') || '').trim();
+  if (!list.length) {
+    return layout(s, {
+      title: '归档', active: 'arc',
+      content: `<section class="page-head arc-hero"><h1>${ARC_ICO}文章归档</h1></section>`
+        + '<div class="empty">还没有发布文章</div>',
+    });
+  }
+  const groups = arcGroups(list, view);
+  const yearSet = new Set();
+  for (const p of list) {
+    const y = String(p.published_at || '').slice(0, 4);
+    if (y) yearSet.add(y);
+  }
+  const span = yearSet.size > 1 ? `，横跨 ${yearSet.size} 个年份` : '';
+  const desc = sub || `收录了 ${list.length} 篇文章${span}`;
+
+  // 规模统计：友链与友圈订阅没有内容时不出格子，免得新站顶着一排 0
+  const st = (n, t) => `<div class="arc-stat"><b>${Number(n) || 0}</b><span>${t}</span></div>`;
+  const statHtml = [
+    st(stats.posts || list.length, '篇文章'),
+    st(stats.cats || 0, '个分类'),
+    st(stats.tags || 0, '个标签'),
+    st(stats.comments || 0, '条评论'),
+    Number(stats.links) > 0 ? st(stats.links, '个友链') : '',
+    Number(stats.feeds) > 0 ? st(stats.feeds, '个订阅') : '',
+  ].filter(Boolean).join('');
+
+  // 分类按树序排（二级紧跟在自己的父分类后面），和「全部分类」页保持一致 ——
+  // listCategories() 是按 parent_id 排的，二级会全部堆到最后，看起来像散落的平级分类
+  const catBlock = cats.length
+    ? `<section class="arc-block">
+      <h2 class="arc-h2">分类统计<a class="arc-more" href="/categories">全部 ${cats.length} 个 →</a></h2>
+      ${catChips(db.treeCategories(cats), '/category')}
+    </section>` : '';
+  // 标签动辄上百个，这里只挑文章最多的 20 个当门面，其余去「全部标签」看
+  const topTags = [...tags].sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 20);
+  const tagBlock = topTags.length
+    ? `<section class="arc-block">
+      <h2 class="arc-h2">热门标签<a class="arc-more" href="/tags">全部 ${tags.length} 个 →</a></h2>
+      ${catChips(topTags, '/tag')}
+    </section>` : '';
+
+  const tabs = `<span class="arc-tabs">`
+    + `<a href="/archive"${view === 'month' ? '' : ' class="on"'}>按年份</a>`
+    + `<a href="/archive?view=month"${view === 'month' ? ' class="on"' : ''}>按月份</a></span>`;
+  const items = groups.map(([key, arr], i) => `<details class="arc-g"${i === 0 ? ' open' : ''}>
+      <summary class="arc-gh"><span class="arc-chev" aria-hidden="true"></span>`
+    + `<span class="arc-gt">${esc(arcGroupTitle(key, view))}</span>`
+    + `<span class="arc-gc">${arr.length} 篇</span></summary>
+      <div class="arc-gb">${arr.map((p) => arcItem(s, p, view)).join('')}</div>
+    </details>`).join('');
+
+  return layout(s, {
+    title: '归档', active: 'arc', desc: `${siteTitle} 的文章归档，共 ${list.length} 篇`,
+    content: `<section class="page-head arc-hero">
+      <h1>${ARC_ICO}文章归档</h1>
+      <p class="desc">${esc(siteTitle)} · ${esc(desc)}</p>
+    </section>
+    <section class="arc-stats">${statHtml}</section>
+    ${catBlock}${tagBlock}
+    <section class="arc-block">
+      <div class="arc-bar">${tabs}<span class="arc-sum">共 ${list.length} 篇 · ${groups.length} ${view === 'month' ? '个月份' : '个年份'}</span></div>
+      ${items}
+    </section>
+    ${ARC_KEEP}`,
+  });
 }
 
 // ---------- 分类 / 标签总览页 ----------

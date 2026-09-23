@@ -251,13 +251,18 @@ async function front(ctx, url, seg, method, path) {
     }));
   }
 
-  // 归档
+  // 归档（Ver 0.4 ⑭）：默认按年份分组，?view=month 换成按月份
   if (seg[0] === 'archive' && seg.length === 1) {
-    const posts = await db.archivePosts(env.DB);
-    return html(site.renderListPage(s, {
-      head: '文章归档', active: 'arc', title: '归档',
-      itemsHtml: '', empty: '还没有发布文章', extra: site.archiveContent(s, posts),
-    }));
+    const view = url.searchParams.get('view') === 'month' ? 'month' : 'year';
+    const DB = env.DB;
+    // 统计 / 分类 / 标签都是锦上添花：任何一项查挂了最多少块内容，不能让整个归档页 500
+    const [posts, stats, cats, tags] = await Promise.all([
+      db.archivePosts(DB),
+      db.archiveStats(DB).catch(() => ({})),
+      db.listCategories(DB).catch(() => []),
+      db.listTags(DB).catch(() => []),
+    ]);
+    return html(site.renderArchive(s, { posts, stats, cats, tags, view }));
   }
 
   // 友情链接 /links：已通过的友链 + 读者申请表单
