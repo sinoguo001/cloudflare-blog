@@ -303,8 +303,8 @@ async function viewPosts() {
       // 草稿不给置顶入口——前台本来就看不到它，占了优先级反而像置顶失效了。
       const btnPin = p.pinned
         ? `<span class="pin-tag" title="置顶优先级：第 ${rank} 位，列表自上而下即由高到低">📌 置顶 #${rank}</span>
-           <button class="btn sm" data-act="pinup" data-id="${p.id}" title="上移一位（优先级更高）">↑</button>
-           <button class="btn sm" data-act="pindown" data-id="${p.id}" title="下移一位（优先级更低）">↓</button>
+           <button class="btn sm pin-arrow" data-act="pinup" data-id="${p.id}" title="上移一位（优先级更高）">↑</button>
+           <button class="btn sm pin-arrow" data-act="pindown" data-id="${p.id}" title="下移一位（优先级更低）">↓</button>
            <button class="btn sm g" data-act="pin" data-id="${p.id}" title="取消置顶">取消置顶</button>`
         : (p.status === 'published'
           ? `<button class="btn sm" data-act="pin" data-id="${p.id}" title="置顶到文章列表最前">📌 置顶</button>`
