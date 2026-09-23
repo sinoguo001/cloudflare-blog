@@ -290,11 +290,25 @@ async function viewPosts() {
       listEl.innerHTML = `<div class="empty-note">${listTab === 'all' ? '还没有文章，点右上角「写文章」开始创作。' : listTab === 'draft' ? '暂无草稿' : '还没有已发布文章'}</div>`;
       return;
     }
+    // 置顶文章在后端就排在最前，这里按出现顺序编号：1 = 优先级最高（也可以直接看列表上下位置）
+    let pinSeq = (data.page - 1) * data.per;
     const rows = data.items.map((p) => {
+      if (p.pinned) pinSeq += 1;
+      const rank = pinSeq;
       const cat = p.category ? `<a class="cell-sub" href="#/categories">${esc(p.category.name)}</a>` : '';
       const tags = (p.tags || []).map((t) => `<span class="tag-mini">${esc(t.name)}</span>`).join('');
       const st = p.status === 'published' ? '<span class="st published">已发布</span>' : '<span class="st draft">草稿</span>';
       const lockTag = p.locked ? '<span class="tag-mini lock">🔒 加密</span>' : '';
+      // 置顶操作：已置顶的给「上移 / 下移 / 取消」，未置顶的给一个「置顶」按钮。
+      // 草稿不给置顶入口——前台本来就看不到它，占了优先级反而像置顶失效了。
+      const btnPin = p.pinned
+        ? `<span class="pin-tag" title="置顶优先级：第 ${rank} 位，列表自上而下即由高到低">📌 置顶 #${rank}</span>
+           <button class="btn sm" data-act="pinup" data-id="${p.id}" title="上移一位（优先级更高）">↑</button>
+           <button class="btn sm" data-act="pindown" data-id="${p.id}" title="下移一位（优先级更低）">↓</button>
+           <button class="btn sm g" data-act="pin" data-id="${p.id}" title="取消置顶">取消置顶</button>`
+        : (p.status === 'published'
+          ? `<button class="btn sm" data-act="pin" data-id="${p.id}" title="置顶到文章列表最前">📌 置顶</button>`
+          : '');
       const btnPub = p.status === 'published'
         ? `<button class="btn sm g" data-act="unpub" data-id="${p.id}" data-slug="${esc(p.slug)}">下线</button>`
         : `<button class="btn sm ok" data-act="pub" data-id="${p.id}">发布</button>`;
@@ -302,12 +316,12 @@ async function viewPosts() {
       const purl = p.url || ('/post/' + p.slug);
       const viewL = p.status === 'published' ? `<a class="btn sm g" href="${esc(purl)}" target="_blank" rel="noopener">查看</a>` : '';
       return `<tr>
-        <td><div class="cell-title">${esc(p.title)}${st}${lockTag}</div>
+        <td><div class="cell-title">${esc(p.title)}${p.pinned ? '<span class="pin-mini" title="已置顶">📌</span>' : ''}${st}${lockTag}</div>
           <div class="cell-sub">${esc(purl)} ${cat ? ' · ' + cat : ''}</div></td>
         <td>${tags || '<span class="cell-sub">无标签</span>'}</td>
         <td style="white-space:nowrap">${fmtTime(p.published_at || p.updated_at)}</td>
         <td style="white-space:nowrap">${p.view_count || 0} / ${p.comment_count || 0}</td>
-        <td style="white-space:nowrap"><a class="btn sm" href="#/posts/${p.id}">编辑</a>${btnPub}${viewL}
+        <td style="white-space:nowrap"><a class="btn sm" href="#/posts/${p.id}">编辑</a>${btnPin}${btnPub}${viewL}
           <button class="btn sm d" data-act="del" data-id="${p.id}" data-title="${esc(p.title)}">删除</button></td>
       </tr>`;
     }).join('');
@@ -334,6 +348,19 @@ async function viewPosts() {
           } else if (act === 'unpub') {
             await API.post('/posts/' + id + '/publish', { status: 'draft' });
             toast('已下线为草稿');
+          } else if (act === 'pin' || act === 'pinup' || act === 'pindown') {
+            // 后端回调整后的置顶顺序；前端不自己算优先级数字，只按 action 调接口再刷新列表
+            const action = act === 'pin' ? 'toggle' : (act === 'pinup' ? 'up' : 'down');
+            const r = await API.post('/pin', { id: parseInt(id, 10), action });
+            if (action === 'toggle') {
+              toast(r.pinned.indexOf(parseInt(id, 10)) >= 0
+                ? '已置顶 ✓ 前台首页 / 分类 / 标签 / 搜索都会把它排在文章列表最前'
+                : '已取消置顶');
+            } else {
+              toast(r.moved === false
+                ? (action === 'up' ? '已经在置顶里最靠前了' : '已经在置顶里最靠后了')
+                : '置顶顺序已调整 ✓');
+            }
           }
           loadList();
         } catch (e) { toast(e.message, 'bad'); }

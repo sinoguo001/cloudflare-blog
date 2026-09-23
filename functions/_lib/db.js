@@ -50,6 +50,8 @@ export async function ensurePostCols(db) {
     if (!cols.has('in_nav')) await db.prepare('ALTER TABLE posts ADD COLUMN in_nav INTEGER NOT NULL DEFAULT 1').run();
     // 文章访问密码（空串=不加密）
     if (!cols.has('password')) await db.prepare("ALTER TABLE posts ADD COLUMN password TEXT NOT NULL DEFAULT ''").run();
+    // 文章置顶优先级（0=不置顶，越大越靠前）；列表排序要用，缺列会整站 500
+    if (!cols.has('pin')) await db.prepare('ALTER TABLE posts ADD COLUMN pin INTEGER NOT NULL DEFAULT 0').run();
     postColsReady = true;
     // 顺带补 categories：文章查询要联父分类别名，少这一列会整站 500
     await ensureCatCols(db);
@@ -98,6 +100,10 @@ function rowOf(p) {
     } : null,
     tags: [],
     comment_count: 0,
+    // 置顶（Ver 0.4 ⑪）：pin 是优先级数值（0=未置顶），pinned 只是给模板用的布尔值。
+    // 前台角标一律看 pinned，避免模板里到处写 p.pin > 0。
+    pinned: Number(p.pin) > 0,
+    pin: Number(p.pin) || 0,
     // 点赞数：由 fillExtras 批量回填（表还没建或查询失败就是 0，不影响浏览）
     likes: p.like_count ? Number(p.like_count) : 0,
     // 当前访客是否已赞：仅在文章详情页单独查询后覆盖，列表页恒为 false
@@ -108,7 +114,7 @@ function rowOf(p) {
 // type：'post' 文章（默认）| 'page' 独立页面 | 'all' 两者都要
 // 默认只取文章：首页 / 分类 / 标签 / 归档 / 搜索 / RSS 都不该出现「关于我」这类页面，
 // 除非调用方显式传 type，页面由此天然与文章流隔离。
-export async function listPosts(db, { status = 'published', type = 'post', cat, tag, q, inNav, unlockedOnly, page = 1, per = 8 } = {}) {
+export async function listPosts(db, { status = 'published', type = 'post', cat, tag, q, inNav, unlockedOnly, pinFirst = true, page = 1, per = 8 } = {}) {
   await ensurePostCols(db);
   await ensureCatCols(db);
   const where = [], b = [];
@@ -142,7 +148,13 @@ export async function listPosts(db, { status = 'published', type = 'post', cat, 
   const cnt = await db.prepare(`SELECT COUNT(*) n FROM posts p LEFT JOIN categories c ON c.id=p.category_id ${w}`).bind(...b).first();
   const total = cnt ? cnt.n : 0;
   const pg = paginate(page, per, total);
-  const rows = await db.prepare(`${POST_SEL} ${w} ORDER BY COALESCE(p.published_at,p.updated_at) DESC LIMIT ? OFFSET ?`)
+  // 置顶优先（Ver 0.4 ⑪）：pin 大的排最前；未置顶的文章 pin 都是 0，自然回到时间倒序。
+  // 归档页走 archivePosts（按时间分组），不受这里影响；pinFirst=false 给「最近文章」这类
+  // 语义上必须严格按时间的列表用。
+  const order = pinFirst
+    ? 'ORDER BY p.pin DESC, COALESCE(p.published_at,p.updated_at) DESC'
+    : 'ORDER BY COALESCE(p.published_at,p.updated_at) DESC';
+  const rows = await db.prepare(`${POST_SEL} ${w} ${order} LIMIT ? OFFSET ?`)
     .bind(...b, per, pg.offset).all();
   const items = (rows.results || []).map(rowOf);
   await fillExtras(db, items);
@@ -308,6 +320,54 @@ export async function setPostStatus(db, id, status) {
   await db.prepare('UPDATE posts SET status=?,published_at=?,updated_at=? WHERE id=?')
     .bind(status, published_at, t, id).run();
   return true;
+}
+
+// ---------- 文章置顶（Ver 0.4 ⑪） ----------
+// 取舍：只用 posts 上的一个 pin 整数，不另开置顶表 —— 置顶是文章自己的属性，跟着文章走最直观；
+// 删文章不需要额外清理，备份（dumpAll 用 SELECT *）与恢复（按键名回填）都不用专门照顾。
+// pin 的数值由服务端独占维护：每次变动都按当前展示顺序把已置顶文章重排成连续的 1..N
+// （排最前的那篇 pin = N 最大，最后那篇 = 1）。因此永远不会出现并列，也不依赖魔法数值。
+async function pinnedIds(db) {
+  const r = await db.prepare(
+    "SELECT id FROM posts WHERE pin>0 AND type='post' ORDER BY pin DESC, id ASC"
+  ).all();
+  return (r.results || []).map((x) => x.id);
+}
+
+// action：'toggle' 置顶／取消置顶 | 'up' 上移一位 | 'down' 下移一位
+// 返回 { ok, list }：list 是调整后的置顶 id 顺序（从前到后），调用方可以直接用来重排界面。
+export async function pinPost(db, id, action) {
+  await ensurePostCols(db);
+  const post = await db.prepare('SELECT id,status,type FROM posts WHERE id=?').bind(id).first();
+  if (!post) return { ok: false, code: 404, error: '文章不存在' };
+  if (post.type !== 'post') return { ok: false, code: 400, error: '独立页面不支持置顶' };
+
+  let list = await pinnedIds(db);
+  const at = list.indexOf(id);
+
+  if (action === 'toggle') {
+    // 草稿不给置顶：前台本来就看不到它，占着优先级只会让人以为置顶失效了
+    if (at < 0 && post.status !== 'published') {
+      return { ok: false, code: 400, error: '草稿不能置顶，请先发布' };
+    }
+    // 新置顶的排最前：刚点完就能在列表顶部看到它，符合直觉
+    list = at >= 0 ? list.filter((x) => x !== id) : [id, ...list];
+  } else if (action === 'up' || action === 'down') {
+    if (at < 0) return { ok: false, code: 400, error: '这篇文章没有置顶' };
+    const to = action === 'up' ? at - 1 : at + 1;
+    if (to < 0 || to >= list.length) return { ok: true, list, moved: false }; // 已在顶/底，静默不动
+    list[at] = list[to];
+    list[to] = id;
+  } else {
+    return { ok: false, code: 400, error: '不支持的操作' };
+  }
+
+  // 回写：先把所有置顶清零，再按新顺序赋连续值。即使库里因历史原因有脏数据也会被一并修正。
+  const n = list.length;
+  const stmts = [db.prepare('UPDATE posts SET pin=0 WHERE pin<>0')];
+  list.forEach((pid, i) => stmts.push(db.prepare('UPDATE posts SET pin=? WHERE id=?').bind(n - i, pid)));
+  await db.batch(stmts);
+  return { ok: true, list };
 }
 
 export async function incView(db, slug) {

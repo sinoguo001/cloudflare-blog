@@ -201,7 +201,7 @@ async function front(ctx, url, seg, method, path) {
       const tags = (p.tags || []).map((t) => `<a class="tag-chip" href="/tag/${esc(t.slug)}">${esc(t.name)}</a>`).join('');
       return `<article class="pc${cover ? '' : ' no-cover'}"><div>
         <div class="pc-meta"><time>${esc(p.published_at || '').slice(0, 10)}</time><span class="dot">·</span><span>阅读 ${p.view_count || 0}</span></div>
-        <h2 class="pc-title"><a href="${u}">${esc(p.title)}</a></h2>
+        <h2 class="pc-title">${site.pinBadge(p)}<a href="${u}">${esc(p.title)}</a></h2>
         ${p.excerpt ? `<p class="pc-excerpt">${esc(p.excerpt)}</p>` : ''}
         ${tags ? `<div class="pc-tags">${tags}</div>` : ''}</div>${cover}</article>`;
     }).join('');
@@ -237,7 +237,7 @@ async function front(ctx, url, seg, method, path) {
     const data = await db.listPosts(env.DB, { status: 'published', tag: slug, page, per });
     const itemsHtml = data.items.map((p) => `<article class="pc no-cover"><div>
       <div class="pc-meta"><time>${esc(p.published_at || '').slice(0, 10)}</time><span class="dot">·</span><span>${p.view_count || 0} 阅读</span></div>
-      <h2 class="pc-title"><a href="${esc(postUrl(s, p))}">${esc(p.title)}</a></h2></div></article>`).join('');
+      <h2 class="pc-title">${site.pinBadge(p)}<a href="${esc(postUrl(s, p))}">${esc(p.title)}</a></h2></div></article>`).join('');
     const makeUrl = (n) => (n <= 1 ? `/tag/${slug}` : `/tag/${slug}/page/${n}`);
     return html(site.renderListPage(s, {
       head: `标签：${tag.name}`, active: 'tags', title: tag.name, desc: `共 ${data.total} 篇相关文章`,
@@ -277,7 +277,7 @@ async function front(ctx, url, seg, method, path) {
       total = data.total;
       itemsHtml = data.items.map((p) => `<article class="pc no-cover"><div>
         <div class="pc-meta"><time>${esc(p.published_at || '').slice(0, 10)}</time><span class="dot">·</span><span>${p.view_count || 0} 阅读</span></div>
-        <h2 class="pc-title">${p.locked ? '<span class="lock-mark">🔒</span>' : ''}<a href="${esc(postUrl(s, p))}">${esc(p.title)}</a></h2>
+        <h2 class="pc-title">${site.pinBadge(p)}${p.locked ? '<span class="lock-mark">🔒</span>' : ''}<a href="${esc(postUrl(s, p))}">${esc(p.title)}</a></h2>
         ${p.locked ? '<p class="pc-excerpt lock-note">本文已加密，需输入密码访问</p>'
     : (p.excerpt ? `<p class="pc-excerpt">${esc(p.excerpt)}</p>` : '')}</div></article>`).join('');
     }
@@ -771,7 +771,8 @@ async function api(ctx, url, seg, method) {
     const [st, pending, recent, cmts, top, mPosts, mCmts, words, views, pv, linkCnt, linkPending, sm] = await Promise.all([
       db.stats(dbx),
       db.listComments(dbx, { status: 'pending', limit: 5 }),
-      db.listPosts(dbx, { status: 'all', page: 1, per: 6 }),
+      // 「最近文章」语义上就是按时间排，置顶不该插进来（pinFirst:false）
+      db.listPosts(dbx, { status: 'all', per: 6, pinFirst: false }),
       db.listComments(dbx, { status: 'all', limit: 6 }),
       dbx.prepare(`SELECT p.id,p.title,p.slug,p.view_count,p.published_at,c.slug AS cat_slug FROM posts p
                    LEFT JOIN categories c ON c.id=p.category_id WHERE p.status='published'
@@ -1048,6 +1049,18 @@ async function api(ctx, url, seg, method) {
       }
     }
     return err('接口不存在', 404);
+  }
+
+  // --- 文章置顶（Ver 0.4 ⑪）---
+  // action：toggle 置顶／取消 | up 上移一位 | down 下移一位
+  // 只回一个调整后的置顶顺序，前端据此重排即可，不必自己算优先级数字。
+  if (seg[0] === 'pin' && method === 'POST' && seg.length === 1) {
+    const b = (await readJson(request)) || {};
+    const id = parseInt(b.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return err('缺少文章 id');
+    const r = await db.pinPost(dbx, id, String(b.action || 'toggle'));
+    if (!r.ok) return err(r.error, r.code || 400);
+    return json({ ok: true, pinned: r.list, moved: r.moved !== false });
   }
 
   // --- 文章管理 ---

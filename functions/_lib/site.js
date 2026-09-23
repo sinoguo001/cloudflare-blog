@@ -212,6 +212,10 @@ img{max-width:100%}
 /* 加密文章：列表里的锁标记与提示 */
 .lock-mark{font-size:15px;margin-right:4px}
 .lock-note{color:var(--muted)!important;font-style:normal}
+/* 置顶角标（Ver 0.4 ⑪）：跟着主题色走，实心底 + 反白字，和浅底的标签有区分 */
+.pin-badge{display:inline-block;background:var(--accent);color:var(--on-accent);font-size:12.5px;
+  font-weight:600;letter-spacing:.5px;padding:1px 8px;border-radius:6px;margin-right:8px;
+  vertical-align:2px;white-space:nowrap}
 /* 密码页 */
 .lock-box{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:34px 30px;text-align:center;margin-top:6px}
 .lock-ico{font-size:36px;line-height:1;margin-bottom:10px}
@@ -479,6 +483,10 @@ function catChips(list, base = '/category') {
   // base 分两种：分类用 /category（二级分类拼成 父/子），标签用 /tag（只有一级）
   return `<div class="chips">${list.map((c) => `<a class="chip${c.parent_id ? ' chip-sub' : ''}" href="${base}/${esc(c.full_slug || c.slug)}">${c.parent_id ? '<i class="sub-mark">└</i>' : ''}${esc(c.name)}<b> ${c.count || 0}</b></a>`).join('')}</div>`;
 }
+// 置顶角标（Ver 0.4 ⑪）：首页卡片走 postCard，但分类 / 标签 / 搜索页各自手写了卡片模板，
+// 统一由这里产出，免得以后改样式漏掉某处。
+export const pinBadge = (p) => (p && p.pinned ? '<span class="pin-badge">置顶</span>' : '');
+
 // p 之后可传设置 Map s；传了就用「永久链接」规则生成地址，否则退回 /post/:slug
 function postCard(p, s) {
   const url = esc(s ? postUrl(s, p) : '/post/' + p.slug);
@@ -499,7 +507,7 @@ function postCard(p, s) {
       <span class="dot">·</span><span>${p.comment_count || 0} 评论</span>
       ${p.likes ? `<span class="dot">·</span><span class="like-count-mini">♥ ${p.likes}</span>` : ''}
     </div>
-    <h2 class="pc-title">${locked ? '<span class="lock-mark">🔒</span>' : ''}<a href="${url}">${esc(p.title)}</a></h2>
+    <h2 class="pc-title">${pinBadge(p)}${locked ? '<span class="lock-mark">🔒</span>' : ''}<a href="${url}">${esc(p.title)}</a></h2>
     ${locked ? '<p class="pc-excerpt lock-note">本文已加密，需输入密码访问</p>'
       : (excerpt ? `<p class="pc-excerpt">${esc(excerpt)}</p>` : '')}
     ${tags ? `<div class="pc-tags">${tags}</div>` : ''}
@@ -606,7 +614,7 @@ export function renderArticle(s, post, extra) {
   const content = `
     <p class="crumb"><a href="/">首页</a> / ${crumbCat(post.category)}正文</p>
     <article class="article">
-      <h1>${esc(post.title)}</h1>
+      <h1>${pinBadge(post)}${esc(post.title)}</h1>
       <div class="art-meta">${meta}</div>
       ${cover}
       <div class="art-body">${post.content_html}</div>
@@ -933,7 +941,8 @@ ${body}
 // 浏览器直接打开 /rss.xml 时展示的排版页
 export async function rssHtml(env, s, origin) {
   // 加密文章不进 RSS：订阅是明文分发，收进去等于把密码绕过去
-  const data = await db.listPosts(env.DB, { status: 'published', unlockedOnly: true, per: 50 });
+  // 置顶只在站内列表生效：RSS / 站点地图是「订阅与收录」语义，一律保持时间倒序
+  const data = await db.listPosts(env.DB, { status: 'published', unlockedOnly: true, per: 50, pinFirst: false });
   const now = bnNow(); // UTC+8 'YYYY-MM-DD HH:MM:SS'
   const siteTitle = s.get('site_title') || '云尚博客';
   const items = data.items.map((p) => {
@@ -978,7 +987,7 @@ export async function sitemapHtml(env, s, origin) {
   for (const c of cats) rows.push(u(catUrl(c), '分类', 'c', ''));
   const tags = await db.listTags(env.DB);
   for (const t of tags) rows.push(u('/tag/' + t.slug, '标签', 't', ''));
-  const data = await db.listPosts(env.DB, { status: 'published', per: 1000 });
+  const data = await db.listPosts(env.DB, { status: 'published', per: 1000, pinFirst: false });
   for (const p of data.items) rows.push(u(postUrl(s, p), '文章', 'a', (p.published_at || '').slice(0, 10)));
   // 独立页面同样进站点地图：搜索引擎要能抓到「关于我」这类页面
   const pages = await db.listPages(env.DB);
@@ -1001,7 +1010,7 @@ export async function sitemapHtml(env, s, origin) {
 // ---------- XML（给阅读器与搜索引擎的标准数据）----------
 export async function rssXml(env, s, origin) {
   // 加密文章不进 RSS：订阅是明文分发，收进去等于把密码绕过去
-  const data = await db.listPosts(env.DB, { status: 'published', unlockedOnly: true, per: 50 });
+  const data = await db.listPosts(env.DB, { status: 'published', unlockedOnly: true, per: 50, pinFirst: false });
   const items = data.items.map((p) => {
     const body = (p.content_html || '').replace(/\]\]>/g, ']]&gt;');
     const cat = p.category ? `<category>${esc(p.category.name)}</category>` : '';
@@ -1034,7 +1043,7 @@ export async function sitemapXml(env, s, origin) {
   for (const c of cats) rows.push(u(esc(catUrl(c)), ''));
   const tags = await db.listTags(env.DB);
   for (const t of tags) rows.push(u('/tag/' + esc(t.slug), ''));
-  const data = await db.listPosts(env.DB, { status: 'published', per: 1000 });
+  const data = await db.listPosts(env.DB, { status: 'published', per: 1000, pinFirst: false });
   for (const p of data.items) rows.push(u(postUrl(s, p), (p.published_at || '').slice(0, 10)));
   const pages = await db.listPages(env.DB);
   for (const p of pages) rows.push(u(pageUrl(p), (p.published_at || '').slice(0, 10)));
