@@ -47,6 +47,33 @@
     });
   })();
 
+  // ---- 导航栏搜索：点图标在顶栏下方展开搜索栏（Ver 0.4 补充）----
+  // 面板一直存在于 DOM 里（CSS 里 display:none），所以脚本没跑起来时点图标仍会跳 /search 页。
+  (function navSearch() {
+    var btn = document.getElementById('search-toggle');
+    var bar = document.getElementById('search-bar');
+    if (!btn || !bar) return;
+    var inp = bar.querySelector('input[name="q"]');
+    function setOpen(on) {
+      bar.classList[on ? 'add' : 'remove']('open');
+      btn.setAttribute('aria-expanded', on ? 'true' : 'false');
+    }
+    function isOpen() { return bar.classList.contains('open'); }
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();               // 拦掉 href="/search" 的跳转
+      setOpen(!isOpen());
+      if (isOpen() && inp) { try { inp.focus(); inp.select(); } catch (err) { /* 老浏览器 */ } }
+    });
+    document.addEventListener('keydown', function (e) {
+      if ((e.key === 'Escape' || e.key === 'Esc') && isOpen()) { setOpen(false); btn.focus(); }
+    });
+    // 点页面别处收起；点在搜索栏或图标上不算
+    document.addEventListener('click', function (e) {
+      if (!isOpen() || bar.contains(e.target) || btn.contains(e.target)) return;
+      setOpen(false);
+    });
+  })();
+
   // ---- 文章点赞（Ver 0.4 ⑦）----
   // 服务端已按访客 Cookie 回填「我赞过没」，这里只负责点击后的切换与数字更新。
   // 同一访客再点一次是取消，所以不需要额外的防重复逻辑。
