@@ -74,36 +74,51 @@
     });
   })();
 
-  // ---- 文章点赞（Ver 0.4 ⑦）----
-  // 服务端已按访客 Cookie 回填「我赞过没」，这里只负责点击后的切换与数字更新。
-  // 同一访客再点一次是取消，所以不需要额外的防重复逻辑。
+  // ---- 文章点赞（Ver 0.4 ⑦；Ver 0.5 ① 起「我赞过没」改由这里补）----
+  // 文章页 HTML 现在要进边缘缓存（对所有人同一份），所以服务端不能再按访客 Cookie
+  // 回填点赞状态 —— 改成打开页面后补一次只读请求；用户已经点过就不覆盖他的操作。
   (function likes() {
     var btn = document.querySelector('.like-btn[data-like]');
     if (!btn) return;
+    var id = parseInt(btn.dataset.like, 10);
     var num = btn.querySelector('.like-n');
     var tip = document.querySelector('.like-tip');
-    var busy = false;
+    var busy = false, touched = false;
+
+    function paint(d) {
+      if (typeof d.likes === 'number' && num) num.textContent = d.likes;
+      if (typeof d.liked === 'boolean') {
+        btn.classList.toggle('on', d.liked);
+        btn.setAttribute('aria-pressed', d.liked ? 'true' : 'false');
+        if (tip) tip.textContent = d.liked ? '已赞，再点一次取消' : '觉得有用就点个赞';
+      }
+    }
+
     btn.addEventListener('click', function () {
       if (busy) return;
       busy = true;
+      touched = true;
       btn.disabled = true;
       fetch('/api/like', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: parseInt(btn.dataset.like, 10) }),
+        body: JSON.stringify({ id: id }),
       })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (d) {
           busy = false;
           btn.disabled = false;
           if (typeof d.likes !== 'number') return;           // 出错就保持原样，不乱改数字
-          num.textContent = d.likes;
-          btn.classList.toggle('on', !!d.liked);
-          btn.setAttribute('aria-pressed', d.liked ? 'true' : 'false');
-          if (tip) tip.textContent = d.liked ? '已赞，再点一次取消' : '觉得有用就点个赞';
+          paint(d);
         })
         .catch(function () { busy = false; btn.disabled = false; });
     });
+
+    // 补一次「我赞过没」。失败就算了：按钮停在未赞态，用户点一下也能纠正回来。
+    fetch('/api/like?id=' + encodeURIComponent(id))
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (d) { if (!touched && !busy) paint(d); })
+      .catch(function () {});
   })();
 
   // ---- 友链申请表单（/links 页）----

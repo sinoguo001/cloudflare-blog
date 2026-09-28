@@ -16,6 +16,8 @@ import { CODE_THEMES } from './_lib/hl.js';
 import * as db from './_lib/db.js';
 import * as site from './_lib/site.js';
 import * as feed from './_lib/feed.js';
+import * as cache from './_lib/cache.js';
+import * as purge from './_lib/purge.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
@@ -141,13 +143,61 @@ async function handle(ctx) {
     return new Response(await site.sitemapXml(env, s, url.origin), { headers: feedHdr('application/xml; charset=utf-8') });
   }
 
-  // ---- 其余全部交给前台渲染 ----
-  return front(ctx, url, seg, method, path);
+  // ---- 其余全部交给前台渲染（可缓存的先走边缘缓存：命中就完全不碰 D1）----
+  return serveFront(ctx, url, seg, method, path);
 }
 
 // ============ 前台页面 ============
 const html = (str, status = 200) =>
   new Response(str, { status, headers: { 'content-type': 'text/html; charset=utf-8' } });
+
+// ---- 边缘缓存（Ver 0.5 ①）----
+// 哪些前台页面能进公共缓存：它们对所有人渲染同一份 HTML。
+// ⚠️ 判断的是「这条路线的输出会不会因人而异」，不是「有没有登录」：
+//    - 文章页 / 独立页正文对匿名访客是同一份（「我赞过没」已改由前端补，见 public/js/site.js）
+//    - 真正的例外（博主登录态、加密文章解锁态）由 cache.canCache() 在更外层拦掉
+//    - 状态码非 200 的一律不缓存（404；草稿对匿名访客本来就是 404）
+function sharedPath(seg) {
+  // 搜索结果随 query 变化，且会把 query 铺进缓存键，不进缓存
+  if ((seg[0] || '') === 'search') return false;
+  // 其余前台路径（首页 / page / category|categories / tag|tags / archive / links /
+  // friends / p 独立页 / 文章永久链接）输出对所有人一致，可缓存
+  return true;
+}
+
+// 前台入口：匿名请求先看边缘缓存，命中直接返回，完全不碰 D1 与渲染。
+// 一页能不能进公共缓存：状态 200、这条路线对所有人输出一致，
+// 且渲染没主动挂 x-cache:0 否决自己（如加密文章的「密码错误」页）
+const SHARED = (seg, r) => r.status === 200 && sharedPath(seg) && r.headers.get('x-cache') !== '0';
+
+async function serveFront(ctx, url, seg, method, path) {
+  const anon = cache.canCache(ctx.request);
+  if (anon) {
+    // render 是「重新渲染本页」的函数：缓存条目过期时用它做后台刷新。
+    // 返回 null = 这一页不该缓存，read() 就不写回去。
+    const hit = await cache.read(ctx, url, async () => {
+      const r = await front(ctx, url, seg, method, path);
+      const keep = SHARED(seg, r);
+      r.headers.delete('x-cache');
+      return keep ? r : null;
+    });
+    if (hit) return hit;
+  }
+  const resp = await front(ctx, url, seg, method, path);
+  const vetoed = resp.headers.get('x-cache') === '0';   // 渲染自己说「别缓存我」
+  const allow = SHARED(seg, resp);
+  resp.headers.delete('x-cache');   // 内部标记，不外传
+  if (!anon || vetoed) {
+    // 因人而异（登录态 / 加密文章解锁态），或渲染明确要求不缓存：
+    // 这一份既不能被边缘共享缓存留存，也不能让浏览器把它当公共页面存下来。
+    resp.headers.set('cache-control', 'private, no-store');
+  } else if (allow) {
+    resp.headers.set('cache-control', 'public, max-age=0, must-revalidate');
+    resp.headers.set('x-edge-cache', 'MISS');
+    ctx.waitUntil(cache.save(url, resp.clone()));
+  }
+  return resp;
+}
 
 async function front(ctx, url, seg, method, path) {
   const { env } = ctx;
@@ -397,12 +447,15 @@ async function permalinkRoute(env, s, path, user, origin, request, method) {
             `${postPassCookie(post.id)}=${okHash}; Path=/; Max-Age=15552000; HttpOnly; SameSite=Lax`);
           return r;
         }
-        return html(site.renderLocked(s, post, true));
+        // 「密码错误」只对当前这位访客有意义，不进公共缓存
+        const bad = html(site.renderLocked(s, post, true));
+        bad.headers.set('x-cache', '0');
+        return bad;
       }
       return html(site.renderLocked(s, post, false));
     }
   }
-  const [siblings, comments, cfg] = await Promise.all([
+  const [siblings, comments, cfg, likeN] = await Promise.all([
     db.siblings(env.DB, post),
     db.commentsForPost(env.DB, post.id),
     Promise.resolve({
@@ -410,14 +463,11 @@ async function permalinkRoute(env, s, path, user, origin, request, method) {
       audit: s.get('comment_audit') === '1',
       captcha: s.get('captcha') !== '0',   // 未设置即默认开启
     }),
+    // 只取「全站赞数」，不再按访客取「我赞过没」：
+    // 文章页 HTML 必须对所有人一致才能进边缘缓存，那部分改由前端加载后请求 /api/like 补上。
+    db.likeState(env.DB, post.id, '').catch(() => null),
   ]);
-  // 点赞状态按访客回填：首屏就能显示「我已赞过」，不必等 JS 拉一次接口
-  // （没有 Cookie 说明是首次访问，那就是未赞，不用查）
-  const vid = readCookie(request, 'blog_vid');
-  if (vid) {
-    const st = await db.likeState(env.DB, post.id, String(vid).slice(0, 40)).catch(() => null);
-    if (st) { post.likes = st.likes; post.liked = st.liked; }
-  }
+  if (likeN) post.likes = likeN.likes;
   return html(site.renderArticle(s, post, { siblings, comments, cfg, origin }));
 }
 
@@ -426,6 +476,39 @@ async function api(ctx, url, seg, method) {
   const { env, request } = ctx;
   const dbx = env.DB;
   const authUser = async () => userFromRequest(env, request);
+
+  // ---- 内容更新后清边缘缓存（Ver 0.5 ① B 部分）----
+  // 一律 waitUntil 异步做：清理失败绝不能影响「文章到底有没有写进去」这个结果。
+  // 没配 CF_ZONE_ID / CF_API_TOKEN 时全是空操作（页面靠 10 分钟新鲜期自然更新）。
+  const abs = (p) => new URL(p, url.origin).toString();
+  const clearPaths = (paths) => {
+    if (!purge.ready(env)) return;
+    ctx.waitUntil(purge.urls(env, [...new Set(paths.filter(Boolean).map(abs))]).catch(() => {}));
+  };
+  const clearAll = () => {
+    if (!purge.ready(env)) return;
+    ctx.waitUntil(purge.all(env).catch(() => {}));
+  };
+  // 文章改动影响：首页 / 列表页 / 归档 / 订阅 / 站点地图 / 它自己的地址 / 所属分类与标签
+  const clearForPost = (p, sm) => {
+    if (!purge.ready(env) || !p) return;
+    if (p.type === 'page') { clearAll(); return; }   // 独立页面可能出现在导航里 → 每页页头都变了
+    const paths = ['/', '/archive', '/archive?view=month', '/rss.xml', '/feed.xml', '/sitemap.xml',
+      '/categories', '/tags', '/category', postUrl(sm, p)];
+    if (p.category && p.category.full_slug) paths.push(catUrl(p.category));
+    for (const tg of (p.tags || [])) if (tg && tg.slug) paths.push('/tag/' + tg.slug);
+    clearPaths(paths);
+  };
+  // 评论一变，受影响的是它所属的那篇文章页
+  const clearForComment = async (cid) => {
+    if (!purge.ready(env)) return;
+    try {
+      const c = await db.getComment(dbx, cid);
+      if (!c) return;
+      const p = await db.getPost(dbx, { id: c.post_id });
+      if (p && p.type !== 'page') clearPaths([postUrl(await db.settingsMap(dbx), p)]);
+    } catch (e) { /* 清缓存失败不影响评论处理本身 */ }
+  };
 
   // --- 安装状态（公开） ---
   if (seg[0] === 'state' && method === 'GET' && seg.length === 1) {
@@ -504,6 +587,17 @@ async function api(ctx, url, seg, method) {
     const b = (await readJson(request)) || {};
     if (b.slug) await db.incView(dbx, String(b.slug).slice(0, 120));
     return json({ ok: true });
+  }
+
+  // --- 读取点赞状态（公开，只读）---
+  // 文章页 HTML 现在要进边缘缓存（对所有人同一份），所以「我赞过没」不能按 Cookie 在服务端回填，
+  // 改由页面加载后由前端补一次。只读、不下发 Cookie、不写库，因此不必过 hitGuard。
+  if (seg[0] === 'like' && method === 'GET' && seg.length === 1) {
+    const id = parseInt(url.searchParams.get('id'), 10);
+    if (!id) return err('缺少文章 id', 400);
+    const vid = readCookie(request, 'blog_vid');
+    const st = await db.likeState(dbx, id, vid ? String(vid).slice(0, 40) : '').catch(() => null);
+    return json(st || { likes: 0, liked: false });
   }
 
   // --- 文章点赞（公开） ---
@@ -587,6 +681,8 @@ async function api(ctx, url, seg, method) {
       postId: post.id, author, email, website, content,
       status: audit ? 'pending' : 'approved', isAdmin: 0, ip,
     });
+    // 免审评论会立刻出现在文章页上：把那一页的缓存清掉，别让读者刚发的评论「看不见」
+    if (!audit && purge.ready(env)) clearPaths([postUrl(await db.settingsMap(dbx), post)]);
     // 邮件通知异步发：SMTP 握手可能要 1–3 秒，不能拖慢读者提交评论的响应
     ctx.waitUntil(notifyNewComment(dbx, url.origin, post, { author, email, content, status: audit ? 'pending' : 'approved' }));
     // 验证码一次性：用掉即作废（前端随后会自动换一张新图）
@@ -705,6 +801,7 @@ async function api(ctx, url, seg, method) {
       }
       if (!data || !Array.isArray(data.posts)) return err('备份数据格式不正确');
       const n = await db.restoreAll(dbx, data);
+      clearAll();
       return json({ ok: true, restored: n });
     }
     return err('接口不存在', 404);
@@ -764,12 +861,14 @@ async function api(ctx, url, seg, method) {
       const id = String(b.id || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
       if (!id || id === 'default') {
         await db.setSetting(dbx, 'active_theme', 'default');
+        clearAll();
         return json({ ok: true, active: 'default' });
       }
       if (!/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(id)) return err('主题 ID 不合法', 400);
       const css = await env.BLOG.get('themes/' + id + '/style.css');
       if (!css) return err('主题不存在或缺少 style.css', 404);
       await db.setSetting(dbx, 'active_theme', id);
+      clearAll();
       return json({ ok: true, active: id });
     }
 
@@ -787,8 +886,10 @@ async function api(ctx, url, seg, method) {
       const active = (await db.getSetting(dbx, 'active_theme')) || 'default';
       if (active === id) {
         await db.setSetting(dbx, 'active_theme', 'default');
+        clearAll();
         return json({ ok: true, deleted, activeFallback: 'default' });
       }
+      clearAll();
       return json({ ok: true, deleted });
     }
     return err('接口不存在', 404);
@@ -959,6 +1060,7 @@ async function api(ctx, url, seg, method) {
       await db.setSetting(dbx, 'admin_pass_hash', await pbkdf2(String(b.new_password), salt));
       await db.setSetting(dbx, 'admin_pass_iter', String(100000));
     }
+    clearAll();   // 站点标题 / 主题色 / 导航开关… 每一页的页头页脚都可能变
     return json({ ok: true });
   }
   }
@@ -991,6 +1093,7 @@ async function api(ctx, url, seg, method) {
         status: db.LINK_STATUS.includes(b.status) ? b.status : 'approved', // 博主自己加的，默认直接展示
         source: 'admin',
       });
+      clearPaths(['/links']);
       return json({ ok: true, id });
     }
     if (seg.length === 2 && /^\d+$/.test(seg[1])) {
@@ -1010,10 +1113,12 @@ async function api(ctx, url, seg, method) {
         if (b.sort != null) patch.sort = Math.max(0, Math.min(9999, parseInt(b.sort, 10) || 0));
         if (!Object.keys(patch).length) return err('没有要修改的字段');
         await db.updateLink(dbx, id, patch);
+        clearPaths(['/links']);
         return json({ ok: true });
       }
       if (method === 'DELETE') {
         await db.deleteLink(dbx, id);
+        clearPaths(['/links']);
         return json({ ok: true });
       }
     }
@@ -1049,6 +1154,7 @@ async function api(ctx, url, seg, method) {
       // 加完立刻抓一次：博主当场就知道成没成、抓到几篇，不用等下一个刷新周期
       const r = (await feed.refreshFeeds(env, { ids: [id], timeoutMs: 8000 }))[0] || {};
       const row = await db.getFeed(dbx, id);
+      clearPaths(['/friends']);
       return json({
         ok: true, id,
         fetched: r.ok ? (r.count || 0) : 0,
@@ -1059,10 +1165,13 @@ async function api(ctx, url, seg, method) {
     }
     // 刷新：POST /api/feeds/refresh 刷全部，POST /api/feeds/<id>/refresh 刷单条
     if (method === 'POST' && seg.length === 2 && seg[1] === 'refresh') {
-      return json({ ok: true, results: await feed.refreshFeeds(env, { limit: 20 }) });
+      const results = await feed.refreshFeeds(env, { limit: 20 });
+      clearPaths(['/friends']);
+      return json({ ok: true, results });
     }
     if (method === 'POST' && seg.length === 3 && /^\d+$/.test(seg[1]) && seg[2] === 'refresh') {
       const results = await feed.refreshFeeds(env, { ids: [parseInt(seg[1], 10)], limit: 1 });
+      clearPaths(['/friends']);
       return json({ ok: !!(results[0] && results[0].ok), results });
     }
     if (seg.length === 2 && /^\d+$/.test(seg[1])) {
@@ -1090,10 +1199,12 @@ async function api(ctx, url, seg, method) {
         await db.updateFeed(dbx, id, patch);
         // 换了地址就顺手重抓一次，免得列表里还挂着旧源的文章
         if (patch.url && patch.url !== cur.url) await feed.refreshFeeds(env, { ids: [id], timeoutMs: 8000 });
+        clearPaths(['/friends']);
         return json({ ok: true });
       }
       if (method === 'DELETE') {
         await db.deleteFeed(dbx, id);
+        clearPaths(['/friends']);
         return json({ ok: true });
       }
     }
@@ -1119,6 +1230,7 @@ async function api(ctx, url, seg, method) {
         if (p.parent_id) return err('只支持两级分类：不能把分类挂在二级分类下面');
       }
       const r = await db.createCategory(dbx, { name, slug: slugRaw, description: String(b.description || '').slice(0, 200), parent_id: pid, in_nav: b.in_nav });
+      clearAll();   // 分类可能出现在导航里
       return json({ ok: true, id: r.id, slug: r.slug, parent_id: r.parent_id, in_nav: r.in_nav });
     }
     if (seg.length === 2 && /^\d+$/.test(seg[1])) {
@@ -1142,10 +1254,12 @@ async function api(ctx, url, seg, method) {
           if (Number(p.id) === Number(id)) return err('上级不能是它自己');
         }
         const slug = await db.updateCategory(dbx, id, { name, slug: slugRaw, description: String(b.description || '').slice(0, 200), parent_id: pid, in_nav: b.in_nav });
+        clearAll();
         return json({ ok: true, slug });
       }
       if (method === 'DELETE') {
         await db.deleteCategory(dbx, id);
+        clearAll();
         return json({ ok: true });
       }
     }
@@ -1160,6 +1274,7 @@ async function api(ctx, url, seg, method) {
       if (method === 'PUT') return err('标签改名请在文章编辑页中调整', 400);
       if (method === 'DELETE') {
         await db.deleteTag(dbx, id);
+        clearAll();
         return json({ ok: true });
       }
     }
@@ -1175,6 +1290,7 @@ async function api(ctx, url, seg, method) {
     if (!Number.isInteger(id) || id <= 0) return err('缺少文章 id');
     const r = await db.pinPost(dbx, id, String(b.action || 'toggle'));
     if (!r.ok) return err(r.error, r.code || 400);
+    clearPaths(['/', '/archive', '/categories', '/tags']);
     return json({ ok: true, pinned: r.list, moved: r.moved !== false });
   }
 
@@ -1222,6 +1338,7 @@ async function api(ctx, url, seg, method) {
         cover_key: body.cover_key || null, tags: Array.isArray(body.tags) ? body.tags : [],
       });
       const post = await db.getPost(dbx, { id });
+      if (status === 'published') clearForPost(post, await db.settingsMap(dbx));
       return json({ ok: true, id, slug: post.slug });
     }
     // 单篇操作 GET/PUT/DELETE /api/posts/:id
@@ -1237,6 +1354,7 @@ async function api(ctx, url, seg, method) {
       }
       if (method === 'DELETE') {
         await db.deletePost(dbx, id);
+        clearForPost(post, await db.settingsMap(dbx));
         return json({ ok: true });
       }
       if (method === 'PUT') {
@@ -1261,6 +1379,7 @@ async function api(ctx, url, seg, method) {
           tags: Array.isArray(body.tags) ? body.tags : [],
         });
         const np = await db.getPost(dbx, { id });
+        clearForPost(np, await db.settingsMap(dbx));
         return json({ ok: true, slug: np.slug });
       }
     }
@@ -1271,6 +1390,7 @@ async function api(ctx, url, seg, method) {
       if (!['published', 'draft'].includes(b.status)) return err('非法状态');
       const ok = await db.setPostStatus(dbx, id, b.status);
       if (!ok) return err('文章不存在', 404);
+      clearForPost(await db.getPost(dbx, { id }), await db.settingsMap(dbx));
       return json({ ok: true, status: b.status });
     }
     return err('接口不存在', 404);
@@ -1285,9 +1405,11 @@ async function api(ctx, url, seg, method) {
       const b = (await readJson(request)) || {};
       if (!['pending', 'approved', 'trash'].includes(b.status)) return err('非法状态');
       await db.setCommentStatus(dbx, id, b.status);
+      await clearForComment(id);
       return json({ ok: true });
     }
     if (method === 'DELETE') {
+      await clearForComment(id);   // 删除前先取所属文章，删完就查不到了
       await db.deleteComment(dbx, id);
       return json({ ok: true });
     }
@@ -1305,6 +1427,10 @@ async function api(ctx, url, seg, method) {
       author: (await db.getSetting(dbx, 'author_name')) || '博主',
       email: '', content, status: 'approved', isAdmin: 1, ip: '',
     });
+    if (purge.ready(env)) {
+      const pp = await db.getPost(dbx, { id: parent.post_id });
+      if (pp) clearPaths([postUrl(await db.settingsMap(dbx), pp)]);
+    }
     ctx.waitUntil(notifyReply(dbx, url.origin, parent, content));
     return json({ ok: true });
   }
