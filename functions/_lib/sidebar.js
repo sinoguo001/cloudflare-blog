@@ -158,7 +158,7 @@ async function wComments(DB, s, it) {
       slug: c.post_slug, id: c.post_id,
       published_at: c.published_at, cat_slug: c.cat_slug,
     });
-    return `<li class="sd-cmt"><span class="sd-who">${who}${c.is_admin ? '<i class="sd-me">博主</i>' : ''}</span>`
+    return `<li class="sd-cmt"><span class="sd-who">${who}${c.is_admin ? '<i class="sd-adm">博主</i>' : ''}</span>`
       + `<span class="sd-say">${say}</span>`
       + `<a class="sd-on" href="${esc(href)}">—— ${on}</a></li>`;
   });
@@ -234,8 +234,10 @@ function wAbout(s, it) {
   const name = String(s.get('site_title') || '').trim();
   const sub = String(s.get('site_subtitle') || '').trim();
   const author = String(s.get('author_name') || '').trim();
+  // ⚠️ 类名是 .sd-about，不是 .sd-me —— 后者是「最新评论」里的博主徽章（有底色），
+  // 同名会让这个纯文字块被套上紫底，见 site.js SIDEBAR_CSS 的注释
   const head = (name || sub || author)
-    ? `<div class="sd-me"><b>${esc(name)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}`
+    ? `<div class="sd-about"><b>${esc(name)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}`
       + `${author ? `<small>✍ ${esc(author)}</small>` : ''}</div>` : '';
   const body = it.text ? `<div class="sd-body">${renderMd(it.text)}</div>` : '';
   if (!head && !body) return '';

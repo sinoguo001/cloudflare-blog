@@ -126,7 +126,7 @@ export const SIDEBAR_CSS = `
 .sd-cmts{list-style:none;margin:0;padding:0;display:grid;gap:11px}
 .sd-cmt{display:grid;gap:2px;font-size:13.5px;min-width:0}
 .sd-who{color:var(--text-soft);font-weight:600;display:flex;align-items:center;gap:6px}
-.sd-me{font-style:normal;font-size:11px;background:var(--admin-soft);color:var(--admin-text);padding:0 6px;border-radius:999px}
+.sd-adm{font-style:normal;font-size:11px;background:var(--admin-soft);color:var(--admin-text);padding:0 6px;border-radius:999px}
 .sd-say{color:var(--muted);line-height:1.65;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
 .sd-on{color:var(--muted);font-size:12.5px}
 .sd-on:hover{color:var(--accent)}
@@ -143,11 +143,15 @@ export const SIDEBAR_CSS = `
 .sd-search button{border:0;border-radius:9px;padding:8px 14px;background:var(--accent);color:var(--on-accent);
   font-size:14px;cursor:pointer;flex:none}
 .sd-search button:hover{opacity:.9}
-/* 站点简介 */
-.sd-me{display:grid;gap:2px;margin-bottom:8px}
-.sd-me b{font-size:15px}
-.sd-me span{font-size:13px;color:var(--muted)}
-.sd-me small{font-size:12.5px;color:var(--muted)}
+/* 站点简介：纯文字块，**不带任何底色/圆角/边框**。
+   ⚠️ 原名 .sd-me，与上面「博主」徽章那条同名 —— 两条规则都会命中同一个元素，
+   于是名字块被套上 admin-soft 的淡紫底 + 999px 全圆角（看着就是个紫椭圆），
+   字还被染成 admin-text 的紫。2026-09-29 拆成 .sd-about。
+   ★ 教训：SIDEBAR_CSS 里一个类名只能有一个用途，新增前先 grep 一遍。 */
+.sd-about{display:grid;gap:2px;margin-bottom:8px}
+.sd-about b{font-size:15px;color:var(--text)}
+.sd-about span{font-size:13px;color:var(--muted)}
+.sd-about small{font-size:12.5px;color:var(--muted)}
 /* 自定义内容（Markdown 渲染结果）：不能把正文那套大字号带进窄栏，这里单独一套紧凑排版 */
 .sd-body{font-size:14px;line-height:1.8;color:var(--text-soft);word-break:break-word}
 .sd-body p{margin:0 0 .7em}
@@ -159,11 +163,25 @@ export const SIDEBAR_CSS = `
 .sd-body code{font-family:var(--font-code);background:var(--inline-code-bg);border-radius:5px;padding:1px 5px;font-size:.9em}
 .sd-body pre{margin:.6em 0;background:var(--code-bg);color:var(--code-text);border-radius:10px;overflow:auto}
 .sd-body pre code{background:none;color:inherit;padding:0;font-size:13px}
+/* 高亮代码块：底色与配色由后台所选主题 CSS 的 pre code.hljs 提供（与正文同规矩，
+   pre 上的深色只是「没高亮」时的兜底）。
+   ⚠️ 必须写足 .sd-body … code.hljs 四段：主题那条是 (0,1,2)，
+   与上面 .sd-body pre code (0,1,2) **特异性相同**，而主题 CSS 注入在本文件之后 ——
+   它会赢。少了这一条，code 保持 inline 且无内边距：深色 pre 外壳裸露，
+   中间只有一条贴着文字的浅色带。 */
+.sd-body pre code.hljs{display:block;padding:10px 12px;font-size:12.5px;line-height:1.6}
 .sd-body blockquote{margin:.6em 0;padding:6px 12px;border-left:3px solid var(--accent);background:var(--quote-bg);
   border-radius:0 8px 8px 0;color:var(--quote-text)}
 .sd-body blockquote p{margin:.3em 0}
 .sd-body hr{border:none;border-top:1px dashed var(--line);margin:.8em 0}
 .sd-body h1,.sd-body h2,.sd-body h3,.sd-body h4{font-size:14.5px;margin:.8em 0 .4em}
+/* 表格与任务列表：正文（.art-body）有、窄栏这边原先漏了 ——
+   自定义栏目里粘一张表格会完全没边框、也没法横向滚动。 */
+.sd-body table{border-collapse:collapse;width:100%;margin:.7em 0;font-size:13px;display:block;overflow-x:auto}
+.sd-body th,.sd-body td{border:1px solid var(--line);padding:5px 8px;text-align:left}
+.sd-body th{background:var(--tint)}
+.sd-body li.task{list-style:none;margin-left:-1.2em}
+.sd-body li.task input{margin-right:7px;vertical-align:-2px}
 `;
 
 // ---------- 前台骨架样式（颜色一律引用主题变量） ----------
