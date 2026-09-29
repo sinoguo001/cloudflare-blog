@@ -1649,9 +1649,63 @@ async function viewBackup() {
 const SETTINGS_TABS = [
   { k: 'basic', name: '基本设置' },
   { k: 'post', name: '文章设置' },
+  { k: 'sidebar', name: '侧边栏' },
   { k: 'comment', name: '评论设置' },
   { k: 'security', name: '安全设置' },
 ];
+
+// ================= 侧边栏挂件目录（Ver 0.5 ②）=================
+// ⚠️ 必须与服务端 functions/_lib/sidebar.js 的 WIDGETS 逐项一致（type / name / title /
+//    on / count / text 都要对上），否则后台显示的顺序与默认值会和前台实际渲染脱节。
+//    .sidebar-smoke.mjs 会比对两份目录，改一边忘改另一边会直接测挂。
+const SB_CATALOG = [
+  { type: 'about', name: '站点简介', title: '关于本站', on: true, count: 0, text: true },
+  { type: 'search', name: '搜索', title: '搜索', on: true, count: 0, text: false },
+  { type: 'hot', name: '热门文章', title: '热门文章', on: true, count: 5, text: false },
+  { type: 'recent', name: '最新文章', title: '最新文章', on: true, count: 5, text: false },
+  { type: 'comments', name: '最新评论', title: '最新评论', on: false, count: 5, text: false },
+  { type: 'tags', name: '标签云', title: '标签云', on: true, count: 20, text: false },
+  { type: 'cats', name: '分类列表', title: '分类', on: true, count: 10, text: false },
+  { type: 'archive', name: '按月归档', title: '归档', on: false, count: 6, text: false },
+  { type: 'links', name: '友情链接', title: '友情链接', on: false, count: 5, text: false },
+  { type: 'stats', name: '站点统计', title: '站点统计', on: false, count: 0, text: false },
+  { type: 'custom', name: '自定义内容', title: '自定义', on: false, count: 0, text: true },
+];
+const sbMeta = (t) => SB_CATALOG.find((x) => x.type === t) || null;
+const sbNewId = () => 'c' + Math.random().toString(36).slice(2, 8);
+// 与服务端 normalizeItems 同一套口径：脏数据按目录修回可用形态，绝不让设置页白屏
+function sbFix(raw) {
+  let arr = [];
+  if (Array.isArray(raw)) arr = raw;
+  else if (typeof raw === 'string' && raw.trim()) {
+    try { const p = JSON.parse(raw); if (Array.isArray(p)) arr = p; } catch (e) { arr = []; }
+  }
+  const fallback = () => SB_CATALOG.filter((w) => w.type !== 'custom')
+    .map((w) => ({ type: w.type, title: w.title, on: !!w.on, count: w.count || 0, text: '' }));
+  if (!arr.length) return fallback();
+  const seen = new Set();
+  const out = [];
+  for (const it of arr.slice(0, 40)) {
+    const m = sbMeta(it && it.type);
+    if (!m) continue;
+    if (m.type !== 'custom') { if (seen.has(m.type)) continue; seen.add(m.type); }
+    const o = {
+      type: m.type,
+      title: String((it && it.title) || '').slice(0, 40) || m.title,
+      on: !it || it.on !== false,
+      text: m.text ? String((it && it.text) || '').slice(0, 4000) : '',
+    };
+    if (m.count) {
+      const n = parseInt(it && it.count, 10);
+      o.count = Number.isFinite(n) ? Math.min(30, Math.max(1, n)) : m.count;
+    }
+    if (m.type === 'custom') {
+      o.id = /^[A-Za-z0-9_-]{1,24}$/.test(String((it && it.id) || '')) ? String(it.id) : sbNewId();
+    }
+    out.push(o);
+  }
+  return out.length ? out : fallback();
+}
 
 async function viewSettings(tabArg) {
   const curTab = SETTINGS_TABS.some((t) => t.k === tabArg) ? tabArg : 'basic';
@@ -1781,6 +1835,37 @@ async function viewSettings(tabArg) {
     </div>
   </div>
 
+  <div class="set-pane" data-pane="sidebar">
+    <div class="card">
+      <div class="sec-title">侧边栏 <small>正文旁边的一列小工具</small></div>
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="s-sb_on"> <b>启用侧边栏</b>（默认关闭——关闭时就是现在的单栏博客）</label>
+      <p class="hint" style="margin:8px 0 0">启用后前台每一页都会在正文旁多出一列；<b>手机等窄屏（≤ 960px）自动退回单栏</b>，侧边栏落到正文下方，不挤阅读区。位置、项目与顺序随时可改，保存后前台立即生效。</p>
+    </div>
+
+    <div id="sb-body">
+      <div class="card">
+        <div class="sec-title">位置 <small>侧边栏在正文的哪一侧</small></div>
+        <div class="field" style="max-width:280px;margin-bottom:0"><label>显示位置</label>
+          <select class="inp" id="s-sb_side">
+            <option value="right">正文右侧（默认）</option>
+            <option value="left">正文左侧</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-title">侧边栏项目 <small>勾选启用 · ↑↓ 调顺序 · 改标题与条数</small></div>
+        <div class="sb-list" id="sb-list"></div>
+        <div style="margin-top:12px"><button class="btn g" type="button" id="sb-add">＋ 添加自定义项目</button></div>
+        <p class="hint" style="margin-bottom:0">
+          「条数」只出现在列表类挂件上（1–30）；「内容」按 <b>Markdown</b> 写（链接、图片、列表、代码块都支持），
+          <b>不解析 HTML</b>，写不坏页面。<b>自定义项目</b>可以加多个，标题与内容都由你定——想放二维码、公众号、广告位就加它。
+          各项只有当站点里真有内容时才出现（例如一篇评论都没有时，「最新评论」自动不显示）。
+        </p>
+      </div>
+    </div>
+  </div>
+
   <div class="set-pane" data-pane="comment">
     <div class="grid2">
       <div class="card">
@@ -1882,7 +1967,7 @@ async function viewSettings(tabArg) {
   </div>
 
   <div class="card"><button class="btn p" type="submit">保存全部设置</button>
-    <span class="hint" style="margin-left:10px">四个标签页的设置会一起保存；设置即时生效，前台主题、订阅地址与页面内容将同步更新。</span></div>
+    <span class="hint" style="margin-left:10px">五个标签页的设置会一起保存；设置即时生效，前台主题、订阅地址与页面内容将同步更新。</span></div>
   </form>`);
   const v = view();
 
@@ -2211,6 +2296,92 @@ async function viewSettings(tabArg) {
   v.querySelector('#fav-clear').addEventListener('click', () => { favIn.value = ''; refreshIcons(); });
   refreshIcons();
 
+  // ---- 侧边栏（Ver 0.5 ②）：启用开关 / 位置 / 项目列表 ----
+  const sbOnEl = v.querySelector('#s-sb_on');
+  const sbSideEl = v.querySelector('#s-sb_side');
+  const sbBodyEl = v.querySelector('#sb-body');
+  const sbListEl = v.querySelector('#sb-list');
+  let sbItems = sbFix(s.sidebar_items);
+  // 关掉开关时把下面两块压暗（不销毁 DOM，已填的内容不丢）
+  const sbSync = () => {
+    const on = sbOnEl.checked;
+    sbBodyEl.style.opacity = on ? '1' : '.55';
+    sbBodyEl.style.pointerEvents = on ? '' : 'none';
+  };
+  sbOnEl.addEventListener('change', sbSync);
+  const sbRender = () => {
+    sbListEl.innerHTML = sbItems.map((it, i) => {
+      const m = sbMeta(it.type);
+      if (!m) return '';
+      return `<div class="sb-row${it.on ? ' on' : ''}" data-i="${i}">
+        <div class="sb-hd">
+          <label class="sb-on"><input type="checkbox"${it.on ? ' checked' : ''}> 启用</label>
+          <span class="sb-kind">${esc(m.name)}</span>
+          <span class="sb-act">
+            <button type="button" class="btn g sb-up" title="上移"${i === 0 ? ' disabled' : ''}>↑</button>
+            <button type="button" class="btn g sb-dn" title="下移"${i === sbItems.length - 1 ? ' disabled' : ''}>↓</button>
+            ${m.type === 'custom' ? '<button type="button" class="btn g sb-del" title="删除这一项">删除</button>' : ''}
+          </span>
+        </div>
+        <div class="sb-bd">
+          <label class="sb-f sb-f-ti">标题<input class="inp" value="${esc(it.title)}" maxlength="40"></label>
+          ${m.count ? `<label class="sb-f sb-f-n">条数<input class="inp" type="number" min="1" max="30" value="${it.count}"></label>` : ''}
+          ${m.text ? `<label class="sb-f sb-f-t">内容（Markdown）<textarea class="txa">${esc(it.text)}</textarea></label>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+  };
+  // 事件一律委托：每次调序都会整块重绘，逐行绑监听器会漏
+  sbListEl.addEventListener('click', (e) => {
+    const row = e.target.closest('.sb-row');
+    if (!row) return;
+    const i = parseInt(row.dataset.i, 10);
+    if (!Number.isInteger(i) || !sbItems[i]) return;
+    if (e.target.closest('.sb-del')) { sbItems.splice(i, 1); sbRender(); return; }
+    if (e.target.closest('.sb-up') && i > 0) {
+      const t = sbItems[i - 1]; sbItems[i - 1] = sbItems[i]; sbItems[i] = t; sbRender(); return;
+    }
+    if (e.target.closest('.sb-dn') && i < sbItems.length - 1) {
+      const t = sbItems[i + 1]; sbItems[i + 1] = sbItems[i]; sbItems[i] = t; sbRender();
+    }
+  });
+  sbListEl.addEventListener('change', (e) => {
+    const row = e.target.closest('.sb-row');
+    if (!row || !e.target.matches('.sb-on input')) return;
+    const i = parseInt(row.dataset.i, 10);
+    if (!sbItems[i]) return;
+    sbItems[i].on = e.target.checked;
+    row.classList.toggle('on', e.target.checked);
+  });
+  sbListEl.addEventListener('input', (e) => {
+    const row = e.target.closest('.sb-row');
+    if (!row) return;
+    const i = parseInt(row.dataset.i, 10);
+    const it = sbItems[i];
+    if (!it) return;
+    const f = e.target.closest('.sb-f');
+    if (!f) return;
+    if (f.classList.contains('sb-f-n')) {
+      const n = parseInt(e.target.value, 10);
+      it.count = Number.isFinite(n) ? Math.min(30, Math.max(1, n)) : (sbMeta(it.type).count || 5);
+    } else if (f.classList.contains('sb-f-t')) {
+      it.text = String(e.target.value).slice(0, 4000);
+    } else {
+      it.title = String(e.target.value).slice(0, 40);
+    }
+  });
+  v.querySelector('#sb-add').addEventListener('click', () => {
+    const m = sbMeta('custom');
+    sbItems.push({ type: 'custom', title: m.title, on: true, count: 0, text: '', id: sbNewId() });
+    sbRender();
+    const last = sbListEl.querySelector('.sb-row:last-child');
+    if (last) last.scrollIntoView({ block: 'nearest' });
+  });
+  sbOnEl.checked = s.sidebar_enabled === '1';
+  sbSideEl.value = s.sidebar_side === 'left' ? 'left' : 'right';
+  sbRender();
+  sbSync();
+
   v.querySelector('#set-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const pw = v.querySelector('#s-pw').value;
@@ -2260,6 +2431,10 @@ async function viewSettings(tabArg) {
       nav_show_rss: v.querySelector('#s-nav_rss').checked,
       // 全站灰度：优先级最高的显示设置，换主题也不受影响
       gray_mode: v.querySelector('#s-gray_mode').checked,
+      // 侧边栏（Ver 0.5 ②）：默认关；items 交给后端再洗一遍，前端只负责收集
+      sidebar_enabled: sbOnEl.checked,
+      sidebar_side: sbSideEl.value,
+      sidebar_items: sbItems,
       logo_image: logoIn.value.trim(),
       favicon_image: favIn.value.trim(),
       mail_enabled: v.querySelector('#s-mail_enabled').checked,

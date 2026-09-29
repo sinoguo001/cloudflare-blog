@@ -91,6 +91,81 @@ export const GRAY_CSS = `
 html.gray{-webkit-filter:grayscale(1)!important;filter:grayscale(1)!important}
 `;
 
+// ---------- 侧边栏（Ver 0.5 ②）----------
+// 默认关闭（后台「设置 → 侧边栏」开启）。关闭时前台结构与以前完全一样（单栏），
+// 这段样式也压根不会输出；开启后正文与侧边栏两列。
+// 窄屏（≤960px）自动退回单栏：侧边栏落在正文下方，不会挤坏手机上的阅读。
+// ⚠️ .wrap 只在开启时加 .wide 才变宽 —— 没开侧边栏的站点页面宽度与旧版逐像素一致。
+// 布局全部用 CSS 变量取色，因此夜间模式与换主题同样生效。
+export const SIDEBAR_CSS = `
+.wrap.wide{max-width:1200px}
+.ly{display:grid;grid-template-columns:minmax(0,1fr);gap:24px;align-items:start}
+@media(min-width:961px){
+  .ly.sd-right{grid-template-columns:minmax(0,1fr) 296px}
+  .ly.sd-left{grid-template-columns:296px minmax(0,1fr)}
+  /* DOM 里正文在前（利于阅读与无障碍），靠 order 把侧边栏换到左边 */
+  .ly.sd-left .sd{order:-1}
+}
+.sd{display:grid;gap:16px;align-content:start}
+.sd-w{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:15px 17px}
+.sd-t{margin:0 0 10px;font-size:14.5px;font-weight:700;color:var(--text);
+  display:flex;align-items:center;gap:7px;letter-spacing:.3px}
+.sd-t::before{content:"";width:3px;height:13px;border-radius:2px;background:var(--accent);flex:none}
+.sd-list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.sd-i{display:flex;align-items:baseline;gap:8px;font-size:14px;line-height:1.55;min-width:0}
+.sd-i a{color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sd-i a:hover{color:var(--accent)}
+.sd-n{flex:none;width:19px;height:19px;border-radius:6px;background:var(--accent-soft);color:var(--accent);
+  font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums}
+.sd-c{flex:none;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+/* 标签云：字号由服务端按文章数算好后写进行内 style，这里只管排布 */
+.sd-cloud{display:flex;flex-wrap:wrap;gap:7px 9px;align-items:baseline}
+.sd-tag{color:var(--accent);background:var(--accent-soft);border-radius:999px;padding:2px 10px;line-height:1.7}
+.sd-tag:hover{background:var(--accent);color:var(--on-accent);text-decoration:none}
+/* 最新评论 */
+.sd-cmts{list-style:none;margin:0;padding:0;display:grid;gap:11px}
+.sd-cmt{display:grid;gap:2px;font-size:13.5px;min-width:0}
+.sd-who{color:var(--text-soft);font-weight:600;display:flex;align-items:center;gap:6px}
+.sd-me{font-style:normal;font-size:11px;background:var(--admin-soft);color:var(--admin-text);padding:0 6px;border-radius:999px}
+.sd-say{color:var(--muted);line-height:1.65;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+.sd-on{color:var(--muted);font-size:12.5px}
+.sd-on:hover{color:var(--accent)}
+/* 站点统计 */
+.sd-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.sd-stat{background:var(--tint);border-radius:10px;padding:8px 10px;display:grid;gap:1px}
+.sd-stat b{font-size:17px;line-height:1.2;color:var(--accent);font-variant-numeric:tabular-nums}
+.sd-stat span{font-size:12px;color:var(--muted)}
+/* 搜索 */
+.sd-search{display:flex;gap:8px}
+.sd-search input{flex:1;min-width:0;padding:8px 11px;border:1px solid var(--line);border-radius:9px;
+  font-size:14px;background:var(--bg);color:var(--text);outline:none}
+.sd-search input:focus{border-color:var(--accent)}
+.sd-search button{border:0;border-radius:9px;padding:8px 14px;background:var(--accent);color:var(--on-accent);
+  font-size:14px;cursor:pointer;flex:none}
+.sd-search button:hover{opacity:.9}
+/* 站点简介 */
+.sd-me{display:grid;gap:2px;margin-bottom:8px}
+.sd-me b{font-size:15px}
+.sd-me span{font-size:13px;color:var(--muted)}
+.sd-me small{font-size:12.5px;color:var(--muted)}
+/* 自定义内容（Markdown 渲染结果）：不能把正文那套大字号带进窄栏，这里单独一套紧凑排版 */
+.sd-body{font-size:14px;line-height:1.8;color:var(--text-soft);word-break:break-word}
+.sd-body p{margin:0 0 .7em}
+.sd-body p:last-child{margin-bottom:0}
+.sd-body a{text-decoration:underline;text-underline-offset:2px}
+.sd-body ul,.sd-body ol{margin:0 0 .7em;padding-left:1.4em}
+.sd-body li{margin:.2em 0}
+.sd-body img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+.sd-body code{font-family:var(--font-code);background:var(--inline-code-bg);border-radius:5px;padding:1px 5px;font-size:.9em}
+.sd-body pre{margin:.6em 0;background:var(--code-bg);color:var(--code-text);border-radius:10px;overflow:auto}
+.sd-body pre code{background:none;color:inherit;padding:0;font-size:13px}
+.sd-body blockquote{margin:.6em 0;padding:6px 12px;border-left:3px solid var(--accent);background:var(--quote-bg);
+  border-radius:0 8px 8px 0;color:var(--quote-text)}
+.sd-body blockquote p{margin:.3em 0}
+.sd-body hr{border:none;border-top:1px dashed var(--line);margin:.8em 0}
+.sd-body h1,.sd-body h2,.sd-body h3,.sd-body h4{font-size:14.5px;margin:.8em 0 .4em}
+`;
+
 // ---------- 前台骨架样式（颜色一律引用主题变量） ----------
 export const FRONT_CSS = `
 *{box-sizing:border-box}
@@ -471,6 +546,15 @@ export function layout(s, o) {
   }).join('');
   // 全站灰度：后台「基本设置」开关，默认关（Ver 0.4 ⑨）
   const gray = s.get('gray_mode') === '1';
+  // 侧边栏（Ver 0.5 ②）：HTML 由路由层在渲染前算好塞进 s（键名带下划线，不会落库）。
+  // 空串＝没开侧边栏，此时 DOM 与旧版完全一致（单栏），连这段 CSS 都不输出。
+  const side = String(s.get('_sidebar_html') || '');
+  const sideLeft = s.get('sidebar_side') === 'left';
+  const mainInner = side
+    ? `<div class="ly ${sideLeft ? 'sd-left' : 'sd-right'}">`
+      + `<div class="ly-m">${o.content}</div>`
+      + `<aside class="sd" aria-label="侧边栏">${side}</aside></div>`
+    : o.content;
   return `<!doctype html>
 <html lang="zh-CN" data-theme="light"${gray ? ' class="gray"' : ''}>
 <head>
@@ -480,7 +564,7 @@ export function layout(s, o) {
 <meta name="description" content="${esc(desc)}">
 <link rel="icon" href="${esc(faviconHref(s))}"${faviconMime(faviconHref(s)) ? ` type="${faviconMime(faviconHref(s))}"` : ''}>
 <link rel="alternate" type="application/rss+xml" title="${esc(title)}" href="/rss.xml">
-<style>${THEME_VARS}:root{${accentVars(accent)}}${FRONT_CSS}${DARK_VARS}${GRAY_CSS}${codeThemeCss(s.get('code_theme'))}</style>
+<style>${THEME_VARS}:root{${accentVars(accent)}}${FRONT_CSS}${DARK_VARS}${GRAY_CSS}${side ? SIDEBAR_CSS : ''}${codeThemeCss(s.get('code_theme'))}</style>
 <!-- 夜间模式要在第一帧就定下来，否则刷新时会先闪一下白底再变暗；
      这段必须内联在 head 里，放到 /js/site.js（defer）就来不及了。 -->
 <script>(function(){try{var t=localStorage.getItem('blog_theme');
@@ -491,7 +575,7 @@ ${themeLink(s)}
 <script src="/js/site.js" defer></script>
 </head>
 <body data-slug="${o.bodySlug || ''}">
-<header class="hd"><div class="wrap hd-in">
+<header class="hd"><div class="wrap${side ? ' wide' : ''} hd-in">
   <a class="brand" href="/">${brandMark(s)}
     <span>${esc(title)}<small>${esc(s.get('site_subtitle'))}</small></span></a>
   <nav class="nav">
@@ -511,8 +595,8 @@ ${themeLink(s)}
   </nav>
 </div></header>
 <noscript><style>.hd-search{display:inline-flex}.search-btn{display:none}</style></noscript>
-<main class="main"><div class="wrap">${o.content}</div></main>
-<footer class="ft"><div class="wrap">
+<main class="main"><div class="wrap${side ? ' wide' : ''}">${mainInner}</div></main>
+<footer class="ft"><div class="wrap${side ? ' wide' : ''}">
   ${footer ? footer + '<br>' : ''}© ${year} ${esc(title)} · 由 Cloudflare Pages 驱动
   ${beian ? `<br><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">${esc(beian)}</a>` : ''}
 </div></footer>

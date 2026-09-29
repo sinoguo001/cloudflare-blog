@@ -18,6 +18,7 @@ import * as site from './_lib/site.js';
 import * as feed from './_lib/feed.js';
 import * as cache from './_lib/cache.js';
 import * as purge from './_lib/purge.js';
+import { buildSidebar, normalizeItems } from './_lib/sidebar.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
@@ -214,6 +215,9 @@ async function front(ctx, url, seg, method, path) {
     name: c.name, slug: c.slug, full_slug: c.full_slug,
     children: (c.children || []).map((k) => ({ name: k.name, slug: k.slug, full_slug: k.full_slug })),
   }))));
+  // 侧边栏（Ver 0.5 ②）：没开就立刻返回空串、一次库都不查；开了才按勾选项查。
+  // HTML 塞进 s（本请求新建的 Map），layout() 再取出来拼两列，并发请求互不干扰。
+  s.set('_sidebar_html', await buildSidebar(env, s).catch(() => ''));
   const per = Math.min(20, Math.max(1, parseInt(s.get('per_page'), 10) || 8));
   const user = await userFromRequest(env, ctx.request);
   const pageNum = (p) => Math.max(1, parseInt(p, 10) || 1);
@@ -1016,6 +1020,14 @@ async function api(ctx, url, seg, method) {
     // ---- 导航栏显示开关：关掉只是不出现在页头导航，页面地址照常可访问 ----
     for (const k of ['categories', 'tags', 'archive', 'links', 'rss']) {
       if (b['nav_show_' + k] != null) await db.setSetting(dbx, 'nav_show_' + k, b['nav_show_' + k] ? '1' : '0');
+    }
+    // ---- 侧边栏（Ver 0.5 ②）：默认关闭；开启后前台两列 ----
+    // items 是 JSON 数组，一律过 normalizeItems 清洗（未知类型丢弃、条数夹在 1–30、
+    // 标题与正文限长），脏配置最多是侧边栏不出现，不会把坏数据带进页面。
+    if (b.sidebar_enabled != null) await db.setSetting(dbx, 'sidebar_enabled', b.sidebar_enabled ? '1' : '0');
+    if (b.sidebar_side != null) await db.setSetting(dbx, 'sidebar_side', String(b.sidebar_side) === 'left' ? 'left' : 'right');
+    if (b.sidebar_items != null) {
+      await db.setSetting(dbx, 'sidebar_items', JSON.stringify(normalizeItems(b.sidebar_items)));
     }
     // ---- 全站灰度：默认关，启用后整站转灰（优先级高于主题） ----
     if (b.gray_mode != null) await db.setSetting(dbx, 'gray_mode', b.gray_mode ? '1' : '0');

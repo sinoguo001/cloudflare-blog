@@ -273,3 +273,24 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .mail-notice.danger{background:#fef2f2;border-color:#fecaca;border-left-color:#dc2626;color:#b91c1c}
 .mail-ok{color:var(--ok);font-weight:600}
 .mail-bad{color:var(--bad);font-weight:600}
+
+/* 侧边栏设置（Ver 0.5 ②）：一行一个挂件 —— 可勾选启用、改标题、改条数、↑↓ 调序。
+   未启用的行整体压暗，扫一眼就能看出哪些会出现在前台。 */
+.sb-list{display:grid;gap:10px;margin-top:6px}
+.sb-row{border:1px solid var(--line);border-radius:12px;padding:11px 14px;background:#fff}
+.sb-row.on{border-color:var(--ac-line)}
+.sb-row:not(.on){background:#fbfbfd}
+.sb-row:not(.on) .sb-bd{opacity:.5}
+.sb-hd{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sb-on{display:flex;align-items:center;gap:7px;font-size:14px;cursor:pointer}
+.sb-on input{width:auto}
+.sb-kind{font-size:12.5px;color:var(--mut);background:#f4f6fb;border-radius:999px;padding:1px 10px}
+.sb-act{margin-left:auto;display:flex;gap:6px}
+.sb-act .btn{padding:4px 10px;font-size:12.5px;border-radius:7px}
+.sb-bd{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px}
+.sb-f{display:flex;flex-direction:column;gap:5px;font-size:12.5px;color:var(--mut);flex:1 1 220px;min-width:0}
+.sb-f-n{flex:0 0 96px}
+.sb-f-t{flex:1 1 100%}
+.sb-f .inp,.sb-f .txa{font-size:13.5px;padding:7px 10px}
+.sb-f-t .txa{min-height:76px}
+@media (max-width:640px){.sb-act{margin-left:0;width:100%}}
