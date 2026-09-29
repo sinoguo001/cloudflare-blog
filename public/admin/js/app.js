@@ -2,7 +2,7 @@
 // 博客后台单页应用入口：鉴权 -> 布局 -> Hash 路由 -> 各管理视图
 // ============================================================
 import { API } from './api.js';
-import { esc, el, toast, dialog, confirmDanger, fmtSize, fmtTime } from './ui.js';
+import { esc, el, toast, dialog, confirmDanger, fmtSize, fmtTime, busy } from './ui.js';
 import { Editor } from './editor.js';
 import { dashboardHtml, bindDashboard } from './dashboard.js';
 
@@ -1966,7 +1966,7 @@ async function viewSettings(tabArg) {
     </div>
   </div>
 
-  <div class="card"><button class="btn p" type="submit">保存全部设置</button>
+  <div class="card"><button class="btn p" id="set-save" type="submit">保存全部设置</button>
     <span class="hint" style="margin-left:10px">五个标签页的设置会一起保存；设置即时生效，前台主题、订阅地址与页面内容将同步更新。</span></div>
   </form>`);
   const v = view();
@@ -2384,6 +2384,10 @@ async function viewSettings(tabArg) {
 
   v.querySelector('#set-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
+    // 保存按钮同时充当防重复提交的闸门：请求在跑时它一直是禁用的，
+    // 表单的默认提交按钮被禁用后回车也不会再触发 submit，所以不会重复发一份。
+    const saveBtn = v.querySelector('#set-save');
+    if (saveBtn.disabled) return;
     const pw = v.querySelector('#s-pw').value;
     const pw2 = v.querySelector('#s-pw2').value;
     if (pw !== pw2) { toast('两次输入的新密码不一致', 'bad'); return; }
@@ -2452,12 +2456,17 @@ async function viewSettings(tabArg) {
     // 授权码只在真的填了才提交：留空 = 保持原值，避免每次保存把已存的密码清掉
     if (mPass.value) body.mail_pass = mPass.value;
     if (pw) body.new_password = pw;
+    // 一点保存整页就蒙灰 + 转圈：保存本身要跑好几秒（写设置 + 清边缘缓存），
+    // 不遮一下会分不清是「在跑」还是「卡住了」。释放函数放 finally，失败也一定撤掉。
+    saveBtn.disabled = true;
+    const done = busy('正在保存设置…', '设置即时生效，请稍候');
     try {
       await API.patch('/settings', body);
-      toast('设置已保存，前台已同步更新');
+      toast('设置已保存 ✓ 前台已同步更新');
       v.querySelector('#s-pw').value = '';
       v.querySelector('#s-pw2').value = '';
     } catch (e) { toast(e.message, 'bad'); }
+    finally { saveBtn.disabled = false; done(); }
   });
 }
 

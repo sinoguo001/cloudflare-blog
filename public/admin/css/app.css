@@ -147,6 +147,22 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .tst.ok{background:#15803d}.tst.bad{background:#b91c1c}
 @keyframes tin{from{opacity:0;transform:translateY(-8px)}to{opacity:1}}
 .loading{text-align:center;color:var(--mut);padding:40px}
+
+/* 全页忙碌遮罩（ui.js 的 busy()）：点保存后整页蒙灰，让人一眼看出「在跑」而不是卡住。
+   层级 300 = 盖住普通弹窗、但低于 toast，好让「保存成功」的提示在遮罩淡出时就能看见。 */
+.mask.busy{z-index:300;background:rgba(241,245,249,.72);cursor:progress;animation:bin .14s}
+/* 把底下的内容「洗白去色」，视觉上就是页面变灰；去掉遮罩即恢复原色 */
+.mask.busy{backdrop-filter:blur(2px) saturate(.3);-webkit-backdrop-filter:blur(2px) saturate(.3)}
+.mask.busy.out{opacity:0;transition:opacity .18s}
+@keyframes bin{from{opacity:0}to{opacity:1}}
+.busy-box{display:flex;align-items:center;gap:11px;background:#fff;border:1px solid var(--line);
+  border-radius:14px;padding:15px 22px;box-shadow:0 12px 40px rgba(15,23,42,.16);font-size:14.5px}
+.busy-box b{font-weight:600;color:var(--text);font-variant-numeric:tabular-nums}
+.busy-box .busy-note{font-size:12.5px;color:var(--mut)}
+.busy-box .busy-note:empty{display:none}
+.spin{flex:none;width:17px;height:17px;border-radius:50%;
+  border:2px solid #dbe1ea;border-top-color:var(--ac);animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
 .cover-prev img{max-height:150px;border-radius:10px;border:1px solid var(--line)}
 .pager-line{display:flex;gap:8px;align-items:center;margin-top:14px}
 /* 访问趋势（纯 CSS 柱状图） */

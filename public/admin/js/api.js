@@ -55,7 +55,17 @@ export const API = {
       opt.headers['content-type'] = 'application/json';
       opt.body = JSON.stringify(body);
     }
-    const r = await fetch('/api' + url, opt);
+    let r;
+    try {
+      r = await fetch('/api' + url, opt);
+    } catch (e) {
+      // 请求在「进到服务端之前」就失败了（断网、切网、连接被中断）：
+      // fetch 抛出来的是浏览器原文（Failed to fetch / Load failed），
+      // 直接弹给用户等于没说，统一换成一句看得懂的。
+      const err = new Error('网络连接失败，请检查网络后重试');
+      err.code = 0;
+      throw err;
+    }
     const ct = r.headers.get('content-type') || '';
     let data = null;
     try {
