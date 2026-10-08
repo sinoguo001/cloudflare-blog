@@ -5,7 +5,7 @@
 // ============================================================
 import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, isEmail, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard,
   normalizePermalink, permalinkOf, permalinkRegex, postUrl, pageUrl, catUrl, permalinkVarsMatch,
-  sha256Hex, safeEqual, postPassCookie } from './_lib/util.js';
+  sha256Hex, safeEqual, postPassCookie, parseRange, MEDIA_TYPES, MEDIA_MAX, mediaKindOf } from './_lib/util.js';
 // cloudflare:sockets 必须静态 import：Pages Functions 的打包器只稳妥支持顶层静态导入，
 // 动态 import('cloudflare:sockets') 在真机上可能加载失败，表现为接口直接 5xx。
 // 传给 mail.js 而不是让它自己 import —— 这样本地 Node 测试仍能注入假 socket。
@@ -19,6 +19,7 @@ import * as feed from './_lib/feed.js';
 import * as cache from './_lib/cache.js';
 import * as purge from './_lib/purge.js';
 import { buildSidebar, normalizeItems } from './_lib/sidebar.js';
+import { resolveEmbed } from './_lib/embed.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
@@ -29,6 +30,10 @@ const jset = (data, cookie, status = 200) => {
   if (cookie) r.headers.set('Set-Cookie', cookie);
   return r;
 };
+
+// R2 里所有上传文件的键都以 media/ 开头（备份在 backups/、主题在 themes/）
+const MEDIA_PREFIX = 'media/';
+const mediaLimitMsg = (kind, max) => `${kind === 'video' ? '视频' : kind === 'audio' ? '音频' : '图片'}不能超过 ${Math.round(max / 1048576)}MB`;
 
 // 友圈（Ver 0.4 ⑫）：前台访问 /friends 时，若距上次抓取超过这个分钟数，
 // 就用 waitUntil 在后台补一轮 —— 访客不等抓取，但数据会自己变新。
@@ -71,20 +76,46 @@ async function handle(ctx) {
     return env.ASSETS.fetch(new Request(target, request));
   }
 
-  // ---- R2 图片代理 ----
+  // ---- R2 媒体代理（图片 / 视频 / 音频） ----
+  // 视频要能拖进度条就必须支持 Range：不回 206 的话浏览器只能从头顺播，一拖就重下整个文件。
+  // 只在请求真的带了 Range 时才多查一次 head（拿总长度才能算出 content-range），
+  // 普通图片仍是一次 get 搞定，不额外消耗 R2 请求数。
   if (seg[0] === 'media') {
     if (method !== 'GET' && method !== 'HEAD') return err('方法不允许', 405);
-    const key = 'media/' + seg.slice(1).join('/');
-    const obj = await env.BLOG.get(key);
-    if (!obj) return err('图片不存在', 404);
+    // 历史数据兼容：早期上传接口回的是 /media/media/xxx（前缀重复），这里把多出来的
+    // 那一段 media 归一化掉 —— 两种写法都指向同一个对象，老文章里的图也不会再是碎图。
+    const rel = seg.slice(1);
+    if (rel[0] === 'media') rel.shift();
+    const key = MEDIA_PREFIX + rel.join('/');
+    const rangeHeader = request.headers.get('range');
+    const head = rangeHeader ? await env.BLOG.head(key) : null;
+    if (rangeHeader && !head) return err('文件不存在', 404);
+    const total = head ? head.size : 0;
+    const r = rangeHeader ? parseRange(rangeHeader, total) : null;
+    if (r === 'bad') {
+      return new Response(null, {
+        status: 416,
+        headers: { 'accept-ranges': 'bytes', 'content-range': 'bytes */' + total, 'cache-control': 'no-store' },
+      });
+    }
+    const obj = r
+      ? await env.BLOG.get(key, { range: { offset: r.start, length: r.end - r.start + 1 } })
+      : await env.BLOG.get(key);
+    if (!obj) return err('文件不存在', 404);
     const ct = obj.httpMetadata?.contentType || obj.customMetadata?.ct || mimeOfExt(key);
-    return new Response(obj.body, {
-      headers: {
-        'content-type': ct,
-        'cache-control': 'public, max-age=31536000, immutable',
-        'etag': obj.httpEtag || '',
-      },
-    });
+    const headers = {
+      'content-type': ct,
+      'accept-ranges': 'bytes',
+      'cache-control': 'public, max-age=31536000, immutable',
+      'etag': obj.httpEtag || '',
+    };
+    if (r) {
+      headers['content-range'] = `bytes ${r.start}-${r.end}/${total}`;
+      headers['content-length'] = String(r.end - r.start + 1);
+    } else if (obj.size) {
+      headers['content-length'] = String(obj.size);
+    }
+    return new Response(method === 'HEAD' ? null : obj.body, { status: r ? 206 : 200, headers });
   }
 
   // ---- 主题静态资源代理（R2 themes/ 前缀；CSS 内的相对 url() 也走这里） ----
@@ -725,19 +756,42 @@ async function api(ctx, url, seg, method) {
   const user = await authUser();
   if (!user) return err('未登录或会话已过期', 401);
 
-  // --- 媒体（R2） ---
+  // --- 媒体（R2）：图片 / 视频 / 音频 ---
   if (seg[0] === 'media') {
     if (method === 'POST' && seg.length === 1) {
       const ctRaw = request.headers.get('content-type') || '';
       const ct = ctRaw.split(';')[0].trim().toLowerCase();
-      const allow = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/avif': 'avif', 'image/bmp': 'bmp', 'image/x-icon': 'ico' };
-      const ext = allow[ct];
-      if (!ext) return err('仅支持 PNG / JPG / GIF / WebP / AVIF / BMP 图片', 415);
+      const ext = MEDIA_TYPES[ct];
+      if (!ext) {
+        return err('不支持的文件类型：视频请用 MP4 / WebM / MOV，音频请用 MP3 / M4A / WAV / FLAC / OGG，图片请用 PNG / JPG / GIF / WebP / AVIF / BMP', 415);
+      }
+      const kind = mediaKindOf(ct);
+      const max = MEDIA_MAX[kind];
+      // 快路：带了 content-length 就直接拒，不用白流一个超大文件
       const len = parseInt(request.headers.get('content-length') || '0', 10);
-      if (len > 8 * 1024 * 1024) return err('图片不能超过 8MB', 413);
-      const key = `media/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-      await env.BLOG.put(key, request.body, { httpMetadata: { contentType: ct }, customMetadata: { ct } });
-      return json({ ok: true, key, url: '/media/' + key });
+      if (len > max) return err(mediaLimitMsg(kind, max), 413);
+      const key = MEDIA_PREFIX + `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      // 慢路：HTTP/2 与流式请求不一定给 content-length，光靠上面那条等于没限制。
+      // 所以边写边数字节，一超限就掐断（R2 会中止这次写入，不会留下半截对象）。
+      let n = 0, over = false;
+      const limiter = new TransformStream({
+        transform(chunk, ctl) {
+          n += chunk.byteLength;
+          if (n > max) { over = true; ctl.error(new Error('MEDIA_TOO_LARGE')); return; }
+          ctl.enqueue(chunk);
+        },
+      });
+      try {
+        await env.BLOG.put(key, request.body ? request.body.pipeThrough(limiter) : request.body,
+          { httpMetadata: { contentType: ct }, customMetadata: { ct } });
+      } catch (e) {
+        if (!over) throw e;
+        await env.BLOG.delete(key).catch(() => {});
+        return err(mediaLimitMsg(kind, max), 413);
+      }
+      // 注意：url 里不能再拼一次 media/ —— R2 的键已经带了，拼两次会变成
+      // /media/media/xxx 取不到对象（图片显示不出来、视频放不了）。
+      return json({ ok: true, key, url: '/media/' + key.slice(MEDIA_PREFIX.length), kind });
     }
     if (method === 'GET' && seg.length === 1) {
       const list = await env.BLOG.list({ prefix: 'media/', cursor: url.searchParams.get('cursor') || undefined, limit: 200 });
@@ -757,6 +811,17 @@ async function api(ctx, url, seg, method) {
       return json({ ok: true });
     }
     return err('接口不存在', 404);
+  }
+
+  // --- 外站视频嵌入（B 站 / YouTube）---
+  // 把「视频页面地址」换成播放器地址，正文里只存后者。b23.tv 分享短链要出网跟一次
+  // 重定向，所以这个接口放在登录之后 —— 只有博主能触发，不给外人当跳板用。
+  if (seg[0] === 'embed' && seg.length === 1) {
+    if (method !== 'POST') return err('方法不允许', 405);
+    const b = (await readJson(request)) || {};
+    const r = await resolveEmbed(b.url);
+    if (!r.ok) return err(r.error || '解析失败', 400);
+    return json(r);
   }
 
   // --- 备份（R2） ---
@@ -1162,6 +1227,8 @@ async function api(ctx, url, seg, method) {
         description: String(b.description || '').trim().slice(0, 120),
         sort: Math.max(0, Math.min(9999, parseInt(b.sort, 10) || 0)),
         enabled: b.enabled === false || b.enabled === 0 ? 0 : 1,
+        // Ver 0.5 ⑤：默认**不进**白名单 —— 新订阅抓回来的文章先进待审，看过觉得合适再放行
+        whitelist: b.whitelist === true || b.whitelist === 1 ? 1 : 0,
       });
       // 加完立刻抓一次：博主当场就知道成没成、抓到几篇，不用等下一个刷新周期
       const r = (await feed.refreshFeeds(env, { ids: [id], timeoutMs: 8000 }))[0] || {};
@@ -1207,15 +1274,70 @@ async function api(ctx, url, seg, method) {
         }
         if (b.sort != null) patch.sort = Math.max(0, Math.min(9999, parseInt(b.sort, 10) || 0));
         if (b.enabled != null) patch.enabled = (b.enabled === false || b.enabled === 0) ? 0 : 1;
+        if (b.whitelist != null) patch.whitelist = (b.whitelist === true || b.whitelist === 1) ? 1 : 0;
         if (!Object.keys(patch).length) return err('没有要修改的字段');
         await db.updateFeed(dbx, id, patch);
+        // 刚被设为白名单：把它以前压着的待审文章一并放行 —— 设为白名单即认可这个源
+        let passed = 0;
+        if (patch.whitelist === 1 && !cur.whitelist) passed = await db.approveFeedPosts(dbx, id);
         // 换了地址就顺手重抓一次，免得列表里还挂着旧源的文章
         if (patch.url && patch.url !== cur.url) await feed.refreshFeeds(env, { ids: [id], timeoutMs: 8000 });
+        clearPaths(['/friends']);
+        return json({ ok: true, passed });
+      }
+      if (method === 'DELETE') {
+        await db.deleteFeed(dbx, id);
+        clearPaths(['/friends']);
+        return json({ ok: true });
+      }
+    }
+    return err('接口不存在', 404);
+  }
+
+  // --- 友圈文章审核（Ver 0.5 ⑤）---
+  // 白名单源的文章抓回来直接上；不在白名单的源，文章先躺在 pending 里等这里点头。
+  // 博主要么单条通过 / 忽略，要么整批处理。
+  if (seg[0] === 'friendposts') {
+    if (method === 'GET' && seg.length === 1) {
+      const want = String(url.searchParams.get('status') || 'pending');
+      const status = ['pending', 'approved', 'rejected'].includes(want) ? want : 'pending';
+      const [items, counts] = await Promise.all([
+        db.listFriendPostsAdmin(dbx, { status, limit: 60 }),
+        db.countFriendPostsByStatus(dbx),
+      ]);
+      return json({ items, counts, status });
+    }
+    // 批量：{ ids:[...], status } 或 { all:true, status }（把当前所有待审一起处理）
+    if (method === 'POST' && seg.length === 2 && seg[1] === 'batch') {
+      const b = (await readJson(request)) || {};
+      const status = String(b.status || '');
+      if (!['approved', 'rejected', 'pending'].includes(status)) return err('状态不合法');
+      const n = b.all === true
+        ? await db.setAllPendingStatus(dbx, status)
+        : await db.setFriendPostsStatus(dbx, b.ids, status);
+      clearPaths(['/friends']);
+      return json({ ok: true, changed: n });
+    }
+    // 批量删除：审核完不想留档的直接清掉（下次刷新会重新抓回来，除非把源暂停）
+    if (method === 'POST' && seg.length === 2 && seg[1] === 'delete') {
+      const b = (await readJson(request)) || {};
+      const n = await db.deleteFriendPosts(dbx, b.ids);
+      if (!n) return err('没有可删除的文章');
+      clearPaths(['/friends']);
+      return json({ ok: true, deleted: n });
+    }
+    if (seg.length === 2 && /^\d+$/.test(seg[1])) {
+      const id = parseInt(seg[1], 10);
+      if (method === 'PATCH') {
+        const b = (await readJson(request)) || {};
+        const status = String(b.status || '');
+        if (!['approved', 'rejected', 'pending'].includes(status)) return err('状态不合法');
+        if (!(await db.setFriendPostStatus(dbx, id, status))) return err('文章不存在', 404);
         clearPaths(['/friends']);
         return json({ ok: true });
       }
       if (method === 'DELETE') {
-        await db.deleteFeed(dbx, id);
+        if (!(await db.deleteFriendPosts(dbx, [id]))) return err('文章不存在', 404);
         clearPaths(['/friends']);
         return json({ ok: true });
       }

@@ -1,4 +1,5 @@
 -- Ver 0.4 ⑫ 友圈：订阅别人的 RSS，把抓到的文章展示在自己站上
+-- （friend_feeds.whitelist 与 friend_posts.status 两列由 0012 补，见 0012_friends_whitelist.sql）
 -- 说明：代码里已有自动建表（db.js 的 ensureFriendTables，首次读写时 CREATE TABLE IF NOT EXISTS），
 --      正常情况下**不用手动跑这个文件**；留档是为了迁移 / 离线排查时方便。
 -- friend_feeds → 订阅源（一条 = 一个朋友的 RSS）

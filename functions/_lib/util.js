@@ -55,12 +55,58 @@ export function readCookie(req, name) {
 }
 
 export const MIME_EXT = { png:'image/png', jpeg:'image/jpeg', jpg:'image/jpeg', gif:'image/gif',
-  webp:'image/webp', avif:'image/avif', bmp:'image/bmp', ico:'image/x-icon', json:'application/json', txt:'text/plain',
+  webp:'image/webp', avif:'image/avif', bmp:'image/bmp', ico:'image/x-icon',
+  // 音视频（Ver 0.5 ⑥）：少了这几条，/media/xxx.mp4 会以 application/octet-stream 下发，
+  // 浏览器拿到后不会去播，而是弹出下载 —— 「点了不能播」十有八九就是这里缺了。
+  mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime', m4v:'video/x-m4v', ogv:'video/ogg',
+  mp3:'audio/mpeg', m4a:'audio/mp4', aac:'audio/aac', wav:'audio/wav', flac:'audio/flac',
+  ogg:'audio/ogg', oga:'audio/ogg', opus:'audio/opus', weba:'audio/webm',
+  json:'application/json', txt:'text/plain',
   css:'text/css', svg:'image/svg+xml', woff2:'font/woff2', woff:'font/woff', xml:'application/xml', js:'application/javascript', webmanifest:'application/manifest+json' };
 export const mimeOfExt = (f) => {
   const e = (String(f).split('.').pop() || '').toLowerCase();
   return MIME_EXT[e] || 'application/octet-stream';
 };
+
+// 允许上传的媒体类型 -> 落库扩展名。键是浏览器真实发来的 content-type
+// （不带参数），所以 x-wav / x-m4a 这类变体要单独列。
+export const MEDIA_TYPES = {
+  'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
+  'image/avif': 'avif', 'image/bmp': 'bmp', 'image/x-icon': 'ico',
+  'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov',
+  'video/x-m4v': 'm4v', 'video/ogg': 'ogv',
+  'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/aac': 'aac',
+  'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/flac': 'flac', 'audio/x-flac': 'flac',
+  'audio/ogg': 'ogg', 'audio/opus': 'opus', 'audio/webm': 'weba',
+};
+// 分类型体积上限。视频留 20MB 余量：平台单次请求体硬上限 100MB，
+// 顶格上传的话超一点就只拿到一个含糊的 413，不如自己先拦下来给句人话。
+export const MEDIA_MAX = { image: 8 * 1024 * 1024, audio: 20 * 1024 * 1024, video: 80 * 1024 * 1024 };
+export const mediaKindOf = (ct) => (String(ct || '').startsWith('video/') ? 'video'
+  : String(ct || '').startsWith('audio/') ? 'audio' : 'image');
+
+// HTTP Range 解析（给 /media 用）：视频要能拖进度条，就必须回 206。
+// 返回 {start,end} / null（没带 Range）/ 'bad'（语法或范围越界，调用方回 416）。
+export function parseRange(header, total) {
+  const h = String(header == null ? '' : header).trim();
+  if (!h) return null;
+  const m = /^bytes=(\d*)-(\d*)$/i.exec(h);
+  if (!m || (m[1] === '' && m[2] === '')) return 'bad';
+  if (!Number.isFinite(total) || total <= 0) return 'bad';
+  let start, end;
+  if (m[1] === '') {                       // bytes=-500：最后 500 字节
+    const n = parseInt(m[2], 10);
+    if (!n) return 'bad';
+    start = Math.max(0, total - n);
+    end = total - 1;
+  } else {
+    start = parseInt(m[1], 10);
+    end = m[2] === '' ? total - 1 : Math.min(parseInt(m[2], 10), total - 1);
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 'bad';
+  if (start > end || start >= total) return 'bad';
+  return { start, end };
+}
 
 export function paginate(page, per, total) {
   const pages = Math.max(1, Math.ceil(total / per));

@@ -9,6 +9,7 @@ const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC_MAP[c]);
 
 import { highlight, normalizeLang } from './hl.js';
+import { identify, playerSrc } from './embed.js';
 
 const SAFE_PROTO = /^(https?:|mailto:|tel:|#|\/)/i;
 const ESC_CHARS = '\\`*_[]{}()#+-.!|>~';
@@ -23,6 +24,45 @@ function safeHref(u) {
   u = String(u || '').trim();
   if (u.startsWith('/') || u.startsWith('#') || /^(https?:|mailto:|tel:)/i.test(u)) return u;
   return null;
+}
+
+// ---------- 多媒体与外站嵌入（Ver 0.5 ⑥） ----------
+// 编辑器把视频 / 音频 / 嵌入统一存成「独占一行」的标签：
+//   <video src="…" poster="…"></video> ／ <audio src="…"></audio> ／ <iframe src="…"></iframe>
+// 这里只认这一种形态，并且**输出标签由服务端重建**：src 过 safeSrc，其余属性（controls /
+// preload / playsinline）一律丢弃后写死。手写的 <video onerror=…>、<video autoplay> 之类
+// 都进不来；iframe 更严，必须能解析成白名单站点的视频（见 embed.js），否则整行当普通文字转义。
+const MEDIA_LINE = /^<(video|audio|iframe)\b([^<>]*)><\/\1>$/i;
+const ENT_BACK = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+
+export function isMediaLine(line) {
+  return MEDIA_LINE.test(String(line == null ? '' : line).trim());
+}
+
+// 取一对一属性值（编辑器存的是转义前的原文，这里只还原标准实体）
+function tagAttr(raw, name) {
+  const m = new RegExp('\\b' + name + '\\s*=\\s*"([^"]*)"', 'i').exec(raw);
+  if (!m) return '';
+  return m[1].replace(/&(amp|lt|gt|quot|#39);/g, (x, k) => ENT_BACK[k]);
+}
+
+// 一行媒体标签 -> HTML（认不出来返回空串，由调用方当普通文字处理）
+export function mediaLine(line) {
+  const m = MEDIA_LINE.exec(String(line == null ? '' : line).trim());
+  if (!m) return '';
+  const tag = m[1].toLowerCase(), raw = m[2];
+
+  if (tag === 'iframe') {
+    const e = identify(tagAttr(raw, 'src'));
+    if (!e) return '';
+    return `<div class="video-embed"><iframe src="${esc(playerSrc(e))}" title="视频播放器" loading="lazy" allowfullscreen referrerpolicy="no-referrer"></iframe></div>`;
+  }
+
+  const src = safeSrc(tagAttr(raw, 'src'));
+  if (!src) return '';
+  if (tag === 'audio') return `<audio src="${esc(src)}" controls preload="metadata"></audio>`;
+  const poster = safeSrc(tagAttr(raw, 'poster'));
+  return `<video src="${esc(src)}"${poster ? ` poster="${esc(poster)}"` : ''} controls preload="metadata" playsinline></video>`;
 }
 
 // 行内解析：手工状态机
@@ -154,6 +194,7 @@ function isSepRow(s) {
 }
 
 const BLOCK_START = (l) => {
+  if (isMediaLine(l)) return true;
   if (/^(#{1,6})\s+/.test(l)) return true;
   if (/^```/.test(l.trim()) || /^~~~/.test(l.trim())) return true;
   if (/^>\s?/.test(l)) return true;
@@ -171,6 +212,15 @@ export function render(md) {
 
     // 空行
     if (/^\s*$/.test(line)) { i++; continue; }
+
+    // 多媒体 / 外站嵌入：独占一行的标签
+    if (isMediaLine(line)) {
+      const blk = mediaLine(line);
+      // 认不出来（src 非法、主机不在白名单）就照原样显示成文字，绝不静默丢掉这一行
+      html += (blk || `<p>${inline(line.trim())}</p>`) + '\n';
+      i++;
+      continue;
+    }
 
     // 代码围栏
     const fm = /^```([\w+-]*)\s*$/.exec(line) || /^~~~([\w+-]*)\s*$/.exec(line);

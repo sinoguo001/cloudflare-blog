@@ -719,7 +719,8 @@ export async function recentLinkApplies(db, ip, seconds = 3600) {
 }
 
 // ---------- 友圈（Ver 0.4 ⑫）：订阅别人的 RSS ----------
-// 表结构与 migrations/0011_friends.sql 一致，首次读写时自动建立，无需手工跑迁移。
+// 表结构与 migrations/0011_friends.sql + 0012_friends_whitelist.sql 一致，
+// 首次读写时自动建立 / 补列，无需手工跑迁移。
 const FEED_DDL = `CREATE TABLE IF NOT EXISTS friend_feeds(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
@@ -728,26 +729,45 @@ const FEED_DDL = `CREATE TABLE IF NOT EXISTS friend_feeds(
   enabled INTEGER NOT NULL DEFAULT 1,
   last_fetch TEXT NOT NULL DEFAULT '', last_status INTEGER NOT NULL DEFAULT 0,
   last_error TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`;
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  whitelist INTEGER NOT NULL DEFAULT 0)`;
 const FPOST_DDL = `CREATE TABLE IF NOT EXISTS friend_posts(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   feed_id INTEGER NOT NULL, guid TEXT NOT NULL,
   title TEXT NOT NULL, link TEXT NOT NULL,
   summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '',
-  published_at TEXT NOT NULL, fetched_at TEXT NOT NULL)`;
+  published_at TEXT NOT NULL, fetched_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'approved')`;
 
 let friendReady = false;
 export async function ensureFriendTables(db) {
   if (friendReady) return;
   await db.prepare(FEED_DDL).run();
   await db.prepare(FPOST_DDL).run();
+  // Ver 0.5 ⑤ 白名单：老库（表由 0011 建出、没有这两列）在这里补上，
+  // 免得前台查询直接 no such column: fp.status 整页 500。
+  // ★ friend_posts.status 的默认值必须是 approved —— ALTER 会用它填满已有行，
+  //   写成 pending 的话老站一升级，友圈文章会全部瞬间消失。
+  try {
+    const f = await db.prepare('PRAGMA table_info(friend_feeds)').all();
+    if (!((f && f.results) || []).some((c) => c.name === 'whitelist')) {
+      await db.prepare('ALTER TABLE friend_feeds ADD COLUMN whitelist INTEGER NOT NULL DEFAULT 0').run();
+    }
+    const p = await db.prepare('PRAGMA table_info(friend_posts)').all();
+    if (!((p && p.results) || []).some((c) => c.name === 'status')) {
+      await db.prepare("ALTER TABLE friend_posts ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'").run();
+    }
+  } catch (e) { /* 补列失败时退化成「老行为」：不按白名单卡，全部当已通过 */ }
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_ffeed_enabled ON friend_feeds(enabled, sort, id)').run();
   await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_fpost_uniq ON friend_posts(feed_id, guid)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_fpost_time ON friend_posts(published_at DESC, id DESC)').run();
   friendReady = true;
 }
 
-const FEED_COLS = 'id,name,url,site_url,avatar,description,sort,enabled,last_fetch,last_status,last_error,created_at,updated_at';
+// 文章审核状态白名单，防任意字符串写进库
+const FPOST_ST = ['approved', 'pending', 'rejected'];
+
+const FEED_COLS = 'id,name,url,site_url,avatar,description,sort,enabled,whitelist,last_fetch,last_status,last_error,created_at,updated_at';
 // 顺带带出「已抓文章数」和「最新一篇的时间」，后台列表直接显示，省一次请求
 export async function listFeeds(db, { enabledOnly = false } = {}) {
   await ensureFriendTables(db);
@@ -779,17 +799,18 @@ export async function addFeed(db, d) {
   await ensureFriendTables(db);
   const now = bnNow();
   const r = await db.prepare(
-    `INSERT INTO friend_feeds(name,url,site_url,avatar,description,sort,enabled,created_at,updated_at)
-     VALUES(?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO friend_feeds(name,url,site_url,avatar,description,sort,enabled,whitelist,created_at,updated_at)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`
   ).bind(
     d.name || '', d.url, d.site_url || '', d.avatar || '', d.description || '',
-    parseInt(d.sort, 10) || 0, d.enabled === 0 || d.enabled === false ? 0 : 1, now, now,
+    parseInt(d.sort, 10) || 0, d.enabled === 0 || d.enabled === false ? 0 : 1,
+    d.whitelist === 1 || d.whitelist === true ? 1 : 0, now, now,
   ).run();
   return (r && r.meta && r.meta.last_row_id) || (r && r.lastInsertRowid) || 0;
 }
 export async function updateFeed(db, id, patch) {
   await ensureFriendTables(db);
-  const allow = ['name', 'url', 'site_url', 'avatar', 'description', 'sort', 'enabled'];
+  const allow = ['name', 'url', 'site_url', 'avatar', 'description', 'sort', 'enabled', 'whitelist'];
   const keys = Object.keys(patch || {}).filter((k) => allow.includes(k));
   if (!keys.length) return 0;
   const sql = `UPDATE friend_feeds SET ${keys.map((k) => `${k}=?`).join(',')}, updated_at=? WHERE id=?`;
@@ -814,18 +835,21 @@ export async function deleteFeed(db, id) {
 }
 // 抓回来的文章入库：同源同篇按 guid 覆盖（更新标题/摘要），不会重复堆
 const KEEP_PER_FEED = 30;
-export async function saveFeedItems(db, feedId, items, now) {
+// approved 由调用方按「源是否白名单」决定：白名单源直接 approved，其余先 pending
+export async function saveFeedItems(db, feedId, items, now, { approved = false } = {}) {
   await ensureFriendTables(db);
+  // ★ ON CONFLICT 分支**不更新 status**：白名单源与已审核过的文章，
+  //   下一轮抓取时不能被重新写回 pending，否则博主点过的「通过」会被冲掉。
   const st = db.prepare(
-    `INSERT INTO friend_posts(feed_id,guid,title,link,summary,author,published_at,fetched_at)
-     VALUES(?,?,?,?,?,?,?,?)
+    `INSERT INTO friend_posts(feed_id,guid,title,link,summary,author,published_at,fetched_at,status)
+     VALUES(?,?,?,?,?,?,?,?,?)
      ON CONFLICT(feed_id,guid) DO UPDATE SET
        title=excluded.title, link=excluded.link, summary=excluded.summary,
        author=excluded.author, published_at=excluded.published_at, fetched_at=excluded.fetched_at`
   );
   for (const it of (items || []).slice(0, 20)) {
     await st.bind(feedId, it.guid, it.title, it.link, it.summary || '', it.author || '',
-      it.published_at, now).run();
+      it.published_at, now, approved ? 'approved' : 'pending').run();
   }
   // 每个源只留最近的若干条，老文章自动淘汰，免得库无限长大
   await db.prepare(
@@ -834,23 +858,86 @@ export async function saveFeedItems(db, feedId, items, now) {
   ).bind(feedId, feedId, KEEP_PER_FEED).run();
   return (items || []).length;
 }
-// 前台友圈流：只取「启用中」的订阅；停用某个源，它的文章就一起消失
+// 前台友圈流：只取「启用中」且「已通过审核」的文章；停用源或未过审的文章都不出现
 export async function listFriendPosts(db, { limit = 20, offset = 0 } = {}) {
   await ensureFriendTables(db);
   const r = await db.prepare(
     `SELECT fp.id,fp.title,fp.link,fp.summary,fp.author,fp.published_at,
        f.id AS feed_id, f.name AS feed_name, f.site_url AS feed_site, f.avatar AS feed_avatar
      FROM friend_posts fp JOIN friend_feeds f ON f.id = fp.feed_id
-     WHERE f.enabled=1 ORDER BY fp.published_at DESC, fp.id DESC LIMIT ? OFFSET ?`
+     WHERE f.enabled=1 AND fp.status='approved'
+     ORDER BY fp.published_at DESC, fp.id DESC LIMIT ? OFFSET ?`
   ).bind(limit, offset).all();
   return r.results || [];
 }
 export async function countFriendPosts(db) {
   await ensureFriendTables(db);
   const r = await db.prepare(
-    'SELECT COUNT(*) n FROM friend_posts fp JOIN friend_feeds f ON f.id=fp.feed_id WHERE f.enabled=1'
+    `SELECT COUNT(*) n FROM friend_posts fp JOIN friend_feeds f ON f.id=fp.feed_id
+     WHERE f.enabled=1 AND fp.status='approved'`
   ).first();
   return r ? r.n : 0;
+}
+
+// ---------- 友圈文章审核（Ver 0.5 ⑤） ----------
+// 后台列表：按状态取，pending 就是「等博主点头」的那批
+export async function listFriendPostsAdmin(db, { status = 'pending', limit = 60, offset = 0 } = {}) {
+  await ensureFriendTables(db);
+  const st = FPOST_ST.includes(status) ? status : 'pending';
+  const r = await db.prepare(
+    `SELECT fp.id,fp.feed_id,fp.title,fp.link,fp.summary,fp.author,fp.published_at,fp.status,
+       f.name AS feed_name, f.site_url AS feed_site, f.avatar AS feed_avatar, f.whitelist
+     FROM friend_posts fp JOIN friend_feeds f ON f.id = fp.feed_id
+     WHERE fp.status=? ORDER BY fp.published_at DESC, fp.id DESC LIMIT ? OFFSET ?`
+  ).bind(st, limit, offset).all();
+  return r.results || [];
+}
+// 三种状态各有几条，后台标签上要显示数字
+export async function countFriendPostsByStatus(db) {
+  await ensureFriendTables(db);
+  const r = await db.prepare('SELECT status, COUNT(*) n FROM friend_posts GROUP BY status').all();
+  const out = { pending: 0, approved: 0, rejected: 0 };
+  for (const row of ((r && r.results) || [])) if (row.status in out) out[row.status] = row.n;
+  return out;
+}
+export async function setFriendPostStatus(db, id, status) {
+  await ensureFriendTables(db);
+  if (!FPOST_ST.includes(status)) return 0;
+  const r = await db.prepare('UPDATE friend_posts SET status=? WHERE id=?').bind(status, id).run();
+  return (r && r.meta && r.meta.changes) || 0;
+}
+// 批量改状态：ids 为空数组 = 不做任何事（避免手滑传空把全库改了）
+export async function setFriendPostsStatus(db, ids, status) {
+  await ensureFriendTables(db);
+  if (!FPOST_ST.includes(status)) return 0;
+  const list = (ids || []).map((x) => parseInt(x, 10)).filter((x) => x > 0);
+  if (!list.length) return 0;
+  const ph = list.map(() => '?').join(',');
+  const r = await db.prepare(`UPDATE friend_posts SET status=? WHERE id IN (${ph})`).bind(status, ...list).run();
+  return (r && r.meta && r.meta.changes) || 0;
+}
+// 一键通过当前所有待审
+export async function setAllPendingStatus(db, status) {
+  await ensureFriendTables(db);
+  if (!FPOST_ST.includes(status)) return 0;
+  const r = await db.prepare("UPDATE friend_posts SET status=? WHERE status='pending'").bind(status).run();
+  return (r && r.meta && r.meta.changes) || 0;
+}
+// 把某个源压着的待审文章一次放行：勾上「白名单」时用（等于博主认可了这个源）
+export async function approveFeedPosts(db, feedId) {
+  await ensureFriendTables(db);
+  const r = await db.prepare(
+    "UPDATE friend_posts SET status='approved' WHERE feed_id=? AND status='pending'"
+  ).bind(feedId).run();
+  return (r && r.meta && r.meta.changes) || 0;
+}
+export async function deleteFriendPosts(db, ids) {
+  await ensureFriendTables(db);
+  const list = (ids || []).map((x) => parseInt(x, 10)).filter((x) => x > 0);
+  if (!list.length) return 0;
+  const ph = list.map(() => '?').join(',');
+  const r = await db.prepare(`DELETE FROM friend_posts WHERE id IN (${ph})`).bind(...list).run();
+  return (r && r.meta && r.meta.changes) || 0;
 }
 
 // 独立页面（type='page'）：前台导航、站点地图与后台「页面」列表都走这里

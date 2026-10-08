@@ -234,7 +234,10 @@ export async function refreshFeeds(env, { ids = null, limit = 3, timeoutMs = 800
     const r = await fetchFeed(f.url, { timeoutMs, fetchImpl });
     const patch = { last_fetch: bnNow(), last_status: 0, last_error: '' };
     if (r.ok) {
-      await db.saveFeedItems(dbx, f.id, r.items, bnNow());
+      // Ver 0.5 ⑤：白名单源抓回来直接放行；不在白名单的源先落 pending，等后台审核
+      await db.saveFeedItems(dbx, f.id, r.items, bnNow(), { approved: !!f.whitelist });
+      // 兜底：白名单源不该压着待审（比如白名单是直接在库里改的），刷新时顺手放行
+      if (f.whitelist) await db.approveFeedPosts(dbx, f.id).catch(() => {});
       patch.last_status = r.status || 200;
       if (!f.name && r.title) patch.name = String(r.title).slice(0, 40);   // 名字留空 → 用对方源标题
       if (!f.site_url && r.siteUrl) patch.site_url = r.siteUrl;

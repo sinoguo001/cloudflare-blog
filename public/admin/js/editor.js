@@ -10,8 +10,22 @@ const ALLOW = new Set([
   'strong', 'b', 'em', 'i', 'del', 's', 'u', 'blockquote',
   'pre', 'code', 'ul', 'ol', 'li', 'a', 'img',
   'table', 'thead', 'tbody', 'tr', 'th', 'td', 'span', 'hr', 'figure',
+  // 多媒体与外站嵌入（Ver 0.5 ⑥）
+  'video', 'audio', 'iframe',
 ]);
-const ATTR = { a: ['href', 'title'], img: ['src', 'alt'], th: ['colspan', 'rowspan'], td: ['colspan', 'rowspan'], code: ['class'] };
+// controls / preload / playsinline 必须放行：保存后重新打开文章时，
+// 这些属性被剥掉的话编辑器里的播放器就变成一个点了没反应的方块。
+const ATTR = {
+  a: ['href', 'title'], img: ['src', 'alt'],
+  th: ['colspan', 'rowspan'], td: ['colspan', 'rowspan'], code: ['class'],
+  video: ['src', 'poster', 'controls', 'preload', 'playsinline', 'muted', 'loop', 'contenteditable'],
+  audio: ['src', 'controls', 'preload', 'muted', 'loop', 'contenteditable'],
+  iframe: ['src', 'allowfullscreen', 'title', 'loading', 'contenteditable'],
+};
+
+// 能当播放器嵌进来的站点（与服务端 embed.js 同口径，客户端只是先挡一道，真正的闸门在服务端）
+const EMBED_URL = /^https?:\/\/(?:[\w-]+\.)*(?:bilibili\.com|b23\.tv|youtube\.com|youtu\.be|youtube-nocookie\.com)(?:[/:?#]|$)/i;
+const MEDIA_SRC = /^(https?:)?\/\//i;
 
 function sanitizeNode(node) {
   if (node.nodeType === Node.COMMENT_NODE) { node.remove(); return; }
@@ -34,6 +48,21 @@ function sanitizeNode(node) {
     const src = node.getAttribute('src') || '';
     if (!/^(https?:)?\/\//i.test(src) && !src.startsWith('/')) node.remove();
   }
+  if (tag === 'video' || tag === 'audio') {
+    const src = node.getAttribute('src') || '';
+    if (!MEDIA_SRC.test(src) && !src.startsWith('/')) { node.remove(); return; }
+    const poster = node.getAttribute('poster') || '';
+    if (poster && !MEDIA_SRC.test(poster) && !poster.startsWith('/')) node.removeAttribute('poster');
+    if (tag === 'audio') node.removeAttribute('poster');
+    // 设成「不可编辑的孤岛」：否则在 contenteditable 里点播放按钮会被当成定位光标，压根播不了
+    node.setAttribute('contenteditable', 'false');
+  }
+  if (tag === 'iframe') {
+    // 只留白名单站点的播放器：别的 iframe（包括粘贴进来的广告、追踪框）直接删掉
+    const src = node.getAttribute('src') || '';
+    if (!EMBED_URL.test(src)) { node.remove(); return; }
+    node.setAttribute('contenteditable', 'false');
+  }
   if (tag === 'span' && !node.textContent.trim()) node.remove();
   [...node.childNodes].forEach(sanitizeNode);
 }
@@ -45,6 +74,26 @@ export function sanitize(root) {
 // ---------- HTML -> Markdown ----------
 const escMd = (t) =>
   String(t).replace(/([\\`*_{}\[\]()#+\-.!|>~])/g, '\\$1').replace(/\s*\n\s*/g, '\n');
+
+// 多媒体 / 外站嵌入 -> Markdown 里**独占一行**的标签。服务端只认这一种形态，
+// 并且输出时会把属性全部丢弃重建，所以这里只需要把「源地址」写对。
+// 引号与尖括号会让这一行解析错位，直接删掉（URL 里本来也不该有）。
+function mediaTagOf(el) {
+  const tag = el.nodeName.toLowerCase();
+  const clean = (v) => String(v || '').replace(/["<>]/g, '');
+  if (tag === 'video' || tag === 'audio') {
+    const src = clean(el.getAttribute('src'));
+    if (!src) return '';
+    const poster = tag === 'video' ? clean(el.getAttribute('poster')) : '';
+    return `<${tag} src="${src}"${poster ? ` poster="${poster}"` : ''}></${tag}>`;
+  }
+  if (tag === 'iframe') {
+    const src = clean(el.getAttribute('src'));
+    if (!src) return '';
+    return `<iframe src="${src}"></iframe>`;
+  }
+  return '';
+}
 
 function inlineMd(node) {
   if (!node) return '';
@@ -67,6 +116,8 @@ function inlineMd(node) {
       const alt = node.getAttribute('alt') || '';
       return src ? '![' + alt + '](' + src + ')' : '';
     }
+    case 'video': case 'audio': case 'iframe':
+      return mediaTagOf(node);
     case 'p': case 'div': case 'span': case 'u': case 'figure': default:
       return inner();
   }
@@ -77,6 +128,8 @@ function inlineMd(node) {
 const BLOCKY = new Set([
   'p', 'div', 'ul', 'ol', 'li', 'pre', 'blockquote', 'table',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'figure',
+  // 播放器必须独占一块：跟文字挤在同一段里的话，Markdown 那行会既不是纯文字也不是纯媒体
+  'video', 'audio', 'iframe',
 ]);
 
 function splitBr(el) {
@@ -158,6 +211,11 @@ function blockLines(el) {
       return ['```' + (m ? m[1] : ''), txt, '```'];
     }
     case 'hr': return ['---'];
+    // 播放器 / 嵌入框：整行输出，不参与任何行内拼接
+    case 'video': case 'audio': case 'iframe': {
+      const line = mediaTagOf(el);
+      return line ? [line] : [];
+    }
     case 'ul': case 'ol': {
       const out = [];
       const ordered = tag === 'ol';
@@ -224,8 +282,10 @@ export function mdFromHtml(container) {
 const B = (k, label, cls) => ({ k, label, cls });
 
 export class Editor {
-  constructor(host, { ph = '开始写作…', upload } = {}) {
+  constructor(host, { ph = '开始写作…', upload, resolveEmbed } = {}) {
     this.upload = upload || (() => Promise.reject(new Error('未配置上传')));
+    // 外站视频要出网解析（b23.tv 短链），所以交给外部注入，编辑器自身不依赖 API 层
+    this.resolveEmbed = resolveEmbed || null;
     host.innerHTML = '';
     const div = document.createElement('div');
     div.className = 'ed-card';
@@ -272,7 +332,7 @@ export class Editor {
       [B('ul', '• 列表', 'insertUnorderedList'), B('ol', '1. 列表', 'insertOrderedList')],
       [B('code', '&lt;/&gt; 行内码', 'inlineCode'), B('codeblock', '{ } 高亮代码', 'codeBlock')],
       [B('link', '🔗 链接', 'link'), B('unlink', '🔓 取消链接', 'unlink')],
-      [B('img', '🖼 图片', 'image')],
+      [B('img', '🖼 图片', 'image'), B('media', '🎬 多媒体', 'media')],
       [B('table', '▦ 表格', 'table')],
       [B('hr', '— 分割线', 'hr')],
       [B('clean', '⌫ 清除格式', 'clean')],
@@ -314,6 +374,7 @@ export class Editor {
       }
       case 'unlink': document.execCommand('unlink'); break;
       case 'image': case 'img': this._imageDialog(); break;
+      case 'media': this._mediaDialog(); break;
       case 'table': this._insertTable(); break;
       case 'hr': document.execCommand('insertHorizontalRule'); break;
       case 'clean': document.execCommand('removeFormat'); document.execCommand('formatBlock', false, 'p'); break;
@@ -505,6 +566,88 @@ export class Editor {
     document.execCommand('insertHTML', false, `<img src="${esc(url)}" alt="" loading="lazy">`);
   }
 
+  // 多媒体：视频 / 音频 / 外站嵌入。版式与「插入图片」一致 —— 同样两种方式（上传 / 链接），
+  // 区别只在成品：插入的是一个**能直接点击播放的播放器**，而不是一张静态图。
+  async _mediaDialog() {
+    let file = null, url = '', posterFile = null, kind = 'auto';
+    const res = await dialog({
+      title: '插入多媒体',
+      bodyHtml: `<div class="field"><label>方式一 · 从电脑上传（保存到本站媒体库，推荐）</label>
+        <input type="file" id="dlg-mfile" accept="video/*,audio/*" class="inp"></div>
+        <div class="field" style="margin-top:12px"><label>方式二 · 使用链接</label>
+        <input class="inp" id="dlg-murl" placeholder="以 .mp4 / .mp3 结尾的直链，或 B 站、YouTube 的视频页地址" style="width:100%"></div>
+        <div class="field" style="margin-top:12px"><label>类型（填链接时生效，上传的按文件自动识别）</label>
+        <label class="chk-line" style="display:inline-flex;margin-right:16px"><input type="radio" name="dlg-mkind" value="auto" checked> 自动识别</label>
+        <label class="chk-line" style="display:inline-flex;margin-right:16px"><input type="radio" name="dlg-mkind" value="video"> 视频</label>
+        <label class="chk-line" style="display:inline-flex"><input type="radio" name="dlg-mkind" value="audio"> 音频</label></div>
+        <div class="field" style="margin-top:12px"><label>视频封面（可选，留空就显示视频首帧）</label>
+        <input type="file" id="dlg-mposter" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" class="inp"></div>
+        <p class="hint" style="margin-bottom:0">两种方式任选其一即可。视频最大 80MB、音频最大 20MB；插入后就是一排可以点击播放的控件。B 站 / YouTube 的视频页地址会自动换成内嵌播放器，b23.tv 分享短链也认。</p>`,
+      actions: [{ val: 'ok', label: '插入', cls: 'p' }, { val: 'cancel', label: '取消', cls: 'g' }],
+      onSubmit: (b) => {
+        file = ((b.querySelector('#dlg-mfile') || {}).files || [])[0] || null;
+        url = String((b.querySelector('#dlg-murl') || {}).value || '').trim();
+        posterFile = ((b.querySelector('#dlg-mposter') || {}).files || [])[0] || null;
+        const r = b.querySelector('input[name="dlg-mkind"]:checked');
+        kind = r ? r.value : 'auto';
+        return !!(file || url);
+      },
+    });
+    if (res !== 'ok' || (!file && !url)) return;
+    // 先抢回正文焦点：上传要等好几秒，等回来再聚焦插入位置就丢了
+    this.we.focus();
+
+    if (file) {
+      const mt = String(file.type || '').toLowerCase();
+      const isVideo = mt.startsWith('video/');
+      const isAudio = mt.startsWith('audio/');
+      if (!isVideo && !isAudio) { toast('请选择视频或音频文件', 'bad'); return; }
+      try {
+        const src = await this.upload(file);
+        const poster = isVideo && posterFile ? await this._uploadPoster(posterFile) : '';
+        this._insertMedia(isVideo ? 'video' : 'audio', src, poster);
+        toast(isVideo ? '视频已插入，点击即可播放' : '音频已插入，点击即可播放');
+      } catch (e) { toast((e && e.message) || '上传失败', 'bad'); }
+      return;
+    }
+
+    const full = url.startsWith('//') ? 'https:' + url : url;
+    if (EMBED_URL.test(full)) {
+      if (!this.resolveEmbed) { toast('未配置外站嵌入解析', 'bad'); return; }
+      try {
+        this._insertMedia('iframe', await this.resolveEmbed(full));
+        toast('已插入内嵌播放器');
+      } catch (e) { toast((e && e.message) || '嵌入失败', 'bad'); }
+      return;
+    }
+    if (!MEDIA_SRC.test(url) && !url.startsWith('/')) {
+      toast('链接需以 http(s):// 或 / 开头', 'bad');
+      return;
+    }
+    const t = kind === 'auto'
+      ? (/\.(mp3|m4a|aac|wav|flac|ogg|oga|opus|weba)([?#]|$)/i.test(url) ? 'audio' : 'video')
+      : kind;
+    this._insertMedia(t, url);
+  }
+
+  // 封面图就是普通图片，走同一条上传通道；传不上去也不该挡住正文插入
+  async _uploadPoster(f) {
+    try { return await this.upload(f); } catch (e) { toast('封面没传上去，已改用视频首帧', 'bad'); return ''; }
+  }
+
+  // 插入的成品一律是真实标签：编辑器里当场可播，前台同理
+  _insertMedia(tag, src, poster = '') {
+    const s = String(src || '');
+    if (!s) { toast('没有拿到可用的地址', 'bad'); return; }
+    this.we.focus();
+    const attr = tag === 'video'
+      ? `src="${esc(s)}"${poster ? ` poster="${esc(poster)}"` : ''} controls preload="metadata" playsinline`
+      : tag === 'audio'
+        ? `src="${esc(s)}" controls preload="metadata"`
+        : `src="${esc(s)}" loading="lazy" allowfullscreen`;
+    document.execCommand('insertHTML', false, `<${tag} ${attr} contenteditable="false"></${tag}>`);
+  }
+
   _bindEvents() {
     this.tool.addEventListener('mousedown', (e) => e.preventDefault());
     this.tool.addEventListener('click', (e) => {
@@ -512,7 +655,8 @@ export class Editor {
       if (!btn) return;
       const k = btn.dataset.k;
       try {
-        if (k === 'image') { this._exec('image'); return; }
+        // 图片与多媒体各自弹窗，不能在 _exec 里收尾 focus（会把焦点从输入框抢回正文）
+        if (k === 'image' || k === 'media') { this._exec(k); return; }
         this._exec(k);
       } catch (err) {
         // 任何隐藏异常都以红字提示暴露，避免"点了没反应"

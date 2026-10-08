@@ -205,7 +205,7 @@ function shell(contentHtml) {
       <a href="#/links" data-nav="links">朋友<span class="badge" id="badge-links" style="display:none"></span></a>
       <a href="#/categories" data-nav="categories">分类</a>
       <a href="#/tags" data-nav="tags">标签</a>
-      <a href="#/media" data-nav="media">图片库</a>
+      <a href="#/media" data-nav="media">媒体库</a>
       <a href="#/themes" data-nav="themes">主题</a>
       <a href="#/backup" data-nav="backup">备份与恢复</a>
       <a href="#/settings" data-nav="settings">设置</a>
@@ -415,7 +415,7 @@ async function viewEditor(id, kind = 'post') {
         <input id="e-pass" type="text" placeholder="阅读密码" value="${esc(pw)}"${pw ? '' : ' disabled'} style="max-width:150px" autocomplete="off"></span>`}
       ${isPage ? `<span class="f2"><label><input type="checkbox" id="e-innav" ${(post ? Number(post.in_nav) : 1) ? 'checked' : ''}> 在站点导航显示</label></span>`
     : `<span class="f2">封面 <input type="file" id="e-cover" accept="image/*" style="max-width:190px">
-        <span id="e-cover-prev" style="display:${post?.cover_key ? '' : 'none'}"><img src="/media/${esc(post?.cover_key || '')}" style="height:34px;border-radius:6px;vertical-align:middle">
+        <span id="e-cover-prev" style="display:${post?.cover_key ? '' : 'none'}"><img${post?.cover_key ? ` src="/media/${esc(post.cover_key)}"` : ''} style="height:34px;border-radius:6px;vertical-align:middle">
         <a id="e-cover-del" href="javascript:;" style="margin-left:4px">移除</a></span></span>`}
       <span id="e-status" class="hint"></span>
     </div>
@@ -430,12 +430,17 @@ async function viewEditor(id, kind = 'post') {
   </div>`);
 
   const editorHost = view().querySelector('#e-host');
-  editor = new Editor(editorHost, { ph: '开始写作…（可粘贴图片，或点工具栏 🖼 上传图片至 R2）' });
+  editor = new Editor(editorHost, { ph: '开始写作…（可粘贴图片，或点工具栏 🖼 图片 / 🎬 多媒体上传至 R2）' });
   editor.upload = async (file) => {
     const d = await API.upload(file);
-    toast('图片已上传' + webpNote(d));
+    // 视频 / 音频返回 kind，就不该再说「图片已上传」了
+    if (d.kind === 'video') toast('视频已上传（' + fmtSize(file.size) + '）');
+    else if (d.kind === 'audio') toast('音频已上传（' + fmtSize(file.size) + '）');
+    else toast('图片已上传' + webpNote(d));
     return d.url;
   };
+  // 外站视频（B 站 / YouTube，含 b23.tv 短链）：服务端换成播放器地址后再插
+  editor.resolveEmbed = async (url) => (await API.post('/embed', { url })).src;
   editor.setHTML(post?.content_html || '');
 
   // 别名随机
@@ -832,7 +837,7 @@ async function linkDialog(l) {
 // 编辑 / 新增订阅共用弹窗：fields 为初始值，返回 null 表示取消
 async function feedDialog(f) {
   const isNew = !f;
-  const v = f || { name: '', url: '', site_url: '', avatar: '', description: '', sort: 0, enabled: 1 };
+  const v = f || { name: '', url: '', site_url: '', avatar: '', description: '', sort: 0, enabled: 1, whitelist: 0 };
   const out = {};
   const res = await dialog({
     title: isNew ? '添加 RSS 订阅' : '编辑 RSS 订阅',
@@ -843,7 +848,8 @@ async function feedDialog(f) {
       <div class="field"><label>头像地址（选填，不填用名称首字方块）</label><input class="inp" id="fdf-avatar" maxlength="300" value="${esc(v.avatar || '')}"></div>
       <div class="field"><label>备注（选填，只有后台自己看得到）</label><input class="inp" id="fdf-desc" maxlength="120" value="${esc(v.description || '')}"></div>
       <div class="field"><label>排序（数字越小越靠前）</label><input class="inp" id="fdf-sort" type="number" min="0" max="9999" style="width:140px" value="${v.sort || 0}"></div>
-      <div class="field"><label class="chk-line"><input type="checkbox" id="fdf-enabled"${v.enabled ? ' checked' : ''}> 启用（取消勾选＝暂停订阅，前台不再显示它的文章）</label></div>`,
+      <div class="field"><label class="chk-line"><input type="checkbox" id="fdf-enabled"${v.enabled ? ' checked' : ''}> 启用（取消勾选＝暂停订阅，前台不再显示它的文章）</label></div>
+      <div class="field"><label class="chk-line"><input type="checkbox" id="fdf-whitelist"${v.whitelist ? ' checked' : ''}> 加入白名单（这个源的文章直接在前台显示；不勾则先落到「文章审核」等你点头）</label></div>`,
     actions: [{ val: 'ok', label: isNew ? '添加并抓取' : '保存', cls: 'p' }, { val: 'cancel', label: '取消', cls: 'g' }],
     onSubmit: (body) => {
       const g = (id) => body.querySelector('#' + id).value.trim();
@@ -855,6 +861,7 @@ async function feedDialog(f) {
       out.description = g('fdf-desc');
       out.sort = parseInt(g('fdf-sort'), 10) || 0;
       out.enabled = body.querySelector('#fdf-enabled').checked ? 1 : 0;
+      out.whitelist = body.querySelector('#fdf-whitelist').checked ? 1 : 0;
       return true;
     },
   });
@@ -883,6 +890,13 @@ async function viewLinks() {
       <button data-t="pending">待审核</button><button data-t="approved">已展示</button><button data-t="rejected">已拒绝</button><button data-t="all">全部</button>
     </div>
     <div id="lk-list"><div class="loading">加载中…</div></div>
+
+    <h2 class="sec-h">友圈 · 文章审核<span class="sec-sub" id="fa-sub">不在白名单的订阅，新文章会先落到这里，通过之后才在前台显示</span>
+      <button class="btn ok sm" id="fa-all" style="display:none">✓ 全部通过</button></h2>
+    <div class="tabs" id="fa-tabs">
+      <button data-t="pending">待审核</button><button data-t="approved">已通过</button><button data-t="rejected">已忽略</button>
+    </div>
+    <div id="fa-list"><div class="loading">加载中…</div></div>
 
     <h2 class="sec-h">友圈 · RSS 订阅<span class="sec-sub" id="fd-sub">订阅朋友的 RSS，他们的新文章会汇总到前台友圈</span>
       <button class="btn g sm" id="fd-refresh">↻ 全部刷新</button>
@@ -972,6 +986,85 @@ async function viewLinks() {
   });
   load();
 
+  // ---- 友圈：文章审核（Ver 0.5 ⑤）----
+  // 白名单源的文章抓回来直接上；不在白名单的源，文章先落 pending 等这里点头
+  let faTab = 'pending';
+  const POST_ST = { pending: '待审核', approved: '已通过', rejected: '已忽略' };
+  const loadAudit = async () => {
+    const box = view().querySelector('#fa-list');
+    box.innerHTML = '<div class="loading">加载中…</div>';
+    try {
+      const r = await API.get('/friendposts?status=' + faTab);
+      const cnt = r.counts || {};
+      view().querySelectorAll('#fa-tabs button').forEach((b) => {
+        const n = cnt[b.dataset.t];
+        b.classList.toggle('on', b.dataset.t === faTab);
+        b.textContent = POST_ST[b.dataset.t] + (n ? ` (${n})` : '');
+      });
+      const sub = view().querySelector('#fa-sub');
+      if (sub) {
+        sub.textContent = cnt.pending
+          ? `有 ${cnt.pending} 篇来自「不在白名单」的订阅，等你看过再决定放不放行`
+          : '不在白名单的订阅，新文章会先落到这里，通过之后才在前台显示';
+      }
+      const allBtn = view().querySelector('#fa-all');
+      if (allBtn) allBtn.style.display = (faTab === 'pending' && cnt.pending) ? '' : 'none';
+      if (!r.items.length) {
+        box.innerHTML = `<div class="empty-note">${faTab === 'pending' ? '没有待审核的文章 🎉' : '暂无记录'}</div>`;
+        return;
+      }
+      box.innerHTML = r.items.map((p) => {
+        const ch = (String(p.feed_name || '').trim()[0] || '?').toUpperCase();
+        const ava = p.feed_avatar
+          ? `<img src="${esc(p.feed_avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+          : esc(ch);
+        const ops = [];
+        if (p.status !== 'approved') ops.push(`<button class="btn sm ok" data-o="approve" data-id="${p.id}">通过</button>`);
+        if (p.status !== 'rejected') ops.push(`<button class="btn sm g" data-o="reject" data-id="${p.id}">忽略</button>`);
+        ops.push(`<button class="btn sm d" data-o="del" data-id="${p.id}">删除</button>`);
+        return `<div class="card fd-item">
+          <div class="fd-h">
+            <span class="fd-ava">${ava}</span>
+            <div class="fd-t">
+              <b><a href="${esc(p.link)}" target="_blank" rel="noopener noreferrer">${esc(p.title)}</a></b>
+              <div class="hint fd-url">来自 ${esc(p.feed_name || '未命名订阅')}${p.whitelist ? ' · 白名单源' : ''} · ${esc(String(p.published_at || '').slice(0, 16))}</div>
+              ${p.summary ? `<div class="hint">${esc(p.summary)}</div>` : ''}
+            </div>
+          </div>
+          <div class="fd-ops">${ops.join('')}</div>
+        </div>`;
+      }).join('');
+      box.querySelectorAll('button[data-o]').forEach((b) => b.addEventListener('click', async () => {
+        const id = parseInt(b.dataset.id, 10);
+        const o = b.dataset.o;
+        try {
+          if (o === 'approve') { await API.patch('/friendposts/' + id, { status: 'approved' }); toast('已通过，前台立即可见'); }
+          else if (o === 'reject') { await API.patch('/friendposts/' + id, { status: 'rejected' }); toast('已忽略，不会被展示'); }
+          else if (o === 'del') {
+            if (!(await confirmDanger('确定删除这篇？下次刷新这个订阅时可能又把它抓回来。', '删除文章'))) return;
+            await API.del('/friendposts/' + id);
+            toast('已删除');
+          }
+          loadAudit();
+        } catch (e) { toast(e.message, 'bad'); }
+      }));
+    } catch (e) { box.innerHTML = `<div class="empty-note">${esc(e.message)}</div>`; }
+  };
+  view().querySelector('#fa-tabs').addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-t]');
+    if (!b) return;
+    faTab = b.dataset.t;
+    loadAudit();
+  });
+  view().querySelector('#fa-all').addEventListener('click', async () => {
+    try {
+      const r = await API.post('/friendposts/batch', { all: true, status: 'approved' });
+      toast(r.changed ? `已通过 ${r.changed} 篇` : '没有待审核的文章');
+      loadAudit();
+    } catch (e) { toast(e.message, 'bad'); }
+  });
+  loadAudit();
+
   // ---- 友圈：RSS 订阅 ----
   const loadFeeds = async () => {
     const box = view().querySelector('#fd-list');
@@ -1005,6 +1098,7 @@ async function viewLinks() {
             <div class="fd-t">
               <b>${esc(f.name || '（未命名，刷新后会取对方站点名）')}</b>
               <span class="st ${st.cls}">${st.text}</span>
+              <span class="st ${f.whitelist ? 'published' : 'pending'}">${f.whitelist ? '白名单' : '需审核'}</span>
               <div class="hint fd-url">RSS：<a href="${esc(f.url)}" target="_blank" rel="noopener noreferrer">${esc(f.url)} ↗</a>${f.site_url ? ` · 站点：<a href="${esc(f.site_url)}" target="_blank" rel="noopener noreferrer">${esc(f.site_url)} ↗</a>` : ''}</div>
               <div class="hint">${esc(meta)}</div>
               ${f.description ? `<div class="hint">${esc(f.description)}</div>` : ''}
@@ -1034,8 +1128,11 @@ async function viewLinks() {
             const cur = (await API.get('/feeds')).items.find((x) => x.id === id);
             const d = await feedDialog(cur);
             if (!d) return;
-            await API.patch('/feeds/' + id, d);
-            toast('已保存');
+            const pr = await API.patch('/feeds/' + id, d);
+            toast(pr && pr.passed
+              ? `已保存 · 顺带把它压着的 ${pr.passed} 篇待审文章一起放行了`
+              : '已保存');
+            loadAudit();
           } else if (o === 'toggle') {
             const on = b.dataset.on === '1';
             await API.patch('/feeds/' + id, { enabled: on ? 0 : 1 });
@@ -1058,10 +1155,12 @@ async function viewLinks() {
       const d = await feedDialog(null);
       if (!d) return;
       const r = await API.post('/feeds', d);
+      const where = d.whitelist ? '前台友圈已能看到' : '已进入「文章审核」，你点头后才在前台显示';
       toast(r.fetched
-        ? `已添加 ✓ 抓到 ${r.fetched} 篇文章，前台友圈已能看到`
+        ? `已添加 ✓ 抓到 ${r.fetched} 篇文章，${where}`
         : `已添加，但抓取失败：${r.error || '未知原因'}（可在列表里点「刷新」重试）`, r.fetched ? '' : 'bad');
       loadFeeds();
+      loadAudit();
     } catch (e) { toast(e.message, 'bad'); }
   });
   view().querySelector('#fd-refresh').addEventListener('click', async (ev) => {
@@ -1322,24 +1421,31 @@ async function viewTags() {
   });
 }
 
-// ================= 图片库 =================
+// ================= 媒体库（图片 / 视频 / 音频） =================
 async function viewMedia() {
-  pageTitle('图片库');
+  pageTitle('媒体库');
   showLoading();
-  shell(`<div class="page-head"><h1>图片库</h1>
-    <div class="spacer"><button class="btn p" id="m-up">＋ 上传图片</button>
-    <input type="file" id="m-file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp" hidden></div></div>
+  shell(`<div class="page-head"><h1>媒体库</h1>
+    <div class="spacer"><button class="btn p" id="m-up">＋ 上传文件</button>
+    <input type="file" id="m-file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp,video/*,audio/*" hidden></div></div>
     <div id="m-grid"><div class="loading">加载中…</div></div>`);
   const box = view().querySelector('#m-grid');
   const load = async (cursor) => {
     try {
       const r = await API.get('/media' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''));
       if (!r.items.length) {
-        box.innerHTML = '<div class="empty-note">还没有图片。写文章时点编辑器 🖼 按钮，图片会自动存入 R2。</div>';
+        box.innerHTML = '<div class="empty-note">还没有文件。写文章时点编辑器的 🖼 图片或 🎬 多媒体按钮，文件会自动存入 R2。</div>';
         return;
       }
+      // 视频 / 音频塞进 <img> 只会显示一张碎图，这里换成一块占位卡
+      const thumbOf = (m) => {
+        const ct = String(m.ct || '');
+        const kind = ct.startsWith('video/') ? 'video' : ct.startsWith('audio/') ? 'audio' : 'image';
+        if (kind === 'image') return `<img src="${esc(m.url)}" loading="lazy" alt="">`;
+        return `<div class="mg-ph ${kind}"><b>${kind === 'video' ? '🎬' : '♪'}</b><span>${kind === 'video' ? '视频' : '音频'}</span></div>`;
+      };
       box.innerHTML = `<div class="mg">${r.items.map((m) => `
-        <div class="mg-it"><img src="${esc(m.url)}" loading="lazy" alt="">
+        <div class="mg-it">${thumbOf(m)}
           <div class="mi-meta">${fmtSize(m.size)}<br>${fmtTime(String(m.uploaded).slice(0, 19).replace('T', ' '))}</div>
           <div class="mi-ops"><button class="btn sm" data-copy="${esc(m.url)}">复制链接</button>
           <button class="btn sm d" data-del="${esc(m.key)}">删除</button></div></div>`).join('')}</div>
@@ -1348,7 +1454,7 @@ async function viewMedia() {
         navigator.clipboard.writeText(location.origin + b.dataset.copy).then(() => toast('链接已复制'));
       }));
       box.querySelectorAll('button[data-del]').forEach((b) => b.addEventListener('click', async () => {
-        if (!(await confirmDanger('删除该图片？文中引用的图片将无法显示（文章正文不受影响）。', '删除图片'))) return;
+        if (!(await confirmDanger('删除该文件？引用它的文章里将无法显示或播放（文章正文不受影响）。', '删除文件'))) return;
         try { await API.del('/media?key=' + encodeURIComponent(b.dataset.del)); toast('已删除'); load(); }
         catch (e) { toast(e.message, 'bad'); }
       }));

@@ -227,7 +227,7 @@ export function dashboardHtml(d, username) {
           <a class="btn g" href="#/pages/new">新建页面</a>
           <a class="btn g" href="#/categories">分类</a>
           <a class="btn g" href="#/tags">标签</a>
-          <a class="btn g" href="#/media">图片库</a>
+          <a class="btn g" href="#/media">媒体库</a>
           <a class="btn g" href="#/themes">主题外观</a>
           <a class="btn g" href="#/backup">备份与恢复</a>
           <a class="btn g" href="#/settings">站点设置</a>
