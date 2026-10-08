@@ -213,8 +213,11 @@ img{max-width:100%}
 .nav-sub a{display:block;padding:6px 12px;white-space:nowrap;font-size:14.5px;border-radius:7px}
 .nav-sub a::before{content:"└ ";color:var(--muted)}   /* 二级分类前加拐角，和一级区分 */
 .nav-drop:hover>.nav-sub,.nav-drop:focus-within>.nav-sub{display:block}
-/* 导航搜索：平时导航栏里只有一个放大镜图标，点它就在**导航栏内**原地展开输入框。
-   窄屏（≤640px）放不下，靠 nav 的 flex-wrap 整行落到下一行，等于「展开在下面」。 */
+/* 页头操作区：主题 / 搜索两个图标按钮。单独成块而不挂在 .nav 里，
+   是为了让窄屏能把它们挪去跟品牌同行、把整行让给导航条（见下面 640px 段）。 */
+.hd-acts{display:flex;align-items:center;gap:6px;flex:none}
+/* 导航搜索：平时只有一个放大镜图标，点它就在原地展开输入框（逻辑在 /js/site.js）。
+   窄屏放不下，整行落到导航条下方 —— 见 640px 段里的 .hd-acts:has(...) 那条。 */
 .hd-search{display:none;align-items:center;gap:6px;margin-left:2px}
 .hd-search.open{display:inline-flex}
 .hd-search input{width:168px;padding:7px 12px;border:1px solid var(--line);border-radius:9px;
@@ -456,7 +459,41 @@ textarea.lf-input{min-height:86px;resize:vertical;line-height:1.7}
 @media (max-width:640px){
  .pc{grid-template-columns:1fr}.pc-cover img{width:100%;height:auto;max-height:180px}
  .article{padding:22px 18px}.comments{padding:20px 18px}.cmt-child{margin-left:20px}
- .hd-search.open{display:flex;width:100%;order:9}   /* 顶栏放不下：整行落到导航下方 */
+ /* ---- 页头：桌面的 14px 内边距 + 18px 间距在手机上太奢侈，整块占到 175px（近五分之一屏）---- */
+ .hd-in{gap:8px 12px;padding:11px 0 0}
+ .brand{font-size:18px;gap:8px}
+ .brand-mark{width:30px;height:30px;border-radius:8px;font-size:15px}
+ .brand-img{height:30px}
+ .brand small{font-size:11.5px}
+ /* 导航条：独占一行 + 横向滑动，**不换行**。项数是用户在后台随时增减的，
+    换行会让页头高度不可控（原来 6 项就撑成两行，第三行只剩两个孤零零的按钮）。
+    负边距让它贴到屏幕两侧，滑动时首尾不会被 .wrap 的 20px 内边距截住。 */
+ .nav{order:3;width:100%;margin:0 -20px;padding:8px 20px;gap:2px;
+   flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
+   border-top:1px solid var(--line);-webkit-overflow-scrolling:touch;
+   scrollbar-width:none;-ms-overflow-style:none;
+   /* 右侧渐隐：暗示「这条还能往右滑」。遮罩铺在元素盒子上、不随内容滚动，
+     也不用写死背景色，夜间模式自动跟着变。 */
+   -webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 26px),transparent 100%);
+   mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 26px),transparent 100%)}
+ .nav::-webkit-scrollbar{display:none}
+ .nav a{padding:9px 13px;font-size:15px;white-space:nowrap;flex:none}
+ .nav a.on{font-weight:600}
+ /* 下拉在手机上不再做浮层：滑条是 overflow:auto，绝对定位的子菜单会被裁掉
+    （overflow 非 visible 的必然结果，绕不过去），改成顺着滑条排开。
+    ⚠️ .caret 是 <a> 的子元素（不是 .nav-drop 的），选择器别写成 .nav-drop>.caret。
+    ⚠️ 子菜单那条的类名要凑满三个与 .nav-drop:hover>.nav-sub 打平，靠书写顺序取胜。 */
+ .nav-drop{position:static;display:flex;align-items:center;gap:2px;flex:none}
+ .nav-drop .caret{display:none}
+ .nav-drop>a.dup{display:none}   /* 「朋友」与其子项「友链」同页，留一个就够 */
+ .nav .nav-drop>.nav-sub{display:flex;position:static;min-width:0;padding:0;gap:2px;
+   border:0;background:none;box-shadow:none}
+ .nav-sub a{padding:9px 13px;font-size:15px}
+ .nav-sub a::before{content:""}   /* 已经平铺成一级项，去掉「└」拐角 */
+ /* 主题 / 搜索图标跟品牌同行靠右；搜索框一展开，整个操作区落到导航条下面占满一行 */
+ .hd-acts{order:2;margin-left:auto}
+ .hd-acts:has(.hd-search.open){order:4;flex:1 1 100%;margin:5px 0 0}
+ .hd-search.open{display:flex;flex:1;width:auto}
  .hd-search input{flex:1;width:auto;min-width:0}
 }
 `;
@@ -539,8 +576,11 @@ export function layout(s, o) {
   // 「朋友」是一个下拉（Ver 0.4 ⑫）：装「友链」与「友圈」两块，鼠标移上去展开。
   // 父项自己也能点（去友链），触屏点一下同样能展开（.nav-drop 的 :focus-within 兜底）。
   const onFriends = o.active === 'links' || o.active === 'friends';
+  // 「朋友」本项的 href 与下拉里的「友链」是同一个页面，窄屏把下拉平铺成一行后
+  // 会出现两个长得一样的入口 —— 给它挂个 dup，由 CSS 在窄屏隐掉父项、只留子项。
+  // （分类下拉的父子 URL 不同，没有这个问题，所以不做通用处理。）
   const navFriends = navOn('nav_show_links')
-    ? `<span class="nav-drop"><a href="/links"${onFriends ? ' class="on"' : ''}>朋友<i class="caret">▾</i></a><span class="nav-sub"><a href="/links"${o.active === 'links' ? ' class="on"' : ''}>友链</a><a href="/friends"${o.active === 'friends' ? ' class="on"' : ''}>友圈</a></span></span>`
+    ? `<span class="nav-drop"><a class="dup${onFriends ? ' on' : ''}" href="/links">朋友<i class="caret">▾</i></a><span class="nav-sub"><a href="/links"${o.active === 'links' ? ' class="on"' : ''}>友链</a><a href="/friends"${o.active === 'friends' ? ' class="on"' : ''}>友圈</a></span></span>`
     : '';
   const navBuiltin = [
     navOn('nav_show_categories') ? nav('/categories', '分类', 'cat') : '',
@@ -602,6 +642,11 @@ ${themeLink(s)}
     ${navBuiltin}
     ${navPagesHtml}
     ${navOn('nav_show_rss') ? nav('/rss.xml', 'RSS', 'rss') : ''}
+  </nav>
+  <!-- 页头操作区：主题与搜索两个按钮原来挂在 .nav 里，手机上被 flex-wrap 甩到第三行、
+       两个方块孤零零落在左边（页头因此高达 175px）。拆出来独立成块后，
+       窄屏跟品牌同一行靠右，导航条才能安安静静占满一整行（见 FRONT_CSS 的 640px 段）。 -->
+  <div class="hd-acts">
     <button type="button" class="theme-btn" id="theme-toggle" aria-label="切换深色模式" title="切换深色 / 浅色">
       ${SUN_SVG}${MOON_SVG}
     </button>
@@ -610,7 +655,7 @@ ${themeLink(s)}
     </form>
     <button type="button" class="search-btn${o.q ? ' on' : ''}" id="search-toggle"
       aria-label="搜索文章" aria-expanded="${o.q ? 'true' : 'false'}" title="搜索">${SEARCH_SVG}${CLOSE_SVG}</button>
-  </nav>
+  </div>
 </div></header>
 <noscript><style>.hd-search{display:inline-flex}.search-btn{display:none}</style></noscript>
 <main class="main"><div class="wrap${side ? ' wide' : ''}">${mainInner}</div></main>
