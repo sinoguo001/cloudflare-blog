@@ -22,3 +22,4 @@ CREATE INDEX IF NOT EXISTS idx_ffeed_enabled ON friend_feeds(enabled, sort, id);
 CREATE TABLE IF NOT EXISTS friend_posts(id INTEGER PRIMARY KEY AUTOINCREMENT, feed_id INTEGER NOT NULL, guid TEXT NOT NULL, title TEXT NOT NULL, link TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', published_at TEXT NOT NULL, fetched_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'approved');
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fpost_uniq ON friend_posts(feed_id, guid);
 CREATE INDEX IF NOT EXISTS idx_fpost_time ON friend_posts(published_at DESC, id DESC);
+CREATE TABLE IF NOT EXISTS ip_geo(ip TEXT PRIMARY KEY, loc TEXT NOT NULL DEFAULT '', isp TEXT NOT NULL DEFAULT '', ok INTEGER NOT NULL DEFAULT 1, src TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);

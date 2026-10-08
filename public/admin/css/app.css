@@ -322,3 +322,9 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .sb-f .inp,.sb-f .txa{font-size:13.5px;padding:7px 10px}
 .sb-f-t .txa{min-height:76px}
 @media (max-width:640px){.sb-act{margin-left:0;width:100%}}
+
+/* IP 归属地（Ver 0.5 ⑦）：评论管理页顶部的「还有 N 个没查到」提示条。
+   用主题色的浅底，跟其它提示区分开，又不会抢评论本身的注意力。 */
+.geo-tip{margin:0 0 12px;padding:9px 13px;border:1px solid var(--ac-line);border-radius:10px;background:var(--ac-soft);font-size:13px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.geo-tip b{color:var(--ac)}
+.geo{color:var(--mut)}

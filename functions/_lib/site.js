@@ -6,6 +6,7 @@ import * as db from './db.js';
 import { esc, fmtDate, rfc822, stripHtml, isHexColor, bnNow, postUrl, pageUrl, catUrl } from './util.js';
 import { codeThemeCss } from './hl.js';
 import { gravatarHash } from './md5.js';
+import { geoText } from './ipgeo.js';
 
 // Gravatar 头像源：国内优先（实测 weavatar ≈23ms、cravatar ≈88ms；官方源国内不可达）
 const GRAVATAR_SRC = {
@@ -346,6 +347,7 @@ img{max-width:100%}
 .cmt-who b{font-size:14.5px}
 .tag-mini{font-size:11px;background:var(--admin-soft);color:var(--admin-text);padding:1px 8px;border-radius:999px}
 .cmt-time{font-size:12px;color:var(--muted)}
+.cmt-geo{opacity:.85}
 .cmt-body{color:var(--quote-text);font-size:15px;word-break:break-word}
 .cmt-body p{margin:0 0 .4em}
 .cmt-child{margin-left:52px}
@@ -895,10 +897,15 @@ function commentNode(c, level, s) {
   const name = web
     ? `<a href="${esc(web)}" target="_blank" rel="noopener nofollow ugc" style="color:inherit;text-decoration:underline">${esc(c.author)}</a>`
     : esc(c.author);
+  // IP 归属地（Ver 0.5 ⑦）：只显示「位置 运营商」，前台不下发完整 IP ——
+  // 读者看到的是「江苏 电信」，而不是「114.114.114.114」。
+  // 归属地是给评论添一点现场感，不是拿来点名访客的。
+  const geo = geoText(c.geo_loc, c.geo_isp);
+  const geoHtml = geo ? ` · <span class="cmt-geo">${esc(geo)}</span>` : '';
   return `<div class="cmt">
     <div class="cmt-top">${avatarHtml}
       <div><span class="cmt-who"><b>${name}</b> ${who}</span><br>
-      <span class="cmt-time">${fmtDate(c.created_at, true)}</span></div></div>
+      <span class="cmt-time">${fmtDate(c.created_at, true)}${geoHtml}</span></div></div>
     <div class="cmt-body">${body}</div>
     ${child}</div>`;
 }

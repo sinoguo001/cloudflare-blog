@@ -500,6 +500,7 @@ export async function deleteTag(db, id) {
 
 // ---------- comments ----------
 export async function listComments(db, { status, limit = 100, postId } = {}) {
+  await ensureIpGeoTables(db).catch(() => {});
   const w = [], b = [];
   // 注意：本查询联了 posts 表，两表都有 status / id 等列，条件必须限定别名 cm.
   if (status && status !== 'all') { w.push('cm.status=?'); b.push(status); }
@@ -518,12 +519,23 @@ export async function countPending(db) {
 export async function getComment(db, id) {
   return db.prepare('SELECT * FROM comments WHERE id=?').bind(id).first();
 }
-// 文章已过审评论（含博主回复）
+// 文章已过审评论（含博主回复）。归属地一并 LEFT JOIN 出来 —— 前台只读缓存、不出网。
+// 兜一层降级：万一 ip_geo 建表失败，退回不带归属地的老查询，页面照常出。
 export async function commentsForPost(db, postId) {
-  const r = await db.prepare(
-    `SELECT id,parent_id,author,email,website,content,is_admin,created_at FROM comments
-     WHERE post_id=? AND status='approved' ORDER BY id ASC`).bind(postId).all();
-  return r.results || [];
+  await ensureIpGeoTables(db).catch(() => {});
+  try {
+    const r = await db.prepare(
+      `SELECT cm.id,cm.parent_id,cm.author,cm.email,cm.website,cm.content,cm.is_admin,cm.ip,cm.created_at,
+              g.loc AS geo_loc, g.isp AS geo_isp
+       FROM comments cm LEFT JOIN ip_geo g ON g.ip=cm.ip AND g.ok=1
+       WHERE cm.post_id=? AND cm.status='approved' ORDER BY cm.id ASC`).bind(postId).all();
+    return r.results || [];
+  } catch (e) {
+    const r = await db.prepare(
+      `SELECT id,parent_id,author,email,website,content,is_admin,ip,created_at FROM comments
+       WHERE post_id=? AND status='approved' ORDER BY id ASC`).bind(postId).all();
+    return r.results || [];
+  }
 }
 export async function addComment(db, { postId, parentId = null, author, email, website = '', content, status, isAdmin = 0, ip }) {
   const t = bnNow();
@@ -762,6 +774,26 @@ export async function ensureFriendTables(db) {
   await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_fpost_uniq ON friend_posts(feed_id, guid)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_fpost_time ON friend_posts(published_at DESC, id DESC)').run();
   friendReady = true;
+}
+
+// ---------- IP 归属地缓存（Ver 0.5 ⑦） ----------
+// 表结构与 migrations/0013_ip_geo.sql 一致，首次读写时自动建立，无需手工跑迁移。
+// 独立成表而不是往 comments 加两列：同一个 IP 常常留下多条评论，
+// 按 IP 主键缓存才能做到「一个 IP 只对第三方接口查一次」。
+// 不进备份：它是可重算的缓存，换库后打开后台评论页会自动补齐。
+const GEO_DDL = `CREATE TABLE IF NOT EXISTS ip_geo(
+  ip TEXT PRIMARY KEY,
+  loc TEXT NOT NULL DEFAULT '',
+  isp TEXT NOT NULL DEFAULT '',
+  ok INTEGER NOT NULL DEFAULT 1,
+  src TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL)`;
+
+let geoReady = false;
+export async function ensureIpGeoTables(db) {
+  if (geoReady) return;
+  await db.prepare(GEO_DDL).run();
+  geoReady = true;
 }
 
 // 文章审核状态白名单，防任意字符串写进库

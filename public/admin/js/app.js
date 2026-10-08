@@ -15,6 +15,21 @@ let editor = null; // 当前编辑器实例
 let dirty = false; // 文章是否有未保存修改（全局守卫用）
 let draftSaver = null; // 由编辑器页注入的“保存草稿”函数（Ctrl+S 用）
 
+// ---------- IP 归属地（Ver 0.5 ⑦） ----------
+// 「位置 运营商」；国外 IP 常常只查得到国家名，这时就没有后面那一段。
+// 口径必须与服务端 ipgeo.geoText 保持一致 —— 同一个 IP 前后台显示两样会很怪。
+const geoText = (loc, isp) => {
+  const a = String(loc || '').trim();
+  const b = String(isp || '').trim();
+  if (!a) return b;
+  if (!b || a.includes(b)) return a;
+  return a + ' ' + b;
+};
+// 接口 id 白名单：必须与服务端 ipgeo.js 的 PROVIDERS 逐项对齐（测试里有比对断言）
+const IPGEO_SRC = ['baidu', 'pconline', 'zxinc'];
+// 选了个不认识的 id（比如以后删掉某个接口）时回落到哪个
+const IPGEO_DEFAULT = 'baidu';
+
 // ---------- 主题色：让后台配色跟着设置走 ----------
 // 后台 CSS 用的是 --ac 系列变量（前台是 --accent），此前只写死在 :root 里，
 // 结果设置页改了主题色后台纹丝不动，只有动态 favicon 变了——因为它由服务端
@@ -709,6 +724,25 @@ function installGuards() {
   });
 }
 // ================= 评论管理 =================
+// 归属地补齐提示条：打开评论页时后端已经顺手补了一批（上限 12 个），
+// 剩下的在这里告诉博主，点一下继续补 —— 补一个少一个，反复点到没有为止。
+function renderGeoTip(missing, reload) {
+  const box = view().querySelector('#c-geo-tip');
+  if (!box) return;
+  if (!missing) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="geo-tip">还有 <b>${missing}</b> 个 IP 的归属地没查到
+    <button class="btn sm g" id="geo-more">继续补齐</button></div>`;
+  const b = box.querySelector('#geo-more');
+  b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = '补齐中…';
+    try {
+      const x = await API.post('/ipgeo/sync', {});
+      toast(x.left ? `已查 ${x.checked} 个，还剩 ${x.left} 个` : `已查 ${x.checked} 个，已全部补齐`);
+    } catch (e) { toast(e.message || '补齐失败', 'bad'); }
+    reload();
+  });
+}
+
 async function viewComments() {
   pageTitle('评论');
   showLoading();
@@ -717,6 +751,7 @@ async function viewComments() {
     <div class="tabs" id="c-tabs">
       <button data-t="pending">待审核</button><button data-t="approved">已通过</button><button data-t="trash">回收站</button><button data-t="all">全部</button>
     </div>
+    <div id="c-geo-tip"></div>
     <div id="c-list"><div class="loading">加载中…</div></div>`);
 
   const load = async () => {
@@ -725,6 +760,7 @@ async function viewComments() {
     try {
       const r = await API.get('/admin/comments?status=' + commentTab);
       view().querySelectorAll('#c-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === commentTab));
+      renderGeoTip(r.geo_missing, load);
       if (!r.items.length) {
         box.innerHTML = `<div class="empty-note">${commentTab === 'pending' ? '太棒了，没有待审核评论 🎉' : '暂无评论'}</div>`;
         return;
@@ -734,6 +770,7 @@ async function viewComments() {
         const author = (c.is_admin ? esc(c.author) + ' <span class="tag-mini">博主</span>' : esc(c.author))
           + (web ? ` <a class="hint" href="${esc(web)}" target="_blank" rel="noopener nofollow ugc">↗ 网址</a>` : '');
         const st = c.status === 'pending' ? '<span class="st pending">待审核</span>' : c.status === 'trash' ? '<span class="st trash">回收站</span>' : '<span class="st approved">已通过</span>';
+        const geo = geoText(c.geo_loc, c.geo_isp);
         const ops = [];
         if (c.status !== 'approved') ops.push(`<button class="btn sm ok" data-o="app" data-id="${c.id}">通过</button>`);
         if (c.status === 'approved') ops.push(`<button class="btn sm g" data-o="pend" data-id="${c.id}">转待审</button>`);
@@ -742,7 +779,7 @@ async function viewComments() {
         return `<div class="card" style="margin-bottom:12px">
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
             <b>${author}</b>${st}
-            <span class="hint">${fmtTime(c.created_at)}${c.ip ? ' · IP ' + esc(c.ip) : ''}</span>
+            <span class="hint">${fmtTime(c.created_at)}${c.ip ? ' · IP ' + esc(c.ip) : ''}${geo ? ' · <span class="geo">' + esc(geo) + '</span>' : ''}</span>
             <span style="margin-left:auto;font-size:13px">${c.post_title ? `评论于 <a href="/post/${esc(c.post_slug)}" target="_blank">《${esc(c.post_title)}》</a>` : '（文章已删除）'}</span>
           </div>
           <div style="color:#374151;white-space:pre-wrap">${esc(c.content)}</div>
@@ -1981,6 +2018,17 @@ async function viewSettings(tabArg) {
         <label style="display:flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="s-captcha"> 评论启用算术验证码（推荐开启，防机器人批量留言）</label>
         <p class="hint" style="margin:8px 0 0">关闭后评论表单将不再显示验证码，仅在确认被误伤时再关。</p>
         <p class="hint" style="margin-bottom:0">评论内置在系统内，无需外挂 Disqus / Waline。读者邮箱为必填（用于显示头像，不会公开），后台可直接审核、回复与删除。</p>
+
+        <div class="sec-title" style="margin-top:16px">IP 归属地 <small>展示留言者所在省份与运营商</small></div>
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><input type="checkbox" id="s-ipgeo"> 在评论旁显示 IP 归属地</label>
+        <div class="field"><label>查询接口</label>
+          <select class="inp" id="s-ipgeo_src">
+            <option value="baidu">百度（推荐 · 省市与运营商一次给全）</option>
+            <option value="pconline">太平洋电脑网（能到区，如「广州市番禺区」）</option>
+            <option value="zxinc">纯真 IP 库（位置与运营商分列）</option>
+          </select>
+        </div>
+        <p class="hint" style="margin-bottom:0">只在访客留下新评论、或你打开评论管理页时才去查，查到的结果会缓存，同一个 IP 不会再查第二遍。前台只显示「江苏 电信」这类位置，<b>不会显示完整 IP 地址</b>（完整 IP 仅后台可见）。接口查不到或临时打不开时，只是不显示归属地，不影响评论本身。</p>
       </div>
       <div class="card">
         <div class="sec-title">评论头像 <small>Gravatar 全球通用头像</small></div>
@@ -2107,6 +2155,8 @@ async function viewSettings(tabArg) {
   v.querySelector('#s-allow').checked = s.allow_comments !== '0';
   v.querySelector('#s-audit').checked = s.comment_audit !== '0';
   v.querySelector('#s-captcha').checked = s.captcha !== '0';
+  v.querySelector('#s-ipgeo').checked = s.ipgeo_on !== '0';
+  v.querySelector('#s-ipgeo_src').value = IPGEO_SRC.includes(s.ipgeo_src) ? s.ipgeo_src : IPGEO_DEFAULT;
   // ---- 导航栏开关：没设过（老站）默认全开，与升级前一致 ----
   for (const k of ['categories', 'tags', 'archive', 'links', 'rss']) {
     v.querySelector('#s-nav_' + k).checked = s['nav_show_' + k] !== '0';
@@ -2533,6 +2583,8 @@ async function viewSettings(tabArg) {
       allow_comments: v.querySelector('#s-allow').checked,
       comment_audit: v.querySelector('#s-audit').checked,
       captcha: v.querySelector('#s-captcha').checked,
+      ipgeo_on: v.querySelector('#s-ipgeo').checked,
+      ipgeo_src: v.querySelector('#s-ipgeo_src').value,
       // 导航栏开关：关掉只是不显示在导航里，页面地址照常可访问
       nav_show_categories: v.querySelector('#s-nav_categories').checked,
       nav_show_tags: v.querySelector('#s-nav_tags').checked,

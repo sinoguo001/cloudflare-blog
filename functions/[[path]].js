@@ -20,6 +20,7 @@ import * as cache from './_lib/cache.js';
 import * as purge from './_lib/purge.js';
 import { buildSidebar, normalizeItems } from './_lib/sidebar.js';
 import { resolveEmbed } from './_lib/embed.js';
+import * as ipgeo from './_lib/ipgeo.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
@@ -39,6 +40,11 @@ const mediaLimitMsg = (kind, max) => `${kind === 'video' ? '视频' : kind === '
 // 就用 waitUntil 在后台补一轮 —— 访客不等抓取，但数据会自己变新。
 const FRIEND_TTL_MIN = 30;
 const FRIEND_PER_PAGE = 20;
+
+// IP 归属地（Ver 0.5 ⑦）：后台打开评论页时，一次请求最多补查这么多个 IP。
+// 一页可能列出上百个不同 IP，全查会把请求时间和第三方额度一起耗光，
+// 剩下的留给下次打开评论页继续补 —— 反正是缓存，补一个少一个。
+const GEO_SYNC_MAX = 12;
 
 export async function onRequest(ctx) {
   try {
@@ -545,6 +551,24 @@ async function api(ctx, url, seg, method) {
     } catch (e) { /* 清缓存失败不影响评论处理本身 */ }
   };
 
+  // ---- IP 归属地（Ver 0.5 ⑦）----
+  // 开关默认开（与验证码同一套写法：只有明确存了 '0' 才算关），接口默认百度。
+  const geoOn = async () => (await db.getSetting(dbx, 'ipgeo_on')) !== '0';
+  const geoProvider = async () => ipgeo.pickProvider(await db.getSetting(dbx, 'ipgeo_src'));
+  // 评论落库后异步补归属地。必须异步：第三方接口往返 200ms~5s，
+  // 不能让读者点完「发表评论」在那儿干等。
+  // 查完若有结果，再清一次这篇文章页 —— 评论落库那一步已经清过一次，
+  // 但那时归属地还没查到，不清的话前台要等最长 10 分钟才显示得出来。
+  const asyncGeo = (ips, pagePath) => {
+    ctx.waitUntil((async () => {
+      try {
+        if (!(await geoOn())) return;
+        const r = await ipgeo.geoSync(dbx, ips, await geoProvider(), { timeout: 4000 });
+        if (r.checked && pagePath && purge.ready(env)) clearPaths([pagePath]);
+      } catch (e) { /* 归属地是锦上添花：出任何问题都不能影响评论本身 */ }
+    })());
+  };
+
   // --- 安装状态（公开） ---
   if (seg[0] === 'state' && method === 'GET' && seg.length === 1) {
     const installed = await db.isInstalled(dbx);
@@ -716,8 +740,11 @@ async function api(ctx, url, seg, method) {
       postId: post.id, author, email, website, content,
       status: audit ? 'pending' : 'approved', isAdmin: 0, ip,
     });
+    const cmtPath = postUrl(await db.settingsMap(dbx), post);
     // 免审评论会立刻出现在文章页上：把那一页的缓存清掉，别让读者刚发的评论「看不见」
-    if (!audit && purge.ready(env)) clearPaths([postUrl(await db.settingsMap(dbx), post)]);
+    if (!audit && purge.ready(env)) clearPaths([cmtPath]);
+    // 归属地异步补，查完再清一次（评论落库时归属地还没查到，见 asyncGeo 注释）
+    asyncGeo([ip], cmtPath);
     // 邮件通知异步发：SMTP 握手可能要 1–3 秒，不能拖慢读者提交评论的响应
     ctx.waitUntil(notifyNewComment(dbx, url.origin, post, { author, email, content, status: audit ? 'pending' : 'approved' }));
     // 验证码一次性：用掉即作废（前端随后会自动换一张新图）
@@ -755,6 +782,23 @@ async function api(ctx, url, seg, method) {
   // ================= 以下全部需登录 =================
   const user = await authUser();
   if (!user) return err('未登录或会话已过期', 401);
+
+  // --- IP 归属地：手动催一批（Ver 0.5 ⑦）---
+  // 打开评论页时会自动补一批，这里给博主一个「继续补」的按钮：反复点到补完为止。
+  if (seg[0] === 'ipgeo' && seg[1] === 'sync' && seg.length === 2 && method === 'POST') {
+    if (!(await geoOn())) return err('IP 归属地功能已关闭', 403);
+    let checked = 0, left = 0;
+    try {
+      const r = await dbx.prepare(`SELECT DISTINCT ip FROM comments WHERE ip<>'' LIMIT 500`).all();
+      const all = ((r && r.results) || []).map((x) => String(x.ip || '').trim()).filter(ipgeo.isPublicIp);
+      const m = await ipgeo.geoMap(dbx, all);
+      const todo = all.filter((ip) => !m.has(ip));
+      const batch = todo.slice(0, GEO_SYNC_MAX);
+      left = todo.length - batch.length;
+      if (batch.length) checked = (await ipgeo.geoSync(dbx, batch, await geoProvider(), { timeout: 4000 })).checked;
+    } catch (e) { return err('补齐失败：' + e.message, 500); }
+    return json({ ok: true, checked, left });
+  }
 
   // --- 媒体（R2）：图片 / 视频 / 音频 ---
   if (seg[0] === 'media') {
@@ -1082,6 +1126,10 @@ async function api(ctx, url, seg, method) {
     if (b.allow_comments != null) await db.setSetting(dbx, 'allow_comments', b.allow_comments ? '1' : '0');
     if (b.comment_audit != null) await db.setSetting(dbx, 'comment_audit', b.comment_audit ? '1' : '0');
     if (b.captcha != null) await db.setSetting(dbx, 'captcha', b.captcha ? '1' : '0');
+    // ---- IP 归属地（Ver 0.5 ⑦）：开关默认开；接口只认白名单里的 id，
+    //      传了别的一律忽略（读的一方还有 pickProvider 兜底，双保险）----
+    if (b.ipgeo_on != null) await db.setSetting(dbx, 'ipgeo_on', b.ipgeo_on ? '1' : '0');
+    if (b.ipgeo_src != null && ipgeo.isProvider(b.ipgeo_src)) await db.setSetting(dbx, 'ipgeo_src', String(b.ipgeo_src));
     // ---- 导航栏显示开关：关掉只是不出现在页头导航，页面地址照常可访问 ----
     for (const k of ['categories', 'tags', 'archive', 'links', 'rss']) {
       if (b['nav_show_' + k] != null) await db.setSetting(dbx, 'nav_show_' + k, b['nav_show_' + k] ? '1' : '0');
@@ -1531,7 +1579,46 @@ async function api(ctx, url, seg, method) {
   }
   if (seg[0] === 'admin' && seg[1] === 'comments' && seg.length === 2 && method === 'GET') {
     const status = String(url.searchParams.get('status') || 'pending');
-    return json({ items: await db.listComments(dbx, { status, limit: 300 }), status });
+    const items = await db.listComments(dbx, { status, limit: 300 });
+    // 归属地：缓存里有的直接贴上；没有的这一次请求顺手补一批（上限 GEO_SYNC_MAX），
+    // 补不完的报给前端，由博主决定要不要继续催（POST /api/ipgeo/sync）。
+    // 整段包 try：归属地只是评论旁边的一行小字，绝不能因为它导致评论列表打不开。
+    let geoMiss = 0;
+    try {
+      if (await geoOn()) {
+        const m = await ipgeo.geoMap(dbx, items.map((c) => c.ip));
+        const seen = new Set();
+        const todo = [];
+        for (const c of items) {
+          const key = String(c.ip || '').trim();
+          const g = m.get(key);
+          if (g) { c.geo_loc = g.loc; c.geo_isp = g.isp; continue; }
+          if (ipgeo.isPublicIp(key) && !seen.has(key)) { seen.add(key); todo.push(key); }
+        }
+        geoMiss = todo.length;
+        const batch = todo.slice(0, GEO_SYNC_MAX);
+        if (batch.length) {
+          await ipgeo.geoSync(dbx, batch, await geoProvider(), { timeout: 2500 });
+          const m2 = await ipgeo.geoMap(dbx, batch);
+          for (const c of items) {
+            if (c.geo_loc != null) continue;
+            const g = m2.get(String(c.ip || '').trim());
+            if (g) { c.geo_loc = g.loc; c.geo_isp = g.isp; }
+          }
+          // 报「补齐之后还差多少」，不是「这次进来时缺多少」——
+          // 前端显示的数字就是还要点几次「继续补齐」，一眼看得出有没有进展。
+          // 用补完仍然空的去重 IP 数，接口临时失败的那些也会被正确算进来。
+          const left = new Set();
+          for (const c of items) {
+            if (c.geo_loc != null) continue;
+            const key = String(c.ip || '').trim();
+            if (ipgeo.isPublicIp(key)) left.add(key);
+          }
+          geoMiss = left.size;
+        }
+      }
+    } catch (e) { /* 归属地拿不到不影响列表 */ }
+    return json({ items, status, geo_missing: geoMiss });
   }
   if (seg[0] === 'comments' && seg.length === 2 && /^\d+$/.test(seg[1])) {
     const id = parseInt(seg[1], 10);
