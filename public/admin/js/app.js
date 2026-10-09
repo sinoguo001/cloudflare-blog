@@ -107,17 +107,25 @@ function webpNote(d) {
 }
 async function statsBadge() {
   try {
-    const st = await API.get('/stats');
-    const elBadge = document.getElementById('badge-pending');
-    if (elBadge) {
-      elBadge.textContent = st.pending || '';
-      elBadge.style.display = st.pending > 0 ? '' : 'none';
+    // 两个接口互不依赖，并行取（原来串行 await，等于把两次 RTT 相加）
+    const [st, lr] = await Promise.all([
+      API.get('/stats').catch(() => null),
+      API.get('/links?status=pending').catch(() => null),
+    ]);
+    if (st) {
+      const elBadge = document.getElementById('badge-pending');
+      if (elBadge) {
+        elBadge.textContent = st.pending || '';
+        elBadge.style.display = st.pending > 0 ? '' : 'none';
+      }
     }
     // 待审友链申请也挂个角标（stats 接口不含友链，单独取一次计数）
-    const lr = await API.get('/links?status=pending').catch(() => null);
-    const n = (lr && lr.counts && lr.counts.pending) || 0;
-    const lk = document.getElementById('badge-links');
-    if (lk) { lk.textContent = n || ''; lk.style.display = n ? '' : 'none'; }
+    // 取不到就别动它：把角标清成 0 会把真实的待审数掩盖掉
+    if (lr) {
+      const n = (lr.counts && lr.counts.pending) || 0;
+      const lk = document.getElementById('badge-links');
+      if (lk) { lk.textContent = n || ''; lk.style.display = n ? '' : 'none'; }
+    }
   } catch (e) { /* 静默 */ }
 }
 function showLoading(msg) {
@@ -259,9 +267,9 @@ async function viewDashboard() {
   const load = async () => {
     try {
       const d = await API.get('/dashboard');
+      // 角标由 shell() 统一刷新，这里不再重复调用（原来会多发一轮 /stats + /links）
       shell(dashboardHtml(d, state.username));
       bindDashboard(view(), load);
-      statsBadge();
     } catch (e) {
       if (e.code === 401) throw e;
       shell(`<div class="empty-note">仪表盘加载失败：${esc(e.message)}</div>`);
@@ -824,8 +832,8 @@ async function viewComments() {
     commentTab = b.dataset.t;
     load();
   });
+  // 角标由 shell() 统一刷新，这里不再重复调用
   load();
-  statsBadge();
 }
 
 // ================= 友情链接 =================
@@ -1976,6 +1984,17 @@ async function viewSettings(tabArg) {
       <p class="hint">预览：<b id="cp-prev">（未填写，文章页不显示版权内容）</b></p>
       <p class="hint" style="margin-bottom:0">内容按<b>纯文本</b>渲染（不解析 HTML），换行直接生效，无需重新编辑文章。<b>留空则文章页不显示任何版权内容。</b></p>
     </div>
+
+    <div class="card">
+      <div class="sec-title">文章目录 <small>自动列出正文里的章节标题</small></div>
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="s-toc_on"> <b>在文章页显示目录</b>（默认开启）</label>
+      <p class="hint" style="margin:8px 0 0">自动抓取正文里的<b>二级标题（大章节）</b>与<b>三级标题（小节）</b>生成目录，点一下就跳到对应章节；往下读时，目录里会跟着点亮当前所在的那一章。</p>
+      <p class="hint" style="margin-bottom:0">
+        <b>屏幕够宽（≥ 1340px）且没有开侧边栏</b>时，目录浮在正文右侧的空白处，不占正文版面；
+        <b>屏幕不够宽或已经开了侧边栏</b>，就自动退回正文顶部的一张卡片（点「目录」二字可收起）。
+        <b>章节少于 2 个的文章不会出现目录。</b>老文章不用重新保存，升级后直接就有。
+      </p>
+    </div>
   </div>
 
   <div class="set-pane" data-pane="sidebar">
@@ -2157,6 +2176,8 @@ async function viewSettings(tabArg) {
   v.querySelector('#s-captcha').checked = s.captcha !== '0';
   v.querySelector('#s-ipgeo').checked = s.ipgeo_on !== '0';
   v.querySelector('#s-ipgeo_src').value = IPGEO_SRC.includes(s.ipgeo_src) ? s.ipgeo_src : IPGEO_DEFAULT;
+  // ---- 文章目录（Ver 0.5 ⑧）：没设过即默认开启 ----
+  v.querySelector('#s-toc_on').checked = s.toc_on !== '0';
   // ---- 导航栏开关：没设过（老站）默认全开，与升级前一致 ----
   for (const k of ['categories', 'tags', 'archive', 'links', 'rss']) {
     v.querySelector('#s-nav_' + k).checked = s['nav_show_' + k] !== '0';
@@ -2585,6 +2606,8 @@ async function viewSettings(tabArg) {
       captcha: v.querySelector('#s-captcha').checked,
       ipgeo_on: v.querySelector('#s-ipgeo').checked,
       ipgeo_src: v.querySelector('#s-ipgeo_src').value,
+      // 文章目录（Ver 0.5 ⑧）
+      toc_on: v.querySelector('#s-toc_on').checked,
       // 导航栏开关：关掉只是不显示在导航里，页面地址照常可访问
       nav_show_categories: v.querySelector('#s-nav_categories').checked,
       nav_show_tags: v.querySelector('#s-nav_tags').checked,

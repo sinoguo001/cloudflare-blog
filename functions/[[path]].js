@@ -1130,6 +1130,9 @@ async function api(ctx, url, seg, method) {
     //      传了别的一律忽略（读的一方还有 pickProvider 兜底，双保险）----
     if (b.ipgeo_on != null) await db.setSetting(dbx, 'ipgeo_on', b.ipgeo_on ? '1' : '0');
     if (b.ipgeo_src != null && ipgeo.isProvider(b.ipgeo_src)) await db.setSetting(dbx, 'ipgeo_src', String(b.ipgeo_src));
+    // ---- 文章目录（Ver 0.5 ⑧）：默认开；关掉后文章页不再出现目录卡片 ----
+    // 目录是渲染文章页时现场生成的，改这个开关不用动任何文章数据。
+    if (b.toc_on != null) await db.setSetting(dbx, 'toc_on', b.toc_on ? '1' : '0');
     // ---- 导航栏显示开关：关掉只是不出现在页头导航，页面地址照常可访问 ----
     for (const k of ['categories', 'tags', 'archive', 'links', 'rss']) {
       if (b['nav_show_' + k] != null) await db.setSetting(dbx, 'nav_show_' + k, b['nav_show_' + k] ? '1' : '0');

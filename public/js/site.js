@@ -234,3 +234,60 @@
       .catch(function () { btn.disabled = false; showBad('网络错误，请稍后再试'); });
   });
 })();
+
+// ---------- 文章目录：滚动时点亮「当前读到哪一章」（Ver 0.5 ⑧）----------
+// 目录本身是服务端渲染好的，这里只负责加/摘 .on 那一个类；
+// 脚本没跑起来（禁用 JS、加载失败）目录照样能点、照样能跳，只是不高亮。
+(function () {
+  var toc = document.getElementById('art-toc');
+  if (!toc) return;
+  var links = toc.querySelectorAll('a[data-toc]');
+  if (!links.length) return;
+  var pairs = [], i;
+  for (i = 0; i < links.length; i++) {
+    var h = document.getElementById(links[i].getAttribute('data-toc'));
+    if (h) pairs.push({ h: h, a: links[i] });
+  }
+  if (!pairs.length) return;
+  var box = toc.querySelector('.toc-list');
+  // 判定线：标题顶端越过视口往下 96px 就算「正在读这一章」
+  var OFFSET = 96;
+  var cur;
+  function paint(act) {
+    if (act === cur) return;
+    cur = act;
+    for (var j = 0; j < pairs.length; j++) {
+      if (pairs[j].a === act) pairs[j].a.classList.add('on');
+      else pairs[j].a.classList.remove('on');
+    }
+    // 目录本身能滚动时（宽屏悬浮形态高度有限），把点亮那条拉进可视范围。
+    // 这里手动改 scrollTop，不用 scrollIntoView —— 后者会顺带把整个页面也滚一下。
+    if (act && box && box.scrollHeight > box.clientHeight + 4) {
+      var r = act.getBoundingClientRect(), br = box.getBoundingClientRect();
+      if (r.top < br.top + 4) box.scrollTop += r.top - br.top - 8;
+      else if (r.bottom > br.bottom - 4) box.scrollTop += r.bottom - br.bottom + 8;
+    }
+  }
+  function sync() {
+    var act = null, j;
+    for (j = 0; j < pairs.length; j++) {
+      // 标题在正文里是按顺序出现的，遇到第一个还在判定线下方的就可以停了
+      if (pairs[j].h.getBoundingClientRect().top - OFFSET <= 0) act = pairs[j].a;
+      else break;
+    }
+    // 已经滚到底：末章可能很短，标题永远越不过判定线，这时直接点亮最后一条
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) {
+      act = pairs[pairs.length - 1].a;
+    }
+    paint(act);
+  }
+  var ticking = false;
+  function onScroll() {
+    if (ticking) return;
+    ticking = true;
+    window.requestAnimationFrame(function () { ticking = false; sync(); });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', onScroll);
+  sync();
+})();

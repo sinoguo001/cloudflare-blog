@@ -7,6 +7,7 @@ import { esc, fmtDate, rfc822, stripHtml, isHexColor, bnNow, postUrl, pageUrl, c
 import { codeThemeCss } from './hl.js';
 import { gravatarHash } from './md5.js';
 import { geoText } from './ipgeo.js';
+import * as toc from './toc.js';
 
 // Gravatar 头像源：国内优先（实测 weavatar ≈23ms、cravatar ≈88ms；官方源国内不可达）
 const GRAVATAR_SRC = {
@@ -281,6 +282,35 @@ img{max-width:100%}
 .like-count-mini{color:var(--muted)}
 /* 独立页面（/p/<slug>）：只留更新时间，去掉发布时间 / 分类 / 阅读数 */
 .page-upd{margin:-4px 0 20px;font-size:13px;color:var(--muted)}
+/* ---------- 文章目录（Ver 0.5 ⑧）----------
+   默认形态就是正文顶部的一张普通卡片；宽屏且没有侧边栏时，
+   下面的媒体查询会把它拎出来，浮到正文右侧的空白区（.toc-fix）。 */
+.toc{background:var(--tint);border:1px solid var(--line);border-radius:12px;padding:11px 14px;margin:0 0 18px}
+.toc-h{cursor:pointer;list-style:none;display:flex;align-items:center;gap:7px;
+  font-size:14px;font-weight:700;color:var(--text);letter-spacing:.3px}
+.toc-h::-webkit-details-marker{display:none}
+.toc-h::before{content:"";width:3px;height:13px;border-radius:2px;background:var(--accent);flex:none}
+.toc-h::after{content:"▾";margin-left:auto;font-size:11px;color:var(--muted);transition:transform .15s}
+.toc[open] .toc-h::after{transform:rotate(180deg)}
+.toc-list{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:1px}
+.toc-i a{display:block;font-size:13.5px;line-height:1.6;color:var(--muted);
+  padding:4px 9px;border-radius:8px;border-left:2px solid transparent;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.toc-i a:hover{color:var(--accent);background:var(--accent-soft);text-decoration:none}
+.toc-i.lv3 a{padding-left:21px;font-size:13px}
+/* 当前读到哪一章，目录里那一条就点亮（.on 由 /js/site.js 加） */
+.toc-i a.on{color:var(--accent);background:var(--accent-soft);border-left-color:var(--accent);font-weight:600}
+/* 点目录跳过去时，别让标题贴在视口最顶上 */
+.art-body h2,.art-body h3{scroll-margin-top:84px}
+/* 悬浮形态：只有视口宽到「正文右侧还留得下一竖列」时才启用。
+   正文 880 居中，两侧各剩 (100vw-880)/2；目录宽 196 再跟正文留 26 的间距，
+   算下来视口得有 1340 才不至于顶出屏幕，所以断点取 1340。 */
+@media(min-width:1340px){
+  .toc.toc-fix{position:fixed;top:92px;width:196px;margin:0;padding:11px 12px;
+    right:clamp(18px,calc((100vw - 880px)/2 - 222px),120px);
+    background:var(--card);box-shadow:0 6px 22px rgba(15,23,42,.09);z-index:20}
+  .toc.toc-fix .toc-list{max-height:calc(100vh - 200px);overflow-y:auto}
+}
 /* 正文排版 */
 .art-body{font-size:16.5px}
 .art-body h2{font-size:23px;margin:1.6em 0 .6em;padding-left:11px;border-left:4px solid var(--accent)}
@@ -823,13 +853,27 @@ export function renderArticle(s, post, extra) {
     ${pn.prev ? `<a href="${esc(postUrl(s, pn.prev))}"><small>← 上一篇</small>${esc(pn.prev.title)}</a>` : '<span></span>'}
     ${pn.next ? `<a class="next" href="${esc(postUrl(s, pn.next))}"><small>下一篇 →</small>${esc(pn.next.title)}</a>` : '<span></span>'}
   </nav>`;
+  // ---------- 文章目录（Ver 0.5 ⑧）----------
+  // 每次渲染现场算一遍：给正文里的 h2/h3 补上锚点 id，顺带拿到目录条目。
+  // 好处是老文章不用挨个重新保存就有目录，存储结构也一点不用动。
+  // 开关关掉时下面这段完全不执行，输出的 DOM 与没做这个功能前一模一样。
+  let body = String(post.content_html || '');
+  let tocBox = '';
+  if (toc.enabled(s)) {
+    const r = toc.buildToc(body);
+    body = r.html;
+    // 有侧边栏时右边那块地方已经被侧边栏占了，再悬浮就会叠在一起 ——
+    // 这种情况目录老老实实待在正文顶上当普通卡片（不加 toc-fix 类）。
+    tocBox = toc.tocHtml(r.items, { float: !String(s.get('_sidebar_html') || '') });
+  }
   const content = `
     <p class="crumb"><a href="/">首页</a> / ${crumbCat(post.category)}正文</p>
     <article class="article">
       <h1>${pinBadge(post)}${esc(post.title)}</h1>
       <div class="art-meta">${meta}</div>
       ${cover}
-      <div class="art-body">${post.content_html}</div>
+      ${tocBox}
+      <div class="art-body">${body}</div>
       ${likeBar(post)}
       ${tags ? `<div class="pc-tags" style="margin-top:18px">${tags}</div>` : ''}
       ${copyrightHtml(s, post, extra.origin)}
@@ -1412,6 +1456,15 @@ Sitemap: ${origin}/sitemap.xml
 export function previewDoc(s, post, origin = '') {
   // 灰度与夜间同样作用于预览：不然后台开了全站灰度，编辑器里看着还是彩色的
   const gray = s.get('gray_mode') === '1';
+  // 预览里同样出目录：写的时候就能看出章节分得对不对。
+  // 预览窗口本来就窄（iframe 里），只走「正文顶部卡片」这一种形态，不悬浮。
+  let body = String(post.content_html || '');
+  let tocBox = '';
+  if (toc.enabled(s)) {
+    const r = toc.buildToc(body);
+    body = r.html;
+    tocBox = toc.tocHtml(r.items, { float: false });
+  }
   return `<!doctype html><html lang="zh-CN" data-theme="light"${gray ? ' class="gray"' : ''}><head><meta charset="utf-8">
 <base href="${esc(origin)}/">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1445,10 +1498,17 @@ h1{font-size:30px;line-height:1.4;margin:0 0 6px}
 .art-body table{border-collapse:collapse;margin:1.2em 0;width:100%;font-size:15px}
 .art-body th,.art-body td{border:1px solid var(--line);padding:8px 12px}
 .art-body th{background:var(--tint)}
+.toc{background:var(--tint);border:1px solid var(--line);border-radius:12px;padding:11px 14px;margin:0 0 18px}
+.toc-h{cursor:pointer;list-style:none;display:flex;align-items:center;gap:7px;font-size:14px;font-weight:700}
+.toc-h::before{content:"";width:3px;height:13px;border-radius:2px;background:var(--accent);flex:none}
+.toc-list{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:1px}
+.toc-i a{display:block;font-size:13.5px;line-height:1.6;color:var(--muted);padding:4px 9px;border-radius:8px}
+.toc-i.lv3 a{padding-left:21px;font-size:13px}
 .art-body{font-size:16.5px}${codeThemeCss(s.get('code_theme'))}</style>
 ${themeLink(s, origin)}</head>
 <body><div class="wrap"><h1>${esc(post.title || '（无标题）')}</h1>
 <div class="meta">${esc(s.get('author_name'))} · ${fmtDate(new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 19).replace('T', ' '), true)} · 实时预览</div>
-<div class="art-body">${post.content_html}</div>
+${tocBox}
+<div class="art-body">${body}</div>
 </div></body></html>`;
 }
