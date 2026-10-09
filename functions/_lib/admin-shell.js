@@ -8,6 +8,13 @@ export const ADMIN_SHELL = `<!doctype html>
 <title>博客管理后台</title>
 <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
 <link rel="stylesheet" href="/admin/css/app.css">
+<!-- 下面 4 个是 app.js 的静态依赖。不预载的话，浏览器必须先下完 app.js、解析出 import
+     才回头去取它们，线上白白多等一个往返（约 300ms）。新增子模块时记得同步加一行，
+     .preload-smoke.mjs 会拿这份清单和 app.js 顶部的 import 逐个比对。 -->
+<link rel="modulepreload" href="/admin/js/api.js">
+<link rel="modulepreload" href="/admin/js/ui.js">
+<link rel="modulepreload" href="/admin/js/editor.js">
+<link rel="modulepreload" href="/admin/js/dashboard.js">
 </head>
 <body>
 <div id="app"><div class="boot">正在载入…</div></div>
