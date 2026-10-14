@@ -8,6 +8,7 @@ import { codeThemeCss } from './hl.js';
 import { gravatarHash } from './md5.js';
 import { geoText } from './ipgeo.js';
 import * as toc from './toc.js';
+import { fontHead } from './font.js';
 
 // Gravatar 头像源：国内优先（实测 weavatar ≈23ms、cravatar ≈88ms；官方源国内不可达）
 const GRAVATAR_SRC = {
@@ -666,6 +667,10 @@ export function layout(s, o) {
 if(t!=='dark'&&t!=='light')t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches)?'dark':'light';
 document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 ${themeLink(s)}
+<!-- 自定义文章字体（Ver 0.6 ①）：必须排在主题样式表【之后】——
+     主题同样会写 .art-body{…}（正文是它最常改的地方），同特异性下后者赢，
+     排前面会被压掉，表现就是「后台设了字体、前台纹丝不动」。 -->
+${fontHead(s)}
 <!-- 全站加载：文章页用它上报阅读量，所有页面用它上报 PV（后台是独立静态页，不走这里） -->
 <script src="/js/site.js" defer></script>
 </head>
@@ -1505,7 +1510,9 @@ h1{font-size:30px;line-height:1.4;margin:0 0 6px}
 .toc-i a{display:block;font-size:13.5px;line-height:1.6;color:var(--muted);padding:4px 9px;border-radius:8px}
 .toc-i.lv3 a{padding-left:21px;font-size:13px}
 .art-body{font-size:16.5px}${codeThemeCss(s.get('code_theme'))}</style>
-${themeLink(s, origin)}</head>
+${themeLink(s, origin)}
+<!-- 编辑器实时预览也要跟着换字体，否则后台看到的和读者看到的不是一回事（Ver 0.6 ①） -->
+${fontHead(s)}</head>
 <body><div class="wrap"><h1>${esc(post.title || '（无标题）')}</h1>
 <div class="meta">${esc(s.get('author_name'))} · ${fmtDate(new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 19).replace('T', ' '), true)} · 实时预览</div>
 ${tocBox}

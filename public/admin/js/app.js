@@ -1871,16 +1871,56 @@ async function viewSettings(tabArg) {
 
   <div class="set-pane" data-pane="basic">
     <div class="grid2">
+      <div>
       <div class="card">
         <div class="sec-title">站点信息</div>
         <div class="field"><label>站点名称</label><input class="inp" name="site_title" id="s-site_title"></div>
         <div class="field"><label>副标题</label><input class="inp" name="site_subtitle" id="s-site_subtitle"></div>
         <div class="field"><label>作者署名（页脚与文章署名）</label><input class="inp" name="author_name" id="s-author_name"></div>
         <div class="field"><label>SEO 描述</label><input class="inp" name="seo_desc" id="s-seo_desc" placeholder="用于搜索引擎摘要"></div>
-        <div class="field"><label>主题色</label><input class="inp" type="color" name="accent" id="s-accent" style="width:120px;height:40px;padding:4px"></div>
-        <div class="field"><label>每页文章数</label><input class="inp" type="number" min="1" max="20" name="per_page" id="s-per_page" style="width:120px"></div>
+        <!-- 主题色与每页文章数并排一行：两个都只需要一个很窄的输入框，
+             各占一行白白多占约一行高度（Ver 0.6 ②）。 -->
+        <div style="display:flex;gap:14px;flex-wrap:wrap">
+          <div class="field" style="flex:1;min-width:132px"><label>主题色</label><input class="inp" type="color" name="accent" id="s-accent" style="height:40px;padding:4px"></div>
+          <div class="field" style="flex:1;min-width:132px"><label>每页文章数</label><input class="inp" type="number" min="1" max="20" name="per_page" id="s-per_page"></div>
+        </div>
         <div class="field"><label>页脚自定义文字（可留空，支持换行）</label><textarea class="txa" name="footer_text" id="s-footer_text"></textarea></div>
-        <div class="field"><label>ICP 备案号（可选，如 苏ICP备xxxxxxxx号）</label><input class="inp" name="beian" id="s-beian" placeholder="填写后显示在页脚并链接工信部官网；留空则不显示"></div>
+        <div class="field" style="margin-bottom:0"><label>ICP 备案号（可选，如 苏ICP备xxxxxxxx号）</label><input class="inp" name="beian" id="s-beian" placeholder="填写后显示在页脚并链接工信部官网；留空则不显示"></div>
+      </div>
+      <div class="card">
+        <div class="sec-title">自定义文章字体 <small>只作用于文章正文，页头、导航、侧边栏、页脚不受影响</small></div>
+        <div class="nav-toggles" style="margin-bottom:12px">
+          <label><input type="checkbox" id="s-font_on"> 启用自定义字体</label>
+        </div>
+        <div class="field">
+          <label>字体来源</label>
+          <div class="tabs sm" id="font-src">
+            <button type="button" data-m="local">本地上传</button>
+            <button type="button" data-m="remote">远程链接</button>
+          </div>
+        </div>
+        <div class="field" id="font-local-box">
+          <label>字体文件（woff2 / woff / ttf / otf，单个不超过 20MB）</label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <input class="inp" id="s-font_local" placeholder="上传后自动填入，也可手动填站内地址" spellcheck="false" style="flex:1;min-width:170px">
+            <label class="btn" style="cursor:pointer;margin:0">上传<input type="file" id="font-file" accept=".woff2,.woff,.ttf,.otf" hidden></label>
+            <button class="btn" type="button" id="font-clear">清除</button>
+          </div>
+        </div>
+        <div class="field" id="font-remote-box" hidden>
+          <label>字体链接（服务商的 CSS 链接，或 .woff2 / .woff / .ttf / .otf 直链）</label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <input class="inp" id="s-font_remote" placeholder="https://…（CSS 链接或字体文件直链）" spellcheck="false" style="flex:1;min-width:170px">
+            <button class="btn" type="button" id="font-clear-remote">清除</button>
+          </div>
+        </div>
+        <div class="field" style="margin-bottom:12px"><label>字体名称 <small>要和服务端字体族的名字完全一致，写错会静默退回默认字体</small></label>
+          <input class="inp" id="s-font_family" placeholder="如 霞鹜文楷 / Noto Serif SC" spellcheck="false">
+        </div>
+        <div class="fp-box" id="font-prev">风急天高猿啸哀，渚清沙白鸟飞回。云尚博客 ABC abc 0123</div>
+        <p class="hint">下方预览按当前填写内容实时加载。字体文件存入 R2，<b>点最下方「保存全部设置」才生效</b>；中文字体一个常有 5–10MB，为不让首屏等它，只作用于文章正文、并且字体没下载完时先用系统字体把字显示出来。</p>
+        <p class="warn-box">⚠️ <b>字体有版权。</b>上传或引用前请先确认你已获得授权（商用字库尤其要留意授权范围）。本程序只负责加载你自己提供的字体，不附带任何字体文件，也不对由此产生的版权纠纷负责。</p>
+      </div>
       </div>
       <div>
         <div class="card">
@@ -2473,6 +2513,111 @@ async function viewSettings(tabArg) {
   v.querySelector('#fav-clear').addEventListener('click', () => { favIn.value = ''; refreshIcons(); });
   refreshIcons();
 
+  // ---- 自定义文章字体（Ver 0.6 ①）：本地上传 / 远程链接 二选一 ----
+  // 字体名与链接最终都会被拼进前台 <style>，所以前后端各过一遍白名单 ——
+  // 名字里一个 } 就能提前闭合规则、把后面的声明全带跑。清洗口径与 functions/_lib/font.js 一致。
+  const safeFontName = (val) => String(val || '')
+    .replace(/[^\w\u3007\u3400-\u9fff\-. ]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const FONT_FILE_RE = /\.(woff2?|ttf|otf)(\?|#|$)/i;
+  const FONT_FMT = { woff2: 'woff2', woff: 'woff', ttf: 'truetype', otf: 'opentype' };
+  const fontOn = v.querySelector('#s-font_on');
+  const fontLocalIn = v.querySelector('#s-font_local');
+  const fontRemoteIn = v.querySelector('#s-font_remote');
+  const fontFamilyIn = v.querySelector('#s-font_family');
+  const fontPrevEl = v.querySelector('#font-prev');
+  const fontSrcEl = v.querySelector('#font-src');
+  let fontMode = s.font_src === 'remote' ? 'remote' : 'local';
+
+  const fontShowMode = () => {
+    fontSrcEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.m === fontMode));
+    v.querySelector('#font-local-box').hidden = fontMode !== 'local';
+    v.querySelector('#font-remote-box').hidden = fontMode !== 'remote';
+  };
+  // 实时预览：保存前就能看出「这个字体到底有没有生效、名字有没有写对」——
+  // 名字写错时不会报错，只会安静地退回默认字体，没有预览根本发现不了。
+  const fpNode = (id, make) => {
+    const old = document.getElementById(id);
+    if (old) old.remove();
+    if (make) document.head.appendChild(make());
+  };
+  const fontPreview = () => {
+    const fam = safeFontName(fontFamilyIn.value);
+    const url = (fontMode === 'remote' ? fontRemoteIn.value : fontLocalIn.value).trim();
+    fontPrevEl.style.fontFamily = '';
+    // 链接判定与后端同口径：只认站内相对路径与 http(s)，且不含尖括号
+    const okUrl = /^(https?:\/\/|\/)/i.test(url) && !/[<>]/.test(url);
+    if (!fontOn.checked || !fam || !okUrl) { fpNode('fp-style', null); fpNode('fp-link', null); return; }
+    if (fontMode === 'remote' && !FONT_FILE_RE.test(url)) {
+      // 对方的 CSS 链接（Google Fonts 那类）：@font-face 由它定义，这里只把地址引进来
+      fpNode('fp-style', null);
+      fpNode('fp-link', () => {
+        const l = document.createElement('link');
+        l.id = 'fp-link'; l.rel = 'stylesheet'; l.href = url;
+        return l;
+      });
+    } else {
+      fpNode('fp-link', null);
+      const ext = (url.split('#')[0].split('?')[0].split('.').pop() || '').toLowerCase();
+      const css = `@font-face{font-family:'${fam}';src:url("${url.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}")`
+        + ` format("${FONT_FMT[ext] || 'woff2'}");font-display:swap}`;
+      fpNode('fp-style', () => {
+        const st = document.createElement('style');
+        st.id = 'fp-style'; st.textContent = css;
+        return st;
+      });
+    }
+    fontPrevEl.style.fontFamily = `'${fam}', system-ui, sans-serif`;
+  };
+
+  fontLocalIn.value = s.font_local || '';
+  fontRemoteIn.value = s.font_remote || '';
+  fontFamilyIn.value = s.font_family || '';
+  fontOn.checked = s.font_on === '1';
+  fontSrcEl.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-m]');
+    if (!b) return;
+    fontMode = b.dataset.m;
+    fontShowMode();
+    fontPreview();
+  });
+  fontOn.addEventListener('change', () => {
+    // 没勾启用时把预览压暗：填了东西但没开，等于前台什么都不会变
+    fontPrevEl.style.opacity = fontOn.checked ? '1' : '.5';
+    fontPreview();
+  });
+  [fontLocalIn, fontRemoteIn, fontFamilyIn].forEach((el) => el.addEventListener('input', fontPreview));
+  v.querySelector('#font-clear').addEventListener('click', () => { fontLocalIn.value = ''; fontPreview(); });
+  v.querySelector('#font-clear-remote').addEventListener('click', () => { fontRemoteIn.value = ''; fontPreview(); });
+  const fontFileIn = v.querySelector('#font-file');
+  fontFileIn.addEventListener('change', async () => {
+    const f = fontFileIn.files && fontFileIn.files[0];
+    fontFileIn.value = '';
+    if (!f) return;
+    // 扩展名取自文件名并随请求带给服务端：.ttf / .otf 在不少浏览器上被报成
+    // application/octet-stream，服务端只看 content-type 会把正常字体误拒。
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    if (!FONT_FMT[ext]) { toast('只支持 woff2 / woff / ttf / otf 字体文件', 'bad'); return; }
+    if (f.size > 20 * 1024 * 1024) { toast('字体文件不能超过 20MB', 'bad'); return; }
+    const done = busy('正在上传字体…', '中文字体常有几 MB，请稍候');
+    try {
+      const r = await fetch('/api/fonts?ext=' + ext, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': f.type || 'application/octet-stream' }, body: f,
+      });
+      let d = {};
+      try { d = await r.json(); } catch (err) { /* 非 JSON 错误体，用下面的兜底文案 */ }
+      if (!r.ok) throw new Error(d.error || '上传失败 (' + r.status + ')');
+      fontLocalIn.value = d.url || ('/fonts/' + d.key);
+      fontMode = 'local';
+      fontShowMode();
+      fontPreview();
+      toast('字体已上传 ✓ 还需点最下方「保存全部设置」');
+    } catch (e) { toast(e.message, 'bad'); }
+    finally { done(); }
+  });
+  fontShowMode();
+  fontPreview();
+
   // ---- 侧边栏（Ver 0.5 ②）：启用开关 / 位置 / 项目列表 ----
   const sbOnEl = v.querySelector('#s-sb_on');
   const sbSideEl = v.querySelector('#s-sb_side');
@@ -2616,6 +2761,12 @@ async function viewSettings(tabArg) {
       nav_show_rss: v.querySelector('#s-nav_rss').checked,
       // 全站灰度：优先级最高的显示设置，换主题也不受影响
       gray_mode: v.querySelector('#s-gray_mode').checked,
+      // 自定义文章字体（Ver 0.6 ①）：两个来源都提交，切回来时值还在；后端再洗一遍
+      font_on: v.querySelector('#s-font_on').checked,
+      font_src: fontMode,
+      font_local: v.querySelector('#s-font_local').value.trim(),
+      font_remote: v.querySelector('#s-font_remote').value.trim(),
+      font_family: v.querySelector('#s-font_family').value.trim(),
       // 侧边栏（Ver 0.5 ②）：默认关；items 交给后端再洗一遍，前端只负责收集
       sidebar_enabled: sbOnEl.checked,
       sidebar_side: sbSideEl.value,

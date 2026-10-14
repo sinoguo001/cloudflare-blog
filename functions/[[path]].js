@@ -20,6 +20,7 @@ import * as cache from './_lib/cache.js';
 import * as purge from './_lib/purge.js';
 import { buildSidebar, normalizeItems } from './_lib/sidebar.js';
 import { resolveEmbed } from './_lib/embed.js';
+import * as font from './_lib/font.js';
 import * as ipgeo from './_lib/ipgeo.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
@@ -69,7 +70,9 @@ async function handle(ctx) {
 
   // ---- 后台静态资源与根静态文件 ----
   // （/media、/backup、robots/rss/sitemap 等动态路径需排除，避免被扩展名规则截胡）
-  const isDynamicExt = seg[0] === 'media' || seg[0] === 'backup' || seg[0] === 'backups' || seg[0] === 'theme-assets'
+  // ⚠️ fonts 必须在这里排除：.woff2 / .ttf 都命中下面的 STATIC_EXT，
+  //    不排除的话 /fonts/xxx.woff2 会被当成静态资源交给 ASSETS，结果是 404。
+  const isDynamicExt = seg[0] === 'media' || seg[0] === 'backup' || seg[0] === 'backups' || seg[0] === 'theme-assets' || seg[0] === 'fonts'
     || ['rss.xml', 'feed.xml', 'sitemap.xml', 'robots.txt'].includes(path.slice(1)) || path === '/favicon.svg';
   if (seg[0] === 'admin' || (STATIC_EXT.test(path) && !isDynamicExt) || path === '/favicon.ico') {
     const target = new URL(request.url);
@@ -138,6 +141,29 @@ async function handle(ctx) {
         'content-type': ct,
         'cache-control': 'public, max-age=300',
         'etag': obj.httpEtag || '',
+      },
+    });
+  }
+
+  // ---- 自定义字体文件代理（R2 fonts/ 前缀，Ver 0.6 ①） ----
+  // 键名带时间戳 + 随机后缀，同一个地址的内容永不改变 —— 所以可以给一年 immutable，
+  // 浏览器缓存住之后，读者第二次进文章页一个字节的字体流量都不用再花。
+  // 不带 Range：字体不需要拖进度条，多一次 head 查询纯属浪费。
+  if (seg[0] === 'fonts') {
+    if (method !== 'GET' && method !== 'HEAD') return err('方法不允许', 405);
+    const rel = seg.slice(1);
+    if (!rel.length || rel.some((x) => x === '..' || x === '.' || x.includes('\\'))) return err('非法路径', 400);
+    const obj = await env.BLOG.get(font.FONT_PREFIX + rel.join('/'));
+    if (!obj) return err('字体文件不存在', 404);
+    const ct = obj.httpMetadata?.contentType || obj.customMetadata?.ct || mimeOfExt(rel[rel.length - 1]);
+    return new Response(method === 'HEAD' ? null : obj.body, {
+      headers: {
+        'content-type': ct,
+        'cache-control': 'public, max-age=31536000, immutable',
+        'etag': obj.httpEtag || '',
+        // @font-face 是少数要过 CORS 的资源：将来若从另一个域名引这个字体
+        // （比如主题独立部署），没有这行浏览器会直接拒绝加载。
+        'access-control-allow-origin': '*',
       },
     });
   }
@@ -857,6 +883,42 @@ async function api(ctx, url, seg, method) {
     return err('接口不存在', 404);
   }
 
+  // --- 自定义字体上传（R2，Ver 0.6 ①）---
+  // 只收字体文件，存 R2 的 fonts/ 前缀，与图片视频音频完全分开：
+  // 混进 media/ 会让「媒体库」里多出一堆 <img> 加载不出来的裂图占位卡。
+  if (seg[0] === 'fonts') {
+    if (method !== 'POST' || seg.length !== 1) return err('方法不允许', 405);
+    // 扩展名优先按前端带来的 ?ext= 判定：.ttf / .otf 在不少浏览器上被报成
+    // application/octet-stream，只信 content-type 会把正常字体误判成不支持的类型。
+    const wantExt = String(url.searchParams.get('ext') || '').toLowerCase().replace(/^\./, '');
+    const ct = (request.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    const ext = font.FONT_EXTS.includes(wantExt) ? wantExt : (font.FONT_TYPES[ct] || '');
+    if (!ext) return err('只支持 woff2 / woff / ttf / otf 字体文件', 415);
+    const max = font.FONT_MAX;
+    const len = parseInt(request.headers.get('content-length') || '0', 10);
+    if (len > max) return err(font.fontLimitMsg, 413);
+    const key = font.FONT_PREFIX + `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    // 与媒体上传同一套「慢路」：HTTP/2 与流式请求不一定带 content-length，
+    // 光靠上面那条等于没限制，所以边写边数字节，一超限立刻掐断。
+    let n = 0, over = false;
+    const limiter = new TransformStream({
+      transform(chunk, ctl) {
+        n += chunk.byteLength;
+        if (n > max) { over = true; ctl.error(new Error('FONT_TOO_LARGE')); return; }
+        ctl.enqueue(chunk);
+      },
+    });
+    try {
+      await env.BLOG.put(key, request.body ? request.body.pipeThrough(limiter) : request.body,
+        { httpMetadata: { contentType: font.FONT_MIME[ext] }, customMetadata: { ct: font.FONT_MIME[ext] } });
+    } catch (e) {
+      if (!over) throw e;
+      await env.BLOG.delete(key).catch(() => {});
+      return err(font.fontLimitMsg, 413);
+    }
+    return json({ ok: true, key, url: '/fonts/' + key.slice(font.FONT_PREFIX.length), ext });
+  }
+
   // --- 外站视频嵌入（B 站 / YouTube）---
   // 把「视频页面地址」换成播放器地址，正文里只存后者。b23.tv 分享短链要出网跟一次
   // 重定向，所以这个接口放在登录之后 —— 只有博主能触发，不给外人当跳板用。
@@ -1147,6 +1209,15 @@ async function api(ctx, url, seg, method) {
     }
     // ---- 全站灰度：默认关，启用后整站转灰（优先级高于主题） ----
     if (b.gray_mode != null) await db.setSetting(dbx, 'gray_mode', b.gray_mode ? '1' : '0');
+    // ---- 自定义文章字体（Ver 0.6 ①）：默认关 ----
+    // 字体名与链接最终都会拼进 CSS，所以一律先过 font.js 的白名单再落库 ——
+    // 名字里一个 } 就能把后面的规则全带跑，入库前挡住比渲染时补救可靠。
+    // 洗完之后为空串（比如只填了引号和分号）也照存：等于「没配」，渲染层会整体忽略。
+    if (b.font_on != null) await db.setSetting(dbx, 'font_on', b.font_on ? '1' : '0');
+    if (b.font_src != null) await db.setSetting(dbx, 'font_src', String(b.font_src) === 'remote' ? 'remote' : 'local');
+    if (b.font_local != null) await db.setSetting(dbx, 'font_local', font.safeFontUrl(b.font_local));
+    if (b.font_remote != null) await db.setSetting(dbx, 'font_remote', font.safeFontUrl(b.font_remote));
+    if (b.font_family != null) await db.setSetting(dbx, 'font_family', font.safeFamily(b.font_family));
     // ---- 邮件通知 ----
     // 端口必须是该服务商真开了的（163 没有 587、Office365 没有 465）。
     // 存了不支持的组合，现象是「连上就断」或「干等到超时」，与账号密码无关、极难排查，所以入库前拦住。

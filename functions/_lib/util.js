@@ -62,7 +62,11 @@ export const MIME_EXT = { png:'image/png', jpeg:'image/jpeg', jpg:'image/jpeg', 
   mp3:'audio/mpeg', m4a:'audio/mp4', aac:'audio/aac', wav:'audio/wav', flac:'audio/flac',
   ogg:'audio/ogg', oga:'audio/ogg', opus:'audio/opus', weba:'audio/webm',
   json:'application/json', txt:'text/plain',
-  css:'text/css', svg:'image/svg+xml', woff2:'font/woff2', woff:'font/woff', xml:'application/xml', js:'application/javascript', webmanifest:'application/manifest+json' };
+  css:'text/css', svg:'image/svg+xml', woff2:'font/woff2', woff:'font/woff',
+  // ttf / otf 是 Ver 0.6 ① 补的：自定义字体允许这两种格式，缺了它们
+  // /fonts/xxx.ttf 会以 application/octet-stream 下发，浏览器多半拒绝当字体用。
+  ttf:'font/ttf', otf:'font/otf',
+  xml:'application/xml', js:'application/javascript', webmanifest:'application/manifest+json' };
 export const mimeOfExt = (f) => {
   const e = (String(f).split('.').pop() || '').toLowerCase();
   return MIME_EXT[e] || 'application/octet-stream';
