@@ -83,7 +83,17 @@ async function handle(ctx) {
       // 308 重定向回 xxx/，而 /admin 又在 catch-all 内，形成 308 死循环（"重定向过多"）。
       if (!path.endsWith('/')) target.pathname += '/';
     }
-    return env.ASSETS.fetch(new Request(target, request));
+    const res = await env.ASSETS.fetch(new Request(target, request));
+    if (seg[0] !== 'admin') return res;
+    // 后台只有博主一个人用，一律 no-cache（每次带 ETag 回源校验，文件没变仍是 304），改完刷新就见效。
+    // ⚠️ 不能只靠 public/_headers：本项目的所有请求都先进这个 catch-all，
+    //    响应由 Functions 生成，而 _headers 只作用于「平台直接吐出的静态资源」，
+    //    对 Functions 的响应不生效 —— /admin/js/app.js 因此一直拿平台默认的
+    //    max-age=14400（4 小时），于是「后台 JS 改完、刷新还是旧的」
+    //    （2026-10-14 段落块就是这么被吃掉的）。这里直接改头，不看 _headers 的脸色。
+    const head = new Headers(res.headers);
+    head.set('Cache-Control', 'no-cache');
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers: head });
   }
 
   // ---- R2 媒体代理（图片 / 视频 / 音频） ----
