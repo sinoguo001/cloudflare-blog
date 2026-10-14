@@ -278,6 +278,55 @@ export function mdFromHtml(container) {
   return md;
 }
 
+// ============================================================
+// 段落块（Ver 0.6 ④）
+// 正文仍以 Markdown 落库，块只是**编辑期的操作层**：把 .we 的每个顶层元素
+// 当成一个可上移/下移/复制/删除/拖拽的单元。所有控件都是 contenteditable
+// **之外**的浮层，因此既不会混进正文，也不会进 Markdown。
+// ============================================================
+
+// 浮层骨架。三块：工具条、插入菜单、拖拽插入指示线。
+const BLOCKS_UI = `<div class="bl-bar" data-bar hidden>
+  <button type="button" class="bl-b bl-h" data-bl="drag" title="按住拖拽排序">⠿</button>
+  <button type="button" class="bl-b" data-bl="add" title="在此处插入新块">＋</button>
+  <span class="bl-sep"></span>
+  <button type="button" class="bl-b" data-bl="up" title="上移一块">↑</button>
+  <button type="button" class="bl-b" data-bl="down" title="下移一块">↓</button>
+  <button type="button" class="bl-b" data-bl="dup" title="复制这一块">⧉</button>
+  <button type="button" class="bl-b bl-del" data-bl="del" title="删除这一块">✕</button>
+</div>
+<div class="bl-menu" data-menu hidden></div>
+<div class="bl-line" data-line hidden></div>`;
+
+// 插入菜单里的块类型（顺序按使用频率）。table / pre / img / media 需要弹窗，
+// 单独走各自的方法，其余都是直接生成的纯结构块。
+const BLOCK_KINDS = [
+  { k: 'p', label: '段落', icon: '¶' },
+  { k: 'h2', label: '标题 2', icon: 'H2' },
+  { k: 'h3', label: '标题 3', icon: 'H3' },
+  { k: 'h4', label: '标题 4', icon: 'H4' },
+  { k: 'ul', label: '无序列表', icon: '•' },
+  { k: 'ol', label: '有序列表', icon: '1.' },
+  { k: 'quote', label: '引用', icon: '❝' },
+  { k: 'pre', label: '代码块', icon: '{ }' },
+  { k: 'hr', label: '分割线', icon: '—' },
+  { k: 'table', label: '表格', icon: '▦' },
+  { k: 'img', label: '图片', icon: '🖼' },
+  { k: 'media', label: '多媒体', icon: '🎬' },
+];
+
+// 纯结构块：点一下就成形，直接插到指定位置
+const KIND_HTML = {
+  p: '<p><br></p>',
+  h2: '<h2><br></h2>',
+  h3: '<h3><br></h3>',
+  h4: '<h4><br></h4>',
+  ul: '<ul><li><br></li></ul>',
+  ol: '<ol><li><br></li></ol>',
+  quote: '<blockquote><p><br></p></blockquote>',
+  hr: '<hr>',
+};
+
 // ---------- 编辑器类 ----------
 const B = (k, label, cls) => ({ k, label, cls });
 
@@ -291,10 +340,21 @@ export class Editor {
     div.className = 'ed-card';
     div.innerHTML = `
       <div class="ed-tool" data-tool></div>
-      <div class="ed-area"><div class="we" contenteditable="true" data-ph="${esc(ph)}" data-we></div></div>`;
+      <div class="ed-area"><div class="we-wrap"><div class="we" contenteditable="true" data-ph="${esc(ph)}" data-we></div>${BLOCKS_UI}</div></div>`;
     host.appendChild(div);
+    this.wrap = div.querySelector('.we-wrap');
     this.tool = div.querySelector('[data-tool]');
     this.we = div.querySelector('[data-we]');
+    this.bar = div.querySelector('[data-bar]');
+    this.menu = div.querySelector('[data-menu]');
+    this.line = div.querySelector('[data-line]');
+    // 块状态的三个来源：hover（鼠标停在哪块）、selected（点过哪块）、
+    // insertAfter（浮条该显示在块上方还是下方 —— 同时决定「＋」插在哪一侧）
+    this.hover = null;
+    this.selected = null;
+    this.insertAfter = false;
+    this.drag = null;
+    this._raf = 0;
     this._buildToolbar();
     this._bindEvents();
   }
@@ -304,12 +364,18 @@ export class Editor {
     sanitize(frag);
     this.we.innerHTML = '';
     this.we.appendChild(frag);
+    // 换了内容，旧的块引用全部失效
+    this.hover = this.selected = this._on = null;
+    this._hideBar();
   }
-  getHTML() { return this.we.innerHTML; }
-  getMarkdown() {
-    const clone = this.we.cloneNode(true);
-    return mdFromHtml(clone);
+  // 块高亮/拖拽态是编辑期的东西，导出前剥掉（sanitize 本来也剥 class，这里是双保险）
+  _exportClone() {
+    const c = this.we.cloneNode(true);
+    c.querySelectorAll('.bl-on, .bl-dragging').forEach((n) => n.classList.remove('bl-on', 'bl-dragging'));
+    return c;
   }
+  getHTML() { return this._exportClone().innerHTML; }
+  getMarkdown() { return mdFromHtml(this._exportClone()); }
   isEmpty() { return !this.we.textContent.trim(); }
 
   _buildToolbar() {
@@ -382,7 +448,44 @@ export class Editor {
     this.we.focus();
   }
 
-  async _insertTable() {
+  // ---------- 插入定位 ----------
+  // at === undefined：落回当前光标（工具栏那条老路，行为一字未改）
+  // at 为元素 / null：插到该元素之前；after 为真则插到它之后（null = 追加到末尾）
+  _refAt(at, after) {
+    if (!at || !at.parentNode) return null;
+    if (!after) return at;
+    let n = at.nextSibling;
+    while (n && n.nodeType === Node.TEXT_NODE && !n.data.trim()) n = n.nextSibling;
+    return n;
+  }
+
+  _putHtml(html, at, after) {
+    if (at === undefined) {
+      document.execCommand('insertHTML', false, html);
+      return null;
+    }
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    const frag = tpl.content;
+    const last = frag.lastElementChild; // 插入前取引用：插入后 frag 就空了
+    const ref = this._refAt(at, after);
+    if (ref && ref.parentNode === this.we) this.we.insertBefore(frag, ref);
+    else this.we.appendChild(frag);
+    return last;
+  }
+
+  _caretIn(el) {
+    if (!el) return;
+    this.we.focus();
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    r.collapse(true);
+    const s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+  }
+
+  async _insertTable(at, after) {
     let rows = 3, cols = 3;
     const res = await dialog({
       title: '插入表格',
@@ -406,8 +509,8 @@ export class Editor {
       html += '</tr>';
     }
     html += '</tbody></table>';
-    document.execCommand('insertHTML', false, html);
-    const tbl = this.we.querySelector('table:last-of-type');
+    let tbl = this._putHtml(html, at, after);
+    if (!tbl) tbl = this.we.querySelector('table:last-of-type');
     if (tbl) {
       const first = tbl.querySelector('td, th');
       if (first) {
@@ -443,7 +546,7 @@ export class Editor {
   }
 
   // 高亮代码块：语言下拉选择，输出标准 <pre><code class="language-x">（与 WordPress / Typecho 通用）
-  async _codeBlockDialog() {
+  async _codeBlockDialog(at, after) {
     // 可选语言（与服务端高亮器 hl.js 的支持范围一致）
     const LANGS = [
       ['', '纯文本（不高亮）'],
@@ -494,8 +597,8 @@ export class Editor {
     c.textContent = code || ' ';
     pre.appendChild(c);
     this.we.focus();
-    document.execCommand('insertHTML', false, pre.outerHTML);
-    const last = this.we.querySelector('pre:last-of-type');
+    let last = this._putHtml(pre.outerHTML, at, after);
+    if (!last) last = this.we.querySelector('pre:last-of-type');
     if (last) {
       const r = document.createRange();
       r.selectNodeContents(last.querySelector('code') || last);
@@ -534,7 +637,7 @@ export class Editor {
   }
 
   // 图片：弹窗里选择「上传」或「填链接」
-  async _imageDialog() {
+  async _imageDialog(at, after) {
     let file = null, url = '';
     const res = await dialog({
       title: '插入图片',
@@ -555,7 +658,7 @@ export class Editor {
     if (file) {
       try {
         const src = await this.upload(file);
-        document.execCommand('insertHTML', false, `<img src="${esc(src)}" alt="${esc(file.name || '')}" loading="lazy">`);
+        this._putHtml(`<img src="${esc(src)}" alt="${esc(file.name || '')}" loading="lazy">`, at, after);
       } catch (e) { toast((e && e.message) || '上传失败', 'bad'); }
       return;
     }
@@ -563,12 +666,12 @@ export class Editor {
       toast('图片链接需以 http(s):// 或 / 开头', 'bad');
       return;
     }
-    document.execCommand('insertHTML', false, `<img src="${esc(url)}" alt="" loading="lazy">`);
+    this._putHtml(`<img src="${esc(url)}" alt="" loading="lazy">`, at, after);
   }
 
   // 多媒体：视频 / 音频 / 外站嵌入。版式与「插入图片」一致 —— 同样两种方式（上传 / 链接），
   // 区别只在成品：插入的是一个**能直接点击播放的播放器**，而不是一张静态图。
-  async _mediaDialog() {
+  async _mediaDialog(at, after) {
     let file = null, url = '', posterFile = null, kind = 'auto';
     const res = await dialog({
       title: '插入多媒体',
@@ -605,7 +708,7 @@ export class Editor {
       try {
         const src = await this.upload(file);
         const poster = isVideo && posterFile ? await this._uploadPoster(posterFile) : '';
-        this._insertMedia(isVideo ? 'video' : 'audio', src, poster);
+        this._insertMedia(isVideo ? 'video' : 'audio', src, poster, at, after);
         toast(isVideo ? '视频已插入，点击即可播放' : '音频已插入，点击即可播放');
       } catch (e) { toast((e && e.message) || '上传失败', 'bad'); }
       return;
@@ -615,7 +718,7 @@ export class Editor {
     if (EMBED_URL.test(full)) {
       if (!this.resolveEmbed) { toast('未配置外站嵌入解析', 'bad'); return; }
       try {
-        this._insertMedia('iframe', await this.resolveEmbed(full));
+        this._insertMedia('iframe', await this.resolveEmbed(full), '', at, after);
         toast('已插入内嵌播放器');
       } catch (e) { toast((e && e.message) || '嵌入失败', 'bad'); }
       return;
@@ -627,7 +730,7 @@ export class Editor {
     const t = kind === 'auto'
       ? (/\.(mp3|m4a|aac|wav|flac|ogg|oga|opus|weba)([?#]|$)/i.test(url) ? 'audio' : 'video')
       : kind;
-    this._insertMedia(t, url);
+    this._insertMedia(t, url, '', at, after);
   }
 
   // 封面图就是普通图片，走同一条上传通道；传不上去也不该挡住正文插入
@@ -636,7 +739,7 @@ export class Editor {
   }
 
   // 插入的成品一律是真实标签：编辑器里当场可播，前台同理
-  _insertMedia(tag, src, poster = '') {
+  _insertMedia(tag, src, poster = '', at, after) {
     const s = String(src || '');
     if (!s) { toast('没有拿到可用的地址', 'bad'); return; }
     this.we.focus();
@@ -645,10 +748,222 @@ export class Editor {
       : tag === 'audio'
         ? `src="${esc(s)}" controls preload="metadata"`
         : `src="${esc(s)}" loading="lazy" allowfullscreen`;
-    document.execCommand('insertHTML', false, `<${tag} ${attr} contenteditable="false"></${tag}>`);
+    this._putHtml(`<${tag} ${attr} contenteditable="false"></${tag}>`, at, after);
+  }
+
+  // ---------- 段落块 ----------
+  // 顶层元素即「块」。裸文本节点先包进 <p>：否则它是个看不见也选不中的块。
+  blocks() {
+    this._normalize();
+    return [...this.we.children];
+  }
+
+  _normalize() {
+    for (const n of [...this.we.childNodes]) {
+      if (n.nodeType === Node.TEXT_NODE && n.data.trim()) {
+        const p = document.createElement('p');
+        this.we.insertBefore(p, n);
+        p.appendChild(n);
+      }
+    }
+  }
+
+  // 从事件目标往上找「父节点正是 .we」的那个元素 = 它所在的块
+  _blockOf(node) {
+    while (node && node !== this.we) {
+      if (node.parentNode === this.we) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  _target() { return this.hover || this.selected; }
+
+  _placeBar() {
+    const el = this.drag ? this.drag.el : this._target();
+    if (!el || el.parentNode !== this.we) { this._hideBar(); return; }
+    if (this._on && this._on !== el) this._on.classList.remove('bl-on');
+    el.classList.add('bl-on');
+    this._on = el;
+
+    const wr = this.wrap.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    const bw = this.bar.offsetWidth || 190;
+    const bh = this.bar.offsetHeight || 30;
+    // 块上方放得下就放上方，否则压到下方（首块常见）
+    let top = r.top - wr.top - bh - 7;
+    if (top < 0) top = r.top - wr.top + r.height + 7;
+    this.bar.style.top = Math.max(0, top) + 'px';
+    // 窄屏通栏（浮条 190px 宽，手机里贴左会压住正文）
+    const narrow = wr.width < 440;
+    this.bar.style.left = narrow ? '0px' : Math.max(0, Math.min(r.left - wr.left, wr.width - bw - 2)) + 'px';
+    this.bar.style.right = narrow ? '0px' : '';
+    this.bar.hidden = false;
+    this.bar.querySelector('[data-bl="up"]').disabled = !el.previousElementSibling;
+    this.bar.querySelector('[data-bl="down"]').disabled = !el.nextElementSibling;
+    this.bar.querySelector('[data-bl="add"]').title =
+      this.insertAfter ? '在这一块之后插入新块' : '在这一块之前插入新块';
+  }
+
+  _hideBar() {
+    this.bar.hidden = true;
+    this.menu.hidden = true;
+    if (this._on) { this._on.classList.remove('bl-on'); this._on = null; }
+  }
+
+  _onPoint(e) {
+    if (this.drag || !this.menu.hidden) return; // 拖拽中 / 菜单开着：锚点别乱跳
+    const el = this._blockOf(e.target);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    this.insertAfter = e.clientY > r.top + r.height / 2;
+    if (this.hover === el) return; // 同一块内移动：只更新插入侧，不重排（省掉每帧的 rect 计算）
+    this.hover = el;
+    this._placeBar();
+  }
+
+  _moveBlock(dir) {
+    const el = this._target();
+    if (!el) return;
+    const sib = dir < 0 ? el.previousElementSibling : el.nextElementSibling;
+    if (!sib) return;
+    if (dir < 0) this.we.insertBefore(el, sib);
+    else this.we.insertBefore(sib, el);
+    this.hover = el; this.selected = el;
+    this._placeBar();
+  }
+
+  _dupBlock() {
+    const el = this._target();
+    if (!el) return;
+    const c = el.cloneNode(true);
+    this.we.insertBefore(c, el.nextSibling);
+    this.hover = c; this.selected = c;
+    this._placeBar();
+  }
+
+  _delBlock() {
+    const el = this._target();
+    if (!el) return;
+    const near = el.nextElementSibling || el.previousElementSibling;
+    el.remove();
+    if (!this.we.children.length) {
+      // 删光了要补一个空段落，否则编辑器变成一个点不进去的空盒子
+      this.we.innerHTML = '<p><br></p>';
+      this.hover = this.selected = this.we.firstElementChild;
+      this._caretIn(this.hover);
+    } else {
+      this.hover = this.selected = near;
+    }
+    this._placeBar();
+  }
+
+  // ---------- 块间插入 ----------
+  _openMenu() {
+    const el = this._target();
+    if (!el) return;
+    this.menu.innerHTML = BLOCK_KINDS.map((b) =>
+      `<button type="button" class="bl-mi" data-kind="${b.k}" title="${b.label}"><i>${b.icon}</i><span>${b.label}</span></button>`).join('');
+    this.menu.hidden = false;
+    const wr = this.wrap.getBoundingClientRect();
+    const br = this.bar.getBoundingClientRect();
+    const mh = this.menu.offsetHeight || 200;
+    let top = br.bottom + 5;
+    if (top + mh > window.innerHeight - 8) top = br.top - mh - 5; // 下方不够就翻到上方
+    const narrow = wr.width < 440;
+    this.menu.style.top = Math.max(0, top - wr.top) + 'px';
+    this.menu.style.left = narrow ? '0px' : Math.max(0, br.left - wr.left) + 'px';
+    this.menu.style.right = narrow ? '0px' : '';
+    this.menu.style.maxHeight = Math.max(180, window.innerHeight - top - 12) + 'px';
+  }
+
+  _closeMenu() { this.menu.hidden = true; }
+
+  _insertBlock(kind) {
+    const at = this._target();
+    if (!at) return;
+    const after = this.insertAfter;
+    this._closeMenu();
+    // 需要弹窗的四种交给各自的方法，只是把「插到哪儿」一起带过去
+    if (kind === 'table') { this._insertTable(at, after); return; }
+    if (kind === 'pre') { this._codeBlockDialog(at, after); return; }
+    if (kind === 'img') { this._imageDialog(at, after); return; }
+    if (kind === 'media') { this._mediaDialog(at, after); return; }
+    const html = KIND_HTML[kind];
+    if (!html) return;
+    const el = this._putHtml(html, at, after);
+    if (!el) return;
+    this.hover = this.selected = el;
+    if (kind !== 'hr') {
+      // 列表要塞进 li、引用要塞进 p，否则光标落点会跑到块外面
+      this._caretIn(el.matches('ul,ol') ? el.querySelector('li') : el.querySelector('p') || el);
+    }
+    this._placeBar();
+  }
+
+  // ---------- 拖拽排序（手柄按住拖） ----------
+  _dragStart(e) {
+    const el = this._target();
+    if (!el) return;
+    this.drag = { el, moved: false, y0: e.clientY, ref: null };
+    document.addEventListener('mousemove', this._dragMoveH);
+    document.addEventListener('mouseup', this._dragEndH);
+  }
+
+  // 鼠标 y 落在哪两个块之间：返回「插到它前面」的那个块，null = 落到末尾
+  _dropRef(y) {
+    for (const b of this.we.children) {
+      if (b === this.drag.el) continue;
+      const r = b.getBoundingClientRect();
+      if (y < r.top + r.height / 2) return b;
+    }
+    return null;
+  }
+
+  _dragMove(e) {
+    const d = this.drag;
+    if (!d) return;
+    if (!d.moved) {
+      if (Math.abs(e.clientY - d.y0) < 4) return; // 手抖不算拖
+      d.moved = true;
+      d.el.classList.add('bl-dragging');
+      this.line.hidden = false;
+    }
+    const ref = this._dropRef(e.clientY);
+    d.ref = ref;
+    const wr = this.wrap.getBoundingClientRect();
+    const last = this.we.lastElementChild;
+    const y = ref ? ref.getBoundingClientRect().top
+      : (last ? last.getBoundingClientRect().bottom : wr.top);
+    this.line.style.top = (y - wr.top) + 'px';
+  }
+
+  _dragEnd() {
+    const d = this.drag;
+    this.drag = null;
+    document.removeEventListener('mousemove', this._dragMoveH);
+    document.removeEventListener('mouseup', this._dragEndH);
+    this.line.hidden = true;
+    if (!d) return;
+    d.el.classList.remove('bl-dragging');
+    // 落点与当前位置相同就什么都不做（insertBefore(el, null) 等于追加到末尾）
+    if (d.moved && d.ref !== d.el && d.ref !== d.el.nextElementSibling) {
+      this.we.insertBefore(d.el, d.ref);
+    }
+    this.hover = d.el; this.selected = d.el;
+    this._placeBar();
   }
 
   _bindEvents() {
+    this._dragMoveH = (e) => this._dragMove(e);
+    this._dragEndH = () => this._dragEnd();
+    this._docDownH = (e) => {
+      if (this.wrap.contains(e.target)) return;
+      if (this.selected || this.hover) { this.selected = null; this.hover = null; this._placeBar(); }
+    };
+    document.addEventListener('mousedown', this._docDownH);
+    window.addEventListener('resize', () => this._placeBar());
+
     this.tool.addEventListener('mousedown', (e) => e.preventDefault());
     this.tool.addEventListener('click', (e) => {
       const btn = e.target.closest('.tbtn');
@@ -663,9 +978,55 @@ export class Editor {
         toast((err && err.message) || '操作失败，请重试', 'bad');
       }
     });
+
+    // 光标移动到哪一块，工具条就跟到哪一块
+    this.we.addEventListener('mousemove', (e) => {
+      if (this._raf) return;
+      this._raf = requestAnimationFrame(() => { this._raf = 0; this._onPoint(e); });
+    });
+    this.we.addEventListener('mouseleave', () => {
+      if (this.drag) return;
+      this.hover = null;
+      this._placeBar();
+    });
+    // 点块 = 选中它（触屏没有 hover，这一步就是手机端唯一的入口）
+    this.we.addEventListener('mousedown', (e) => {
+      const el = this._blockOf(e.target);
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      this.insertAfter = e.clientY > r.top + r.height / 2;
+      this.hover = el; this.selected = el;
+      this._placeBar();
+    });
+
+    this.bar.addEventListener('mousedown', (e) => {
+      const h = e.target.closest('[data-bl="drag"]');
+      e.preventDefault(); // 别让按钮把正文焦点抢走
+      if (h) this._dragStart(e);
+    });
+    this.bar.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-bl]');
+      if (!btn || btn.disabled) return;
+      const k = btn.dataset.bl;
+      if (k === 'add') this._openMenu();
+      else if (k === 'up') this._moveBlock(-1);
+      else if (k === 'down') this._moveBlock(1);
+      else if (k === 'dup') this._dupBlock();
+      else if (k === 'del') this._delBlock();
+    });
+    this.menu.addEventListener('mousedown', (e) => e.preventDefault());
+    this.menu.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-kind]');
+      if (b) this._insertBlock(b.dataset.kind);
+    });
+
     const refresh = () => this._refreshState();
     document.addEventListener('selectionchange', refresh);
-    this.we.addEventListener('input', refresh);
+    this.we.addEventListener('input', () => {
+      refresh();
+      if (!this.menu.hidden) this._closeMenu();
+      this._placeBar();
+    });
   }
 
   _refreshState() {

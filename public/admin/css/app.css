@@ -146,6 +146,36 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .we a{color:var(--ac)}
 .we hr{border:none;border-top:1px dashed var(--line);margin:1.4em 0}
 
+/* 段落块（Ver 0.6 ④）：浮条 / 插入菜单 / 拖拽指示线全部在 contenteditable 之外，
+   所以既不会混进正文，也不会被序列化进 Markdown */
+.we-wrap{position:relative}
+.we > *{border-radius:6px}
+.we > .bl-on{outline:1px solid var(--ac-line);outline-offset:2px}
+.we > .bl-dragging{opacity:.4}
+.bl-bar{position:absolute;z-index:20;display:flex;align-items:center;gap:1px;padding:3px;background:#fff;border:1px solid var(--line);border-radius:9px;box-shadow:0 4px 14px rgba(15,23,42,.13)}
+.bl-bar[hidden]{display:none}
+.bl-bar .bl-b{min-width:28px;height:28px;padding:0 5px;border:none;background:transparent;border-radius:7px;cursor:pointer;font-size:13px;line-height:1;color:#3b4358;font-weight:600}
+.bl-bar .bl-b:hover{background:#e8edf7;color:var(--ac)}
+.bl-bar .bl-b:disabled{opacity:.3;cursor:default;background:transparent;color:#3b4358}
+.bl-bar .bl-h{cursor:grab;color:#9aa3b5}
+.bl-bar .bl-h:active{cursor:grabbing}
+.bl-bar .bl-del:hover{background:#fdeaea;color:#c0392b}
+.bl-bar .bl-sep{width:1px;height:16px;background:var(--line);margin:0 3px}
+.bl-menu{position:absolute;z-index:21;width:196px;padding:5px;background:#fff;border:1px solid var(--line);border-radius:11px;box-shadow:0 10px 30px rgba(15,23,42,.16);overflow:auto;display:grid;grid-template-columns:1fr 1fr;gap:2px}
+.bl-menu[hidden]{display:none}
+.bl-mi{display:flex;align-items:center;gap:6px;padding:7px 8px;border:none;background:transparent;border-radius:8px;cursor:pointer;font-size:12.5px;color:#333c4e;text-align:left;font-weight:500}
+.bl-mi:hover{background:var(--ac-soft);color:var(--ac)}
+.bl-mi i{width:17px;flex:none;text-align:center;font-style:normal;font-size:13px;color:#8b93a5}
+.bl-mi:hover i{color:var(--ac)}
+.bl-line{position:absolute;z-index:19;left:0;right:0;height:2px;background:var(--ac);border-radius:2px;pointer-events:none}
+.bl-line[hidden]{display:none}
+/* 窄屏：浮条通栏居中、按钮加大到能点准；菜单跟着通栏 */
+@media (max-width:640px){
+.bl-bar{justify-content:center}
+.bl-bar .bl-b{min-width:36px;height:36px;font-size:15px}
+.bl-menu{width:auto;grid-template-columns:1fr 1fr}
+}
+
 /* 媒体库 */
 .mg{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
 .mg-it{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}

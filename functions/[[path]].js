@@ -21,6 +21,7 @@ import * as purge from './_lib/purge.js';
 import { buildSidebar, normalizeItems } from './_lib/sidebar.js';
 import { resolveEmbed } from './_lib/embed.js';
 import * as font from './_lib/font.js';
+import * as audio from './_lib/audio.js';
 import * as ipgeo from './_lib/ipgeo.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
@@ -1218,6 +1219,15 @@ async function api(ctx, url, seg, method) {
     if (b.font_local != null) await db.setSetting(dbx, 'font_local', font.safeFontUrl(b.font_local));
     if (b.font_remote != null) await db.setSetting(dbx, 'font_remote', font.safeFontUrl(b.font_remote));
     if (b.font_family != null) await db.setSetting(dbx, 'font_family', font.safeFamily(b.font_family));
+    // ---- 音频播放（Ver 0.6 ③）：默认关；只播流媒体地址，不接本地上传 ----
+    // 列表是 JSON 数组，一律过 normalizeAudio 清洗：地址必须 http(s):// 或站内 / 开头
+    // （挡住 javascript: / data: 这类伪协议），标题剥尖括号，条数夹在 60 以内。
+    // 洗不干净的条目直接丢，最多是前台少一条音频，不会把坏值带进页面。
+    if (b.audio_on != null) await db.setSetting(dbx, 'audio_on', b.audio_on ? '1' : '0');
+    if (b.audio_title != null) await db.setSetting(dbx, 'audio_title', audio.safeTitle(b.audio_title));
+    if (b.audio_list != null) {
+      await db.setSetting(dbx, 'audio_list', JSON.stringify(audio.normalizeAudio(b.audio_list)));
+    }
     // ---- 邮件通知 ----
     // 端口必须是该服务商真开了的（163 没有 587、Office365 没有 465）。
     // 存了不支持的组合，现象是「连上就断」或「干等到超时」，与账号密码无关、极难排查，所以入库前拦住。

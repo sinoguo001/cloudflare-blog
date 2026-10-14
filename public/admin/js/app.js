@@ -1879,10 +1879,12 @@ async function viewSettings(tabArg) {
         <div class="field"><label>作者署名（页脚与文章署名）</label><input class="inp" name="author_name" id="s-author_name"></div>
         <div class="field"><label>SEO 描述</label><input class="inp" name="seo_desc" id="s-seo_desc" placeholder="用于搜索引擎摘要"></div>
         <!-- 主题色与每页文章数并排一行：两个都只需要一个很窄的输入框，
-             各占一行白白多占约一行高度（Ver 0.6 ②）。 -->
+             各占一行白白多占约一行高度（Ver 0.6 ②）。
+             ★ 两个输入框都要给定宽、不能让 flex 撑开：.inp 是 width:100%，
+               色板一旦跟着轨道拉伸就成了一条长色带，很难看。 -->
         <div style="display:flex;gap:14px;flex-wrap:wrap">
-          <div class="field" style="flex:1;min-width:132px"><label>主题色</label><input class="inp" type="color" name="accent" id="s-accent" style="height:40px;padding:4px"></div>
-          <div class="field" style="flex:1;min-width:132px"><label>每页文章数</label><input class="inp" type="number" min="1" max="20" name="per_page" id="s-per_page"></div>
+          <div class="field" style="width:96px;flex:none"><label>主题色</label><input class="inp" type="color" name="accent" id="s-accent" style="height:40px;padding:4px"></div>
+          <div class="field" style="width:96px;flex:none"><label>每页文章数</label><input class="inp" type="number" min="1" max="20" name="per_page" id="s-per_page"></div>
         </div>
         <div class="field"><label>页脚自定义文字（可留空，支持换行）</label><textarea class="txa" name="footer_text" id="s-footer_text"></textarea></div>
         <div class="field" style="margin-bottom:0"><label>ICP 备案号（可选，如 苏ICP备xxxxxxxx号）</label><input class="inp" name="beian" id="s-beian" placeholder="填写后显示在页脚并链接工信部官网；留空则不显示"></div>
@@ -1960,21 +1962,39 @@ async function viewSettings(tabArg) {
           <p class="hint" style="margin-bottom:0">启用后前台与编辑器预览里的所有内容（含图片、代码块配色）统一变灰。
             <b>此项优先级最高：更换主题、改主题色都不会影响它</b>，取消勾选即可恢复。默认不启用。</p>
         </div>
+        <div class="card">
+          <div class="sec-title">导航栏显示 <small>页头导航要露出哪些入口</small></div>
+          <div class="nav-toggles">
+            <label><input type="checkbox" id="s-nav_categories"> 分类</label>
+            <label><input type="checkbox" id="s-nav_tags"> 标签</label>
+            <label><input type="checkbox" id="s-nav_archive"> 归档</label>
+            <label><input type="checkbox" id="s-nav_links"> 朋友</label>
+            <label><input type="checkbox" id="s-nav_rss"> RSS</label>
+          </div>
+          <p class="hint" style="margin-bottom:0">「首页」固定显示，不提供开关。这里关掉某一项，只是不显示在导航栏，<b>页面地址依然可以访问</b>（如关闭 RSS 后 /rss.xml 照常能订阅）。
+            分类作为单独入口显示，由「<a href="#/categories">分类</a>」里各分类的「在导航栏显示」控制；二级分类不单独占位，鼠标移到它的上级分类上会自动展开下拉。
+            勾上「朋友」后，导航里是一个下拉，鼠标移上去会展开「友链」与「友圈」两项。</p>
+        </div>
+        <div class="card">
+          <div class="sec-title">音频播放 <small>前台右下角的悬浮播放器</small></div>
+          <div class="nav-toggles">
+            <label><input type="checkbox" id="s-audio_on"> 启用音频播放器</label>
+          </div>
+          <p class="hint" style="margin:0 0 12px">默认不启用。启用后前台右下角出现一个悬浮小按钮，点开是播放面板；
+            <b>不启用时前台一个字节都不输出</b>（连样式表和播放脚本都不会加载）。</p>
+          <div class="field"><label>面板标题 <small>留空显示「音频」</small></label>
+            <input class="inp" id="s-audio_title" placeholder="音频" maxlength="80" spellcheck="false"></div>
+          <div class="field">
+            <label>播放列表 <small>最多 60 条，按顺序播放，播完自动回到第一条</small></label>
+            <div id="audio-rows"></div>
+            <div style="margin-top:8px"><button class="btn" type="button" id="audio-add">＋ 添加一条</button></div>
+          </div>
+          <p class="hint">只填<b>流媒体地址</b>（mp3 / m4a / ogg 等直链，或 .m3u8 直播流），本程序不接收本地音频文件。
+            填 .m3u8 时，Safari 与 iOS 直接播；其它浏览器会按需加载一个约 100KB 的解析库，只有第一次播到该条时才拉。
+            地址必须是公网可直接访问的，对方做了防盗链或需要登录的话，前台会播不动。</p>
+          <p class="warn-box">⚠️ <b>音频有版权。</b>请只填你自己拥有或已获授权的音频地址。本程序只按你提供的地址去播放，不附带任何音频内容，也不对由此产生的版权纠纷负责。</p>
+        </div>
       </div>
-    </div>
-
-    <div class="card">
-      <div class="sec-title">导航栏显示 <small>页头导航要露出哪些入口</small></div>
-      <div class="nav-toggles">
-        <label><input type="checkbox" id="s-nav_categories"> 分类</label>
-        <label><input type="checkbox" id="s-nav_tags"> 标签</label>
-        <label><input type="checkbox" id="s-nav_archive"> 归档</label>
-        <label><input type="checkbox" id="s-nav_links"> 朋友</label>
-        <label><input type="checkbox" id="s-nav_rss"> RSS</label>
-      </div>
-      <p class="hint" style="margin-bottom:0">「首页」固定显示，不提供开关。这里关掉某一项，只是不显示在导航栏，<b>页面地址依然可以访问</b>（如关闭 RSS 后 /rss.xml 照常能订阅）。
-        分类作为单独入口显示，由「<a href="#/categories">分类</a>」里各分类的「在导航栏显示」控制；二级分类不单独占位，鼠标移到它的上级分类上会自动展开下拉。
-        勾上「朋友」后，导航里是一个下拉，鼠标移上去会展开「友链」与「友圈」两项。</p>
     </div>
   </div>
 
@@ -2224,6 +2244,73 @@ async function viewSettings(tabArg) {
   }
   // ---- 全站灰度：默认关，只有明确存了 '1' 才勾上 ----
   v.querySelector('#s-gray_mode').checked = s.gray_mode === '1';
+  // ---- 音频播放（Ver 0.6 ③）：默认关；列表只收流媒体地址 ----
+  v.querySelector('#s-audio_on').checked = s.audio_on === '1';
+  set('s-audio_title', s.audio_title);
+  // 播放列表存的是 JSON 字符串，这里解析成可编辑的行。前端只做轻量清洗，
+  // 真正的把关（协议白名单、条数上限、标题剥标签）在服务端 audio.js 里。
+  const AU_MAX = 60;
+  let auList = [];
+  try {
+    const raw = JSON.parse(s.audio_list || '[]');
+    if (Array.isArray(raw)) {
+      auList = raw.slice(0, AU_MAX).map((x) => ({
+        title: String((x && x.title) || ''),
+        url: String((x && x.url) || ''),
+      }));
+    }
+  } catch (e) { auList = []; }
+  const auRows = v.querySelector('#audio-rows');
+  // 重绘前先把输入框的值收回数组：不然打字打到一半点「上移」，还没提交的字符会丢
+  const auSync = () => {
+    for (const r of auRows.querySelectorAll('.audio-row')) {
+      const one = auList[Number(r.dataset.i)];
+      if (!one) continue;
+      one.title = r.querySelector('.au-t').value;
+      one.url = r.querySelector('.au-u').value;
+    }
+  };
+  const auPaint = () => {
+    if (!auList.length) {
+      auRows.innerHTML = '<div class="empty-note">还没有音频，点下面「添加一条」开始</div>';
+      return;
+    }
+    auRows.innerHTML = auList.map((it, i) => `<div class="audio-row" data-i="${i}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <input class="inp au-t" style="flex:1;min-width:130px" placeholder="标题" maxlength="80" value="${esc(it.title)}">
+        <input class="inp au-u" style="flex:2;min-width:190px" placeholder="https://…（音频直链或 .m3u8 直播流）" spellcheck="false" value="${esc(it.url)}">
+        <div style="display:flex;gap:6px;flex:none">
+          <button class="btn sm" type="button" data-up="${i}"${i ? '' : ' disabled'} title="上移">↑</button>
+          <button class="btn sm" type="button" data-dn="${i}"${i === auList.length - 1 ? ' disabled' : ''} title="下移">↓</button>
+          <button class="btn sm d" type="button" data-rm="${i}" title="删除">×</button>
+        </div>
+      </div>`).join('');
+  };
+  auPaint();
+  v.querySelector('#audio-add').addEventListener('click', () => {
+    auSync();
+    if (auList.length >= AU_MAX) { toast(`最多 ${AU_MAX} 条`, 'bad'); return; }
+    auList.push({ title: '', url: '' });
+    auPaint();
+  });
+  auRows.addEventListener('click', (ev) => {
+    const hit = ev.target.closest('button[data-up],button[data-dn],button[data-rm]');
+    if (!hit) return;
+    auSync();
+    const up = hit.dataset.up, dn = hit.dataset.dn, rm = hit.dataset.rm;
+    if (rm != null) auList.splice(Number(rm), 1);
+    else if (up != null) {
+      const i = Number(up);
+      if (i > 0) { const t = auList[i - 1]; auList[i - 1] = auList[i]; auList[i] = t; }
+    } else {
+      const i = Number(dn);
+      if (i < auList.length - 1) { const t = auList[i + 1]; auList[i + 1] = auList[i]; auList[i] = t; }
+    }
+    auPaint();
+  });
+  // 保存时收集：丢掉完全没填地址的行（点了「添加一条」又没填的那种）
+  const auCollect = () => auList
+    .map((it) => ({ title: it.title.trim(), url: it.url.trim() }))
+    .filter((it) => it.url);
 
   // ---- 邮件通知：服务商预设 / 授权码提醒 / 测试发送 ----
   const mpSel = v.querySelector('#s-mail_provider');
@@ -2767,6 +2854,10 @@ async function viewSettings(tabArg) {
       font_local: v.querySelector('#s-font_local').value.trim(),
       font_remote: v.querySelector('#s-font_remote').value.trim(),
       font_family: v.querySelector('#s-font_family').value.trim(),
+      // 音频播放（Ver 0.6 ③）：默认关；列表只收流媒体地址，服务端再洗一遍
+      audio_on: v.querySelector('#s-audio_on').checked,
+      audio_title: v.querySelector('#s-audio_title').value.trim(),
+      audio_list: auCollect(),
       // 侧边栏（Ver 0.5 ②）：默认关；items 交给后端再洗一遍，前端只负责收集
       sidebar_enabled: sbOnEl.checked,
       sidebar_side: sbSideEl.value,

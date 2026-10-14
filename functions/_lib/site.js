@@ -9,6 +9,7 @@ import { gravatarHash } from './md5.js';
 import { geoText } from './ipgeo.js';
 import * as toc from './toc.js';
 import { fontHead } from './font.js';
+import * as audio from './audio.js';
 
 // Gravatar 头像源：国内优先（实测 weavatar ≈23ms、cravatar ≈88ms；官方源国内不可达）
 const GRAVATAR_SRC = {
@@ -646,6 +647,9 @@ export function layout(s, o) {
   // 空串＝没开侧边栏，此时 DOM 与旧版完全一致（单栏），连这段 CSS 都不输出。
   const side = String(s.get('_sidebar_html') || '');
   const sideLeft = s.get('sidebar_side') === 'left';
+  // 音频播放（Ver 0.6 ③）：未启用或没填地址时是空串，于是连 CSS 与
+  // /js/audio.js 的请求都不会发出去 —— 「不启用不显示」要彻底到这一层。
+  const auPanel = audio.panel(s);
   const mainInner = side
     ? `<div class="ly ${sideLeft ? 'sd-left' : 'sd-right'}">`
       + `<div class="ly-m">${o.content}</div>`
@@ -660,7 +664,7 @@ export function layout(s, o) {
 <meta name="description" content="${esc(desc)}">
 <link rel="icon" href="${esc(faviconHref(s))}"${faviconMime(faviconHref(s)) ? ` type="${faviconMime(faviconHref(s))}"` : ''}>
 <link rel="alternate" type="application/rss+xml" title="${esc(title)}" href="/rss.xml">
-<style>${THEME_VARS}:root{${accentVars(accent)}}${FRONT_CSS}${DARK_VARS}${GRAY_CSS}${side ? SIDEBAR_CSS : ''}${codeThemeCss(s.get('code_theme'))}</style>
+<style>${THEME_VARS}:root{${accentVars(accent)}}${FRONT_CSS}${DARK_VARS}${GRAY_CSS}${side ? SIDEBAR_CSS : ''}${auPanel ? audio.AUDIO_CSS : ''}${codeThemeCss(s.get('code_theme'))}</style>
 <!-- 夜间模式要在第一帧就定下来，否则刷新时会先闪一下白底再变暗；
      这段必须内联在 head 里，放到 /js/site.js（defer）就来不及了。 -->
 <script>(function(){try{var t=localStorage.getItem('blog_theme');
@@ -673,7 +677,7 @@ ${themeLink(s)}
 ${fontHead(s)}
 <!-- 全站加载：文章页用它上报阅读量，所有页面用它上报 PV（后台是独立静态页，不走这里） -->
 <script src="/js/site.js" defer></script>
-</head>
+${auPanel ? '<!-- 音频播放器（Ver 0.6 ③）：只在启用且填了地址时才请求它，iOS 之外用到的 HLS 解析库也是按需再加载 -->\n<script src="/js/audio.js?v=1" defer></script>\n' : ''}</head>
 <body data-slug="${o.bodySlug || ''}">
 <header class="hd"><div class="wrap${side ? ' wide' : ''} hd-in">
   <a class="brand" href="/">${brandMark(s)}
@@ -705,6 +709,7 @@ ${fontHead(s)}
   ${footer ? footer + '<br>' : ''}© ${year} ${esc(title)} · 由 Cloudflare Pages 驱动
   ${beian ? `<br><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">${esc(beian)}</a>` : ''}
 </div></footer>
+${auPanel}
 </body>
 </html>`;
 }

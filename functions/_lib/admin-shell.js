@@ -10,7 +10,7 @@ export const ADMIN_SHELL = `<!doctype html>
 <!-- ⚠️ 改了 app.css 就把 v= 后面的数字加一。
      public/_headers 里的 /admin/* 只匹配一层路径（实测 /admin/css/app.css 拿到的仍是
      平台默认的 max-age=14400），不换 URL 的话老访客最长 4 小时看不到新样式。 -->
-<link rel="stylesheet" href="/admin/css/app.css?v=1">
+<link rel="stylesheet" href="/admin/css/app.css?v=2">
 <!-- 下面 4 个是 app.js 的静态依赖。不预载的话，浏览器必须先下完 app.js、解析出 import
      才回头去取它们，线上白白多等一个往返（约 300ms）。新增子模块时记得同步加一行，
      .preload-smoke.mjs 会拿这份清单和 app.js 顶部的 import 逐个比对。 -->
