@@ -758,14 +758,21 @@ export class Editor {
     return [...this.we.children];
   }
 
+  // 包 <p> 会搬动节点，正在打字的选区可能跟着丢；改前存一份 Range、改完还回去
+  // （节点只是换了 parent、本身仍在文档里，原 Range 依然有效）。
   _normalize() {
+    const sel = document.getSelection();
+    const saved = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+    let moved = false;
     for (const n of [...this.we.childNodes]) {
       if (n.nodeType === Node.TEXT_NODE && n.data.trim()) {
         const p = document.createElement('p');
         this.we.insertBefore(p, n);
         p.appendChild(n);
+        moved = true;
       }
     }
+    if (moved && saved) { sel.removeAllRanges(); sel.addRange(saved); }
   }
 
   // 从事件目标往上找「父节点正是 .we」的那个元素 = 它所在的块
@@ -775,6 +782,24 @@ export class Editor {
       node = node.parentNode;
     }
     return null;
+  }
+
+  // 空编辑器里直接打的第一段是**裸文本节点**（不是元素），鼠标停在它上面时
+  // e.target 会是 .we 本身 → _blockOf 返回 null，浮条怎么都不出来。
+  // 命中这种情形就先 _normalize() 把它包成 <p>，再用坐标反查光标落点取块。
+  _blockAtPoint(target, x, y) {
+    const el = this._blockOf(target);
+    if (el || target !== this.we) return el;
+    this._normalize();
+    let sc = null;
+    if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(x, y);
+      sc = r && r.startContainer;
+    } else if (document.caretPositionFromPoint) {
+      const p = document.caretPositionFromPoint(x, y);
+      sc = p && p.offsetNode;
+    }
+    return sc ? this._blockOf(sc) : null;
   }
 
   _target() { return this.hover || this.selected; }
@@ -813,7 +838,7 @@ export class Editor {
 
   _onPoint(e) {
     if (this.drag || !this.menu.hidden) return; // 拖拽中 / 菜单开着：锚点别乱跳
-    const el = this._blockOf(e.target);
+    const el = this._blockAtPoint(e.target, e.clientX, e.clientY);
     if (!el) return;
     const r = el.getBoundingClientRect();
     this.insertAfter = e.clientY > r.top + r.height / 2;
@@ -991,7 +1016,7 @@ export class Editor {
     });
     // 点块 = 选中它（触屏没有 hover，这一步就是手机端唯一的入口）
     this.we.addEventListener('mousedown', (e) => {
-      const el = this._blockOf(e.target);
+      const el = this._blockAtPoint(e.target, e.clientX, e.clientY);
       if (!el) return;
       const r = el.getBoundingClientRect();
       this.insertAfter = e.clientY > r.top + r.height / 2;
