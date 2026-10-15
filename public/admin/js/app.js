@@ -14,6 +14,13 @@ let commentTab = 'pending';
 let editor = null; // 当前编辑器实例
 let dirty = false; // 文章是否有未保存修改（全局守卫用）
 let draftSaver = null; // 由编辑器页注入的“保存草稿”函数（Ctrl+S 用）
+// 自动保存草稿（Ver 0.6 ⑥）：出现首次变动起 60 秒后自动存一次，中途继续打字不重置。
+const AUTO_SAVE_SEC = 60;
+const AUTO_TITLE = '未命名草稿'; // 标题还没填时先用它把正文保住
+// 由编辑器页注入的「停表 + 清显示」函数。
+// ⚠️ 必须挂在这里而不是编辑页内部：路由切换是整体重绘 app.innerHTML，没有卸载钩子，
+//    不主动停表的话，旧页面残留的定时器会对着已销毁的 DOM 跑，满屏 null 报错。
+let autoStop = null;
 
 // ---------- IP 归属地（Ver 0.5 ⑦） ----------
 // 「位置 运营商」；国外 IP 常常只查得到国家名，这时就没有后面那一段。
@@ -131,7 +138,35 @@ async function statsBadge() {
 function showLoading(msg) {
   app.innerHTML = `<div class="loading">${esc(msg || '加载中…')}</div>`;
 }
-const go = (hash) => { location.hash = hash; };
+// ---------- 离开守卫（Ver 0.6 ⑤） ----------
+// 编辑页的 hash：新建 / 编辑文章、页面
+const isEditorHash = (h) => /^#\/(posts|pages)\/(new|\d+)$/.test(h || '');
+
+// 有未保存改动时先问一句；返回 true = 可以走。
+// ⚠️ 站内跳转走的是 hashchange，**根本不触发 beforeunload**，
+//    所以 installGuards 里那条 beforeunload 拦不住「点导航直接跳走」—— 必须在这里拦。
+async function confirmLeave() {
+  if (!dirty) return true;
+  const ok = (await dialog({
+    title: '有未保存的改动',
+    bodyHtml: '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px 14px;color:#92400e">这一页还有没保存的内容（标题、正文、标签等）。<br>离开会直接丢掉，且找不回来。</div>',
+    actions: [
+      { val: 'ok', label: '放弃改动', cls: 'd' },
+      { val: 'cancel', label: '留在本页', cls: 'p' },
+    ],
+  })) === 'ok';
+  if (ok) dirty = false; // 已经明说放弃了，别再让 beforeunload 追问一次
+  return ok;
+}
+
+// 站内跳转一律走这里，才保证被守卫拦到
+const go = (hash) => {
+  if (dirty && isEditorHash(location.hash) && hash !== location.hash) {
+    confirmLeave().then((ok) => { if (ok) location.hash = hash; });
+    return;
+  }
+  location.hash = hash;
+};
 
 // ---------- 认证视图 ----------
 function viewLogin() {
@@ -255,6 +290,7 @@ function shell(contentHtml) {
 const view = () => document.getElementById('view');
 
 async function logout() {
+  if (!(await confirmLeave())) return; // 编辑器里还有没存的东西，先问一句
   try { await API.post('/auth/logout'); } catch (e) { /* ignore */ }
   location.hash = '#/login';
   await boot();
@@ -446,6 +482,7 @@ async function viewEditor(id, kind = 'post') {
     <div id="e-host"></div>
     <div class="ed-actions">
       <button class="btn g" id="e-save-draft">保存草稿</button>
+      <span id="e-auto" class="hint"></span>
       <button class="btn p" id="e-publish">${post ? '保存并更新（保持当前状态）' : (isPage ? '一键发布页面' : '一键发布')}</button>
       <button class="btn v" id="e-preview">预览</button>
       <span class="spacer hint">提示：编辑器所见即所得，正文将保存为 Markdown；${isPage ? '页面发布后进入站点地图与导航。' : '发布后自动生成网页、分类/标签/归档页、RSS 与站点地图。'}快捷键 Ctrl+S 保存草稿。</span>
@@ -469,6 +506,7 @@ async function viewEditor(id, kind = 'post') {
   // 别名随机
   view().querySelector('#e-slug-rand').addEventListener('click', () => {
     view().querySelector('#e-slug').value = (isPage ? 'page-' : 'post-') + Date.now().toString(36);
+    markDirty(); // 直接写 value 不触发 input 事件，不手动标脏的话自动保存会漏掉这一处
   });
 
   // 封面（页面没有封面：元素不存在时整段跳过，不能直接 addEventListener 否则报错）
@@ -487,11 +525,12 @@ async function viewEditor(id, kind = 'post') {
       const d = await API.upload(file);
       coverKey = d.key;
       coverPrev();
+      markDirty(); // 同上：改的是闭包里的 coverKey，没有 input 事件
       toast('封面已上传' + webpNote(d));
     } catch (e) { toast(e.message, 'bad'); }
   });
   const coverDel = view().querySelector('#e-cover-del');
-  if (coverDel) coverDel.addEventListener('click', () => { coverKey = null; coverPrev(); });
+  if (coverDel) coverDel.addEventListener('click', () => { coverKey = null; coverPrev(); markDirty(); });
 
   // 加密开关：勾上才让填密码（明文输入，只输一遍）；取消勾选立刻禁用并清空
   const lockEl = view().querySelector('#e-lock');
@@ -511,9 +550,55 @@ async function viewEditor(id, kind = 'post') {
   };
   updateStatus(post ? post.status : 'draft');
 
+  // ---------- 自动保存草稿（Ver 0.6 ⑥） ----------
+  // 口径（Wei 2026-10-15 选定）：
+  //   · 出现「首次变动」就开 60 秒倒计时，**中途继续打字不重置**，满 60 秒必存一次；
+  //   · 手动保存 / 发布 → 倒计时立刻消失，下次变动再从 60 秒重新起算；
+  //   · 倒计时就在「保存草稿」按钮旁逐秒显示，存完换成结果文字。
+  // ⚠️ 判据是「表是不是在跑」而不是「刚才脏没脏」—— 这一条同时管住三种情况：
+  //    首次变动开表、手动保存后重新起算、自动保存失败后下次输入还能再试（不会就此哑掉）。
+  const autoEl = view().querySelector('#e-auto');
+  let autoTimer = null;
+  let autoLeft = 0;
+  const paintAuto = (text, color) => {
+    if (!autoEl) return;
+    autoEl.textContent = text || '';
+    autoEl.style.color = color || '';
+  };
+  const stopAuto = () => {
+    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+    autoLeft = 0;
+    paintAuto('');
+  };
+  autoStop = stopAuto; // 交给 router()：离开编辑页时停表
+  const autoSaveNow = async () => {
+    if (!dirty) { paintAuto(''); return; } // 表走完前已经被手动存掉了
+    const titleEl = view().querySelector('#e-title');
+    const pending = !titleEl.value.trim();
+    const r = await save(false, { auto: true, fallbackTitle: pending ? AUTO_TITLE : '' });
+    if (r.ok) {
+      const hhmm = new Date().toTimeString().slice(0, 5);
+      paintAuto('✓ 已自动保存 ' + hhmm + (pending ? `（标题暂记「${AUTO_TITLE}」）` : ''), '#15803d');
+    } else {
+      paintAuto('自动保存失败：' + r.err, '#b91c1c');
+    }
+  };
+  const armAuto = () => {
+    if (autoTimer || !dirty) return; // 已经在倒计时就让它走完 —— 不要重置
+    autoLeft = AUTO_SAVE_SEC;
+    paintAuto(autoLeft + 's 后自动保存', 'var(--ac)');
+    autoTimer = setInterval(() => {
+      autoLeft -= 1;
+      if (autoLeft > 0) { paintAuto(autoLeft + 's 后自动保存', 'var(--ac)'); return; }
+      clearInterval(autoTimer);
+      autoTimer = null;
+      autoSaveNow();
+    }, 1000);
+  };
+
   // 防误关（模块级 dirty + 一次性守卫）
   dirty = false;
-  const markDirty = () => { dirty = true; };
+  const markDirty = () => { dirty = true; armAuto(); };
   // 只给页面上真实存在的元素绑（页面编辑器没有分类 / 标签）
   ['#e-title', '#e-tags', '#e-slug', '#e-cat', '#e-innav', '#e-lock', '#e-pass'].forEach((s) => {
     const em = view().querySelector(s);
@@ -522,8 +607,10 @@ async function viewEditor(id, kind = 'post') {
   editorHost.addEventListener('input', markDirty);
   draftSaver = () => save(false);
 
-  const collect = () => {
-    const title = view().querySelector('#e-title').value.trim();
+  // fallbackTitle 只有自动保存会传：标题还没填时先用占位标题落库把正文保住，
+  // 不回填输入框（回填了用户还得删一遍）。
+  const collect = (fallbackTitle = '') => {
+    const title = view().querySelector('#e-title').value.trim() || fallbackTitle;
     if (!title) throw new Error(`请填写${isPage ? '页面' : '文章'}标题`);
     const md = editor.getMarkdown();
     if (!md) throw new Error(`${isPage ? '页面' : '文章'}内容不能为空`);
@@ -566,34 +653,49 @@ async function viewEditor(id, kind = 'post') {
     if (open === 'open') window.open(purl, '_blank');
     go(isPage ? '#/pages' : '#/posts');
   };
-  const save = async (publish) => {
+  // 返回 { ok, err }：手动保存不看返回值，自动保存靠它决定显示「已自动保存」还是失败原因。
+  const save = async (publish, opts = {}) => {
+    const auto = opts.auto === true;
+    if (!auto) stopAuto(); // 手动保存 / 发布：倒计时立刻消失（下次变动由 markDirty 重新起算）
     const btnPub = view().querySelector('#e-publish');
     btnPub.disabled = true;
     try {
-      const body = { ...collect(), status: publish ? 'published' : 'draft' };
+      const body = { ...collect(opts.fallbackTitle || ''), status: publish ? 'published' : 'draft' };
       let slug;
       if (id) {
         const r = await API.put('/posts/' + id, body);
         slug = r.slug;
-        toast(publish ? '已更新并发布 ✓' : '草稿已保存');
+        if (!auto) toast(publish ? '已更新并发布 ✓' : '草稿已保存');
       } else {
         const r = await API.post('/posts', body);
         slug = r.slug;
         id = r.id;  // 记下新 id：之后在同一页继续点保存是更新，不会重复建一篇
-        toast(publish
-          ? (isPage ? '已发布 ✓ 页面已上线，并进入站点地图与导航' : '已发布 ✓ 前台、分类/标签页、RSS、站点地图均已同步')
-          : '草稿已保存');
-        if (publish) { dirty = false; await finishPublish(id, slug); return; }
+        if (!auto) {
+          toast(publish
+            ? (isPage ? '已发布 ✓ 页面已上线，并进入站点地图与导航' : '已发布 ✓ 前台、分类/标签页、RSS、站点地图均已同步')
+            : '草稿已保存');
+        }
+        if (publish) { dirty = false; await finishPublish(id, slug); return { ok: true }; }
         // 新建草稿：把地址换成真实 id 才能继续编辑，否则再点保存又会新建一篇
         dirty = false;
-        go((isPage ? '#/pages/' : '#/posts/') + id);
-        return;
+        if (auto) {
+          // ⚠️ 自动保存绝不能走 go()：那会触发 hashchange → 整个编辑页重绘，
+          //    打字打到一半会被打断（焦点、光标、撤销栈全丢）。
+          //    用 replaceState 只把地址栏换成带 id 的地址，「这一篇已经存过了」的语义照样成立。
+          history.replaceState(null, '', (isPage ? '#/pages/' : '#/posts/') + id);
+        } else {
+          go((isPage ? '#/pages/' : '#/posts/') + id);
+        }
+        return { ok: true };
       }
       dirty = false;
       if (publish) await finishPublish(id, slug);
       else updateStatus('draft');
+      return { ok: true };
     } catch (e) {
-      toast(e.message, 'bad');
+      // 自动保存不弹 toast（正在打字，弹窗很烦）；失败原因由倒计时那行字显示
+      if (!auto) toast(e.message, 'bad');
+      return { ok: false, err: e.message };
     } finally {
       btnPub.disabled = false;
     }
@@ -724,11 +826,22 @@ function installGuards() {
   });
   document.addEventListener('keydown', (ev) => {
     if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's' && draftSaver) {
-      if (/^#\/(posts|pages)\/(new|\d+)$/.test(location.hash)) {
+      if (isEditorHash(location.hash)) {
         ev.preventDefault();
         draftSaver();
       }
     }
+  });
+  // 站内跳转全是 <a href="#/...">。挂在冒泡阶段：让 #tb-nav 里「退出」的专门处理器先跑完，
+  // 那条路径由 logout() 自己的守卫负责（这里把 #/logout 排除，免得被当普通跳转重复处理）。
+  document.addEventListener('click', (ev) => {
+    if (!dirty || !isEditorHash(location.hash)) return;
+    const a = ev.target instanceof Element ? ev.target.closest('a[href^="#/"]') : null;
+    if (!a || a.target === '_blank') return;
+    const href = a.getAttribute('href') || '';
+    if (href === '#/logout' || href === location.hash) return;
+    ev.preventDefault();
+    go(href);
   });
 }
 // ================= 评论管理 =================
@@ -2895,6 +3008,10 @@ async function viewSettings(tabArg) {
 
 // ================= 路由 =================
 async function router() {
+  // 上一页如果是编辑器，先把它的倒计时与「保存草稿」引用一并作废（见 autoStop 的注释）。
+  // draftSaver 同理：留着的话在列表页按 Ctrl+S 会去调已销毁视图里的 save()。
+  if (autoStop) { autoStop(); autoStop = null; }
+  draftSaver = null;
   if (!state.authed) { viewLogin(); return; }
   const hash = location.hash.replace(/^#\/?/, '');
   const seg = hash.split('/');
