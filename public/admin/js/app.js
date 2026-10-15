@@ -1818,6 +1818,16 @@ async function viewBackup() {
     <button class="btn g" id="b-up">从本地上传备份恢复</button>
     <span class="hint" style="margin-left:8px">也可在 Cloudflare 控制台为该项目配置定时任务实现每日自动备份（见 README）。</span>
   </div>
+  <div class="card">
+    <div class="sec-title">导出数据库 <small>把整站数据库导成 .sql 文件，可直接导入同名数据库</small></div>
+    <p class="hint" style="margin-top:0">导出的是<b>整个数据库</b>：全部 13 张表的结构与数据（文章、分类、标签、评论、访问统计、友链、友圈订阅、IP 归属地、站点设置）。两种格式数据完全相同，只是建表语句按各自数据库的方言写过——<br>
+      · <b>SQLite</b>：建表语句原样照抄，可直接导入本机 sqlite3 或 DB Browser for SQLite；<br>
+      · <b>MySQL</b>：已把 <code>AUTOINCREMENT</code> 译成 <code>AUTO_INCREMENT</code>、参与索引的文本列译成 <code>VARCHAR</code>（MySQL 不允许 TEXT 直接进索引）、列内联外键提到表级、字符集固定 <code>utf8mb4</code>。</p>
+    <p class="hint" style="color:#b45309">⚠️ 文件是明文全量数据，其中 <code>settings</code> 表含 SMTP 授权码、AUTH_SECRET 等站点密钥，请妥善保管。每张表前带 <code>DROP TABLE IF EXISTS</code>，导入会覆盖目标库里的同名表。</p>
+    <button class="btn p" id="b-sqlite">⬇ 导出 SQLite（.sql）</button>
+    <button class="btn g" id="b-mysql">⬇ 导出 MySQL（.sql）</button>
+    <span class="hint" style="margin-left:8px">只下载到本地，不占 R2、不进上面那份 20 份的轮转。</span>
+  </div>
   <div class="card"><div class="sec-title">R2 中的备份</div><div id="b-list"><div class="loading">加载中…</div></div></div>`);
 
   const listBox = view().querySelector('#b-list');
@@ -1906,6 +1916,35 @@ async function viewBackup() {
       toast('恢复完成，共写入 ' + (r.restored || 0) + ' 条记录');
     } catch (e) { toast(e.message === 'Unexpected token' ? '备份文件格式不正确' : e.message, 'bad'); }
   });
+  // 导出整库 SQL（Ver 0.6 ⑦）。用 fetch + blob 而不是 window.open：
+  // 后端出错时回的是 JSON，这样能把 error 文案捞出来提示，而不是甩一个 JSON 页面给用户。
+  const dlSql = async (fmt, btn) => {
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '正在生成…';
+    try {
+      const res = await fetch('/api/backup/sql?fmt=' + fmt, { credentials: 'same-origin' });
+      if (!res.ok) {
+        let msg = '导出失败（HTTP ' + res.status + '）';
+        try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) { /* 不是 JSON 就用默认文案 */ }
+        throw new Error(msg);
+      }
+      // 文件名以后端给的 Content-Disposition 为准（带导出时间戳）
+      const cd = res.headers.get('content-disposition') || '';
+      const name = (/filename="([^"]+)"/.exec(cd) || [])[1] || ('blog-' + fmt + '.sql');
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast('已导出：' + name + '（' + fmtSize(blob.size) + '）');
+    } catch (e) { toast(e.message, 'bad'); }
+    btn.textContent = label;
+    btn.disabled = false;
+  };
+  view().querySelector('#b-sqlite').addEventListener('click', (ev) => dlSql('sqlite', ev.currentTarget));
+  view().querySelector('#b-mysql').addEventListener('click', (ev) => dlSql('mysql', ev.currentTarget));
   load();
 }
 

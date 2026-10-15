@@ -23,6 +23,7 @@ import { resolveEmbed } from './_lib/embed.js';
 import * as font from './_lib/font.js';
 import * as audio from './_lib/audio.js';
 import * as ipgeo from './_lib/ipgeo.js';
+import * as sqldump from './_lib/sql.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
@@ -944,6 +945,25 @@ async function api(ctx, url, seg, method) {
   // --- 备份（R2） ---
   // 说明：路由是单数 /api/backup；'backups' 作为别名保留，兼容旧版前端的复数写法
   if (seg[0] === 'backup' || seg[0] === 'backups') {
+    // GET /api/backup/sql?fmt=sqlite|mysql —— 导出整库为可导入的 .sql（Ver 0.6 ⑦）
+    // ⚠️ 必须放在下面那条「GET /:name 取 R2 里的备份」之前，否则 `sql` 会被当成备份文件名去 R2 查，永远 404。
+    // 只下载、不落 R2（Wei 的选择）：不占空间，也不打扰上面那套「最多 20 份」的轮转。
+    if (method === 'GET' && seg.length === 2 && seg[1] === 'sql') {
+      const fmt = url.searchParams.get('fmt') === 'mysql' ? 'mysql' : 'sqlite';
+      const stamp = bnNow();
+      const text = await sqldump.dumpSql(dbx, fmt, stamp);
+      const fn = 'blog-' + fmt + '-' + stamp.replace(/[-: ]/g, '') + '.sql';
+      return new Response(text, {
+        headers: {
+          // 刻意不加 BOM：MySQL 客户端和 sqlite3 CLI 都可能把 BOM 当成正文第一个字符。
+          // 前端用 fetch + blob 落地，Content-Type 只作标识用。
+          'content-type': 'application/sql; charset=utf-8',
+          'content-disposition': `attachment; filename="${fn}"`,
+          // 导出的是「此刻」的库，任何缓存都只会给出过期的数据
+          'cache-control': 'no-store',
+        },
+      });
+    }
     if (method === 'POST' && seg.length === 1) {
       const data = await db.dumpAll(dbx);
       // 文件名只精确到秒：同一秒内连点两次备份会生成同名文件互相覆盖，补 4 位随机后缀避免
