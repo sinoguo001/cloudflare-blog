@@ -24,9 +24,32 @@ import * as font from './_lib/font.js';
 import * as audio from './_lib/audio.js';
 import * as ipgeo from './_lib/ipgeo.js';
 import * as sqldump from './_lib/sql.js';
+// 目标程序导出（Ver 0.6 ⑧ 第二步）：Typecho / Z-Blog / WordPress 的表结构 + 字段映射
+import * as targets from './_lib/targets.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
+
+// .sql 下载响应。刻意不加 BOM：MySQL 客户端和 sqlite3 CLI 都可能把 BOM 当成正文第一个字符。
+// 前端用 fetch + blob 落地，Content-Type 只作标识用。
+const sqlFile = (text, fn) => new Response(text, {
+  headers: {
+    'content-type': 'application/sql; charset=utf-8',
+    'content-disposition': `attachment; filename="${fn}"`,
+    // 导出的是「此刻」的库，任何缓存都只会给出过期的数据
+    'cache-control': 'no-store',
+  },
+});
+
+// 用户上传的目标程序建表脚本存在 R2：schema/target-<key>.sql
+// 它只用来「学表名与列名」（认自定义前缀、跟版本漂移），那份 DDL 原文一律不输出。
+const targetSchemaKey = (k) => 'schema/target-' + k + '.sql';
+async function readTargetSchema(env, toKey, prefix) {
+  const obj = await env.BLOG.get(targetSchemaKey(toKey));
+  if (!obj) return null;
+  const tables = targets.parseSchema(await obj.text(), prefix);
+  return tables.length ? tables : null;
+}
 
 // 携带 Set-Cookie 的 JSON 响应
 const jset = (data, cookie, status = 200) => {
@@ -945,24 +968,75 @@ async function api(ctx, url, seg, method) {
   // --- 备份（R2） ---
   // 说明：路由是单数 /api/backup；'backups' 作为别名保留，兼容旧版前端的复数写法
   if (seg[0] === 'backup' || seg[0] === 'backups') {
-    // GET /api/backup/sql?fmt=sqlite|mysql —— 导出整库为可导入的 .sql（Ver 0.6 ⑦）
+    // GET /api/backup/sql?fmt=sqlite|mysql|pg —— 导出整库为可导入的 .sql（Ver 0.6 ⑦ / ⑧）
     // ⚠️ 必须放在下面那条「GET /:name 取 R2 里的备份」之前，否则 `sql` 会被当成备份文件名去 R2 查，永远 404。
     // 只下载、不落 R2（Wei 的选择）：不占空间，也不打扰上面那套「最多 20 份」的轮转。
+    // GET /api/backup/sql?fmt=sqlite|mysql|pg[&to=typecho|zblog|wordpress][&prefix=xxx]
+    //   · 不带 to（或 to=default）→ 整库导出（Ver 0.6 ⑦ / ⑧ 第一步）
+    //   · 带 to → 目标程序迁移文件（只数据；表名/列名与字段映射全在 _lib/targets.js）
     if (method === 'GET' && seg.length === 2 && seg[1] === 'sql') {
-      const fmt = url.searchParams.get('fmt') === 'mysql' ? 'mysql' : 'sqlite';
+      // fmt 的归一交给 _lib/sql.js 的 normalizeFmt —— 全项目只此一份判定，别在这儿再抄一份。
+      // 认 sqlite / mysql / pg；另外 postgres、postgresql、pgsql 也归一到 pg，其余值回落 sqlite。
+      const fmt = sqldump.normalizeFmt(url.searchParams.get('fmt'));
+      const label = fmt === 'pg' ? 'postgres' : fmt;
       const stamp = bnNow();
-      const text = await sqldump.dumpSql(dbx, fmt, stamp);
-      const fn = 'blog-' + fmt + '-' + stamp.replace(/[-: ]/g, '') + '.sql';
-      return new Response(text, {
-        headers: {
-          // 刻意不加 BOM：MySQL 客户端和 sqlite3 CLI 都可能把 BOM 当成正文第一个字符。
-          // 前端用 fetch + blob 落地，Content-Type 只作标识用。
-          'content-type': 'application/sql; charset=utf-8',
-          'content-disposition': `attachment; filename="${fn}"`,
-          // 导出的是「此刻」的库，任何缓存都只会给出过期的数据
-          'cache-control': 'no-store',
-        },
-      });
+      const toKey = targets.normalizeTarget(url.searchParams.get('to'));
+      if (!toKey) {
+        const text = await sqldump.dumpSql(dbx, fmt, stamp);
+        // 文件名里把 pg 写成 postgres —— 给 Wei 看着明白：blog-postgres-20261015123456.sql
+        return sqlFile(text, 'blog-' + label + '-' + stamp.replace(/[-: ]/g, '') + '.sql');
+      }
+      const prog = targets.TARGETS[toKey];
+      // 不支持的组合**明确拒绝**，绝不「回落成整库导出」—— 否则用户以为拿到了 WordPress 文件，
+      // 实际是一份 WordPress 根本不认识的自建表结构（官方只支持 MySQL）。
+      if (!prog.allow.includes(fmt)) {
+        return err(prog.label + ' 只支持 ' + prog.allow.map((x) => (x === 'pg' ? 'postgres' : x)).join(' / ') + '，不支持 ' + label, 400);
+      }
+      const prefix = targets.sanitizePrefix(url.searchParams.get('prefix')) || prog.prefix;
+      const override = await readTargetSchema(env, toKey, prefix);
+      const text = await targets.dumpTarget(dbx, fmt, toKey, stamp, { prefix, override });
+      return sqlFile(text, 'blog-' + label + '-' + toKey + '-' + stamp.replace(/[-: ]/g, '') + '.sql');
+    }
+    // /api/backup/schema?to=typecho|zblog|wordpress —— 目标程序建表脚本的上传覆盖
+    //   存 R2，只用来学「表名与列名」；DDL 本身永远不进导出产物。
+    // ⚠️ 同样必须排在下面「GET /:name 取 R2 备份」之前，否则 `schema` 会被当成备份文件名。
+    if (seg.length === 2 && seg[1] === 'schema') {
+      // 不带 to 的 GET 是「能力表」：后台拿它渲染下拉与按钮禁用状态，
+      // 免得前端再手抄一份「哪个程序支持哪些方言」。
+      if (method === 'GET' && !targets.normalizeTarget(url.searchParams.get('to'))) {
+        return json({ targets: targets.targetCapability() });
+      }
+      const toKey = targets.normalizeTarget(url.searchParams.get('to'));
+      if (!toKey) return err('请指定目标程序：to=typecho|zblog|wordpress', 400);
+      const prog = targets.TARGETS[toKey];
+      const prefix = targets.sanitizePrefix(url.searchParams.get('prefix')) || prog.prefix;
+      const key = targetSchemaKey(toKey);
+      if (method === 'GET') {
+        const obj = await env.BLOG.get(key);
+        const base = { target: toKey, label: prog.label, defaultPrefix: prog.prefix, prefix, builtin: !obj };
+        if (!obj) return json(Object.assign(base, { tables: [] }));
+        const tables = targets.parseSchema(await obj.text(), prefix);
+        return json(Object.assign(base, {
+          size: obj.size, uploaded: obj.uploaded,
+          tables: tables.map((t) => ({ name: t.name, cols: t.cols.length })),
+        }));
+      }
+      if (method === 'POST') {
+        const body = await request.text();
+        // 上限 256KB：Typecho 的建表脚本 4KB、Z-Blog 6KB、WordPress 拆出来约 10KB，
+        // 给足余量，又不至于让人把整个数据库倒进 R2。
+        if (body.length > 262144) return err('文件太大（上限 256KB）', 413);
+        if (!/CREATE\s+TABLE/i.test(body)) return err('这份文件里没有 CREATE TABLE，不像建表脚本', 400);
+        const tables = targets.parseSchema(body, prefix);
+        if (!tables.length) return err('没能从这份文件里解析出任何表，请确认它是对应程序的建表脚本', 400);
+        await env.BLOG.put(key, body, { httpMetadata: { contentType: 'text/plain; charset=utf-8' } });
+        return json({ ok: true, target: toKey, tables: tables.map((t) => t.name) });
+      }
+      if (method === 'DELETE') {
+        await env.BLOG.delete(key);
+        return json({ ok: true, target: toKey, builtin: true });
+      }
+      return err('方法不支持', 405);
     }
     if (method === 'POST' && seg.length === 1) {
       const data = await db.dumpAll(dbx);

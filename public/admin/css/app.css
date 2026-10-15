@@ -369,3 +369,10 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .geo-tip{margin:0 0 12px;padding:9px 13px;border:1px solid var(--ac-line);border-radius:10px;background:var(--ac-soft);font-size:13px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .geo-tip b{color:var(--ac)}
 .geo{color:var(--mut)}
+
+/* 目标程序迁移（Ver 0.6 ⑧ 第二步）：「恢复内置表结构」按钮平时要藏起来。
+   ⚠️ 必须显式写这条 —— `.btn` 有 display:inline-flex（**作者样式**），
+   会盖掉浏览器默认那条 [hidden]{display:none}，按钮带着 hidden 也照样显示
+   （实测截图里抓到的：状态行已经写着「未上传」，旁边的恢复按钮却还在）。
+   同类的还有上面的 .field / .set-pane / .bl-bar / .bl-menu。 */
+#t-rm[hidden]{display:none!important}
