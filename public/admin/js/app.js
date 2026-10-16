@@ -1831,6 +1831,16 @@ async function viewBackup() {
       <label class="hint" style="margin:0">表前缀</label>
       <input class="inp" id="t-pre" style="width:110px;flex:none" placeholder="默认">
     </div>
+    <div id="t-mode-box" style="margin:0 0 10px;display:none;align-items:center;gap:8px;flex-wrap:wrap">
+      <label class="hint" style="margin:0">目标站已有内容时</label>
+      <select class="inp" id="t-mode" style="width:190px;flex:none">
+        <option value="append">只追加（默认）</option>
+        <option value="shift">用新 ID 追加</option>
+        <option value="wipe">先清空它的对应表</option>
+      </select>
+      <label class="hint" id="t-off-l" style="margin:0;display:none">ID 偏移</label>
+      <input class="inp" id="t-off" type="number" min="1" max="999999999" step="1" value="100000" style="width:120px;flex:none;display:none">
+    </div>
     <div id="t-schema" hidden style="margin:0 0 10px">
       <button class="btn sm g" id="t-up">⬆ 上传该程序的建表脚本（可选）</button>
       <button class="btn sm g" id="t-rm" hidden>恢复内置表结构</button>
@@ -1946,6 +1956,44 @@ async function viewBackup() {
   const tProgSel = () => view().querySelector('#t-prog');
   const tPrefix = () => (view().querySelector('#t-pre').value || '').trim();
   const tCapOf = (k) => tCap.find((c) => c.key === k) || null;
+  const tModeOn = () => view().querySelector('#t-mode').value;
+  const tOffsetRaw = () => (view().querySelector('#t-off').value || '').trim();
+  // 偏移量的判据与 _lib/targets.js 的 normalizeOffset() 一致（那边还会再归一一次，
+  // 这里只为把「你填的值不合法、导出时按默认算」提前说给用户看）。
+  const tOffsetOk = () => {
+    const s = tOffsetRaw();
+    if (!s) return false;
+    const n = Number(s);
+    return Number.isInteger(n) && n >= 1 && n <= 999999999;
+  };
+  const tOffset = () => (tOffsetOk() ? Number(tOffsetRaw()) : 100000);
+
+  // ★ 提示文案必须跟着这一档一起变：三档决定「目标站原有的行会不会被动」「导入会不会报错」。
+  //   文案要是写死一句，用户按一种档的样子去读、产物却是另一种档，那就出事了。
+  //   下面三段与 _lib/targets.js 里文件头那三段是同一套说辞，改一处必须改另一处。
+  const updateModeNote = () => {
+    const cap = tCapOf(tProgSel().value);
+    const note = view().querySelector('#t-note');
+    const md = tModeOn();
+    // ID 偏移只在 shift 档露面：另外两档它一点作用都没有，留在那儿只会让人以为改了会生效。
+    const showOff = md === 'shift' ? '' : 'none';
+    view().querySelector('#t-off-l').style.display = showOff;
+    view().querySelector('#t-off').style.display = showOff;
+    if (!cap) { note.textContent = ''; return; }
+    const off = tOffset();
+    note.innerHTML = '⚠️ 选 ' + esc(cap.label) + ' 后导出的是<b>只数据</b>文件，不含建表语句：'
+      + '先用 ' + esc(cap.label) + ' 自己的安装程序把站装好（它会写系统配置、建管理员），再导入这份文件。'
+      + (md === 'wipe'
+        ? '已选<b>先清空</b>：每段 INSERT 前都带 <code>DELETE</code>，目标站对应表里现有的行会被清掉（整批替换，不可逆）。'
+        : md === 'shift'
+          ? '已选<b>用新 ID 追加</b>：我们内容的 ID 整体加 ' + off + '（本站 1 号内容会变成 ' + (off + 1) + ' 号），'
+            + '分类标签、评论、以及文章与分类标签的关联都跟着一起平移，目标站原有的行<b>一行都不动</b>，'
+            + '既不会撞主键也不会报错。'
+            + (tOffsetOk() ? '' : '<b>⚠️ ID 偏移填的不是 1~999999999 的整数，导出时会按默认的 100000 算。</b>')
+          : '默认<b>只追加</b>：不含 <code>DELETE</code>、ID 也不动，目标站已有的行都留着 —— 撞上已有主键（默认分类、'
+            + '示例文章、同名配置键）时导入会中途报错。不想报错，就把左边那一档换成「用新 ID 追加」。')
+      + '不迁移：' + esc((cap.skip || []).join('、')) + '。';
+  };
 
   const renderTargetState = () => {
     const cap = tCapOf(tProgSel().value);
@@ -1958,15 +2006,15 @@ async function viewBackup() {
     view().querySelector('#t-pre').placeholder = cap ? cap.prefix : '默认';
     view().querySelector('#t-schema').hidden = !cap;
     view().querySelector('#t-note').hidden = !cap;
+    // ⚠️ 这个 div 内联了 display:flex，会盖掉 UA 的 [hidden]{display:none}
+    //    （记忆里那条坑：内联 display 与 [hidden] 打架时后者输）→ 用 style.display 开关。
+    view().querySelector('#t-mode-box').style.display = cap ? 'flex' : 'none';
+    updateModeNote();
     if (!cap) {
       view().querySelector('#b-hint').textContent = '只下载到本地，不占 R2、不进上面那份 20 份的轮转。';
       return;
     }
     view().querySelector('#b-hint').textContent = '当前：迁移到 ' + cap.label + '（只数据，导入你已装好的 ' + cap.label + '）。';
-    view().querySelector('#t-note').innerHTML = '⚠️ 选 ' + esc(cap.label) + ' 后导出的是<b>只数据</b>文件，不含建表语句：'
-      + '先用 ' + esc(cap.label) + ' 自己的安装程序把站装好（它会写系统配置、建管理员），再导入这份文件把站上内容整批替换进去。'
-      + '每段 INSERT 前都带 <code>DELETE</code>，会清空目标站对应表里现有的行。不迁移：'
-      + esc((cap.skip || []).join('、')) + '。';
   };
 
   const loadSchemaState = async () => {
@@ -1985,6 +2033,8 @@ async function viewBackup() {
   };
 
   tProgSel().addEventListener('change', () => { renderTargetState(); loadSchemaState(); });
+  view().querySelector('#t-mode').addEventListener('change', updateModeNote);
+  view().querySelector('#t-off').addEventListener('input', updateModeNote);
   view().querySelector('#t-pre').addEventListener('change', loadSchemaState);
   view().querySelector('#t-up').addEventListener('click', () => view().querySelector('#t-file').click());
   view().querySelector('#t-file').addEventListener('change', async (ev) => {
@@ -2031,7 +2081,14 @@ async function viewBackup() {
     // 目标程序与前缀从上面那两个控件读；选了目标程序时后端出的是「只数据」迁移文件
     const key = tProgSel().value;
     let qs = 'fmt=' + fmt;
-    if (key) qs += '&to=' + encodeURIComponent(key) + '&prefix=' + encodeURIComponent(tPrefix());
+    if (key) {
+      qs += '&to=' + encodeURIComponent(key) + '&prefix=' + encodeURIComponent(tPrefix());
+      // 三档一律显式带上（默认 append，与后端「不传 = 只追加」一致）；
+      // ID 偏移只在 shift 档挂 —— 后端也只在那一档读它，两边默认都落在「不动目标站数据」这一侧。
+      const md = tModeOn();
+      qs += '&mode=' + encodeURIComponent(md);
+      if (md === 'shift') qs += '&offset=' + encodeURIComponent(tOffsetRaw());
+    }
     btn.disabled = true;
     btn.textContent = '正在生成…';
     try {

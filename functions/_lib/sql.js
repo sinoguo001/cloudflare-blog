@@ -377,14 +377,34 @@ function pgIndex(ix) {
 //      · 表里有数据 → setval(seq, MAX(id))，is_called 默认 true → 下一条取 MAX(id)+1 ✓
 //      · 表是空的   → GREATEST 兜到 1，is_called = (0 > 0) = false → 下一条取 1 ✓
 //    一条语句同时管住这两种情况，不必分支。
-function setvalStatement(table, col) {
+//    ⚠️ 两个参数的解析规则**不对称**（2026-10-16 查官方文档时抓到的，我第一版写反了）：
+//      · 第一个参数（表名）按常规 SQL 规则解析 → 要写成 `"表名"` 形式，
+//        大小写与保留字（比如 user）才不出错；
+//      · 第二个参数（列名）是**字面匹配** —— 文档原文 “The second parameter, being just
+//        a column name, is treated literally and so has its case preserved”，
+//        PG 源码里就是拿字符串逐字比对列名。所以**绝不能给它加引号**：
+//        写成 `'"ID"'` 等于去找一个名字里带双引号的列，恒为 NULL ——
+//        WordPress 的 `ID` / `comment_ID`、Z-Blog 的 `log_ID` 会被整批漏掉，
+//        而且套上 guard 之后是**静默**漏掉，最难发现。
+//    本项目里两处调用都走这个函数，别再抄第二份。
+//
+//    输出是 `SELECT ... ;`（不是 DO 块）：目标站用 psql / phpPgAdmin 灌文件时按普通语句执行即可。
+//
+//    `guard` 供「只数据」那条线用（见 targets.js）：那儿的表结构是**目标程序自己建的**，
+//    不能假定主键一定有序列（也可能被改成了 UUID / 复合主键）。加了 guard 就在末尾补一句
+//    `WHERE pg_get_serial_sequence(...) IS NOT NULL` —— 没序列时整条不执行，
+//    而不是让 setval(NULL::regclass) 把整份文件的导入卡死在这一行。
+export function setvalStatement(table, col, opts = {}) {
   const tq = qpg(table);
   const cq = qpg(col);
-  // pg_get_serial_sequence 的两个参数都是**字符串**（内部按标识符解析），
-  // 所以表名要再包一层单引号；引号里的 "posts" 正好被解析成大小写敏感匹配的 posts。
-  return 'SELECT setval(pg_get_serial_sequence(' + "'" + tq + "', '" + col + "'),\n"
+  // pg_get_serial_sequence 的两个参数都是**字符串**，所以表名要再包一层单引号
+  // （tq 已带双引号），列名则直接用裸名字（字面匹配，见上）。
+  const seq = 'pg_get_serial_sequence(' + "'" + tq + "', '" + col + "')";
+  let s = 'SELECT setval(' + seq + ',\n'
     + '              GREATEST(COALESCE((SELECT MAX(' + cq + ') FROM ' + tq + '), 0), 1),\n'
-    + '              (SELECT COUNT(*) FROM ' + tq + ') > 0);';
+    + '              (SELECT COUNT(*) FROM ' + tq + ') > 0)';
+  if (opts.guard) s += '\nWHERE ' + seq + ' IS NOT NULL';
+  return s + ';';
 }
 
 // ============ 字面量 ============

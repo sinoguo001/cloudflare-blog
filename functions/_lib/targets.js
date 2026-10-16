@@ -7,7 +7,12 @@
 // 1. **只数据，不建表**。理由不是偷懒：这三个程序都必须靠**它自己的安装程序**
 //    写系统配置、建管理员账号，光把表灌进去是启动不了的。正确用法是
 //    「先把目标程序正常装好 → 再导这份文件 → 把站上内容整批替换进去」，
-//    所以文件里是 `DELETE` + `INSERT`，而不是 `DROP` + `CREATE`。
+//    所以文件里是 `INSERT`，而不是 `DROP` + `CREATE`。**目标站已经有的行怎么办**由调用方
+//    传 `mode` 决定，三档互斥、默认 `append`（只追加）—— 2026-10-16 Wei 定的：
+//      · append：一条 `DELETE` 都不发、ID 也不动。空站装好就导；已有内容的站会撞主键。
+//      · shift ：我们内容的 ID 整体加一个偏移（默认 100000）**以新编号追加**，
+//                目标站原有的行一行都不动，也就不存在主键冲突。
+//      · wipe  ：每段 INSERT 前加 `DELETE` 清空目标站对应表（整批替换，不可逆）。
 //
 // 2. 表结构知识**内置在本文件**（表名/列名/字段含义），可以用**用户上传的**
 //    目标程序安装脚本覆盖 —— 但覆盖只用来「学表名、学列名、认自定义前缀」，
@@ -26,7 +31,7 @@
 //    不搬到别处 —— 那些正是改代码时最容易改错的地方。
 // ============================================================
 
-import { insertStatements, literal, quoteIdent, tableColumns } from './sql.js';
+import { insertStatements, literal, quoteIdent, setvalStatement, tableColumns } from './sql.js';
 
 // ---------- 时间 ----------
 //
@@ -117,6 +122,49 @@ export const sanitizePrefix = (p) => {
   return /^[A-Za-z_][A-Za-z0-9_]{0,15}$/.test(s) ? s : '';
 };
 
+// ---------- 目标站已有的行怎么处理（2026-10-16）----------
+//
+// ★ 三档是**互斥**的，所以用一个枚举而不是两个各自独立的开关。两个独立开关能表达出
+//   「既平移又清空」这种自相矛盾的状态，然后就得再定一套「谁优先」的规矩 ——
+//   而那正是最容易改错、也最难在界面上说清的地方。
+export const TARGET_MODES = ['append', 'shift', 'wipe'];
+const MODE_ALIAS = {
+  append: 'append', add: 'append', only: 'append', keep: 'append',
+  shift: 'shift', offset: 'shift', renumber: 'shift',
+  wipe: 'wipe', clear: 'wipe', truncate: 'wipe', replace: 'wipe',
+};
+// 归一（同 normalizeFmt / normalizeTarget 的约定：全项目只此一份判定）。
+// ★ 认不出来的值一律回落 `append` —— 也就是「不动目标站数据」那一侧。
+export const normalizeMode = (m) => {
+  const s = String(m == null ? '' : m).trim().toLowerCase();
+  return MODE_ALIAS[s] || 'append';
+};
+
+// ID 平移的偏移量，默认 100000：目标站几乎不可能已经有人把内容做到十万条，
+// 撞上的概率可以忽略；又不至于大到文件名/后台里看着别扭。
+export const DEFAULT_OFFSET = 100000;
+// ★ 判据从严：只接受 1..999999999 的**整数**。0 / 空 / 负数 / 小数 / 'abc' / 超大数
+//   一律回落默认值 —— **绝不能静默按 0 处理**：按 0 就等于「没平移」，用户以为躲开了
+//   主键冲突、实际照样撞，而文件头还会写着「已平移」。
+export const normalizeOffset = (v) => {
+  const n = Number(String(v == null ? '' : v).trim());
+  return Number.isInteger(n) && n >= 1 && n <= 999999999 ? n : DEFAULT_OFFSET;
+};
+
+// 平移一个 id。★ 有三类值**绝不能**平移：
+//   ① **0 / null** —— 三个程序里 0 都是「无父级 / 游客」的哨兵值，平移它就会把评论挂到
+//      一个不存在的父级上、把文章挂到不存在的分类上（导入能过，前台全乱）。
+//   ② 指向**目标站账号**的列 —— Typecho 的 authorId / ownerId、Z-Blog 的 log_AuthorID /
+//      comm_AuthorID、WordPress 的 post_author / user_id / link_owner。它们指的是
+//      「目标站安装程序建出来的那个管理员」，跟我们的 id 没有任何关系。所以这些列在
+//      下面的映射里一律写死 1 / 0，**不经过这个函数**。
+//   ③ 目标站自己表里的配置值（如 wp_options 的 default_category）—— 我们本来就不写。
+const shiftId = (off, v) => {
+  const n = Number(v);
+  if (!off || !n) return v == null ? 0 : v;
+  return n + off;
+};
+
 // 解析用户上传的目标程序建表脚本 → [{name, cols}]。
 // ⚠️ 解析前必须先把 %pre% 替换成实际前缀：Z-Blog 官方建表脚本里表名就写作 `%pre%post`，
 //    不替换的话列名正则会从 `%` 起头匹配不上，整张表被静默跳过。
@@ -134,7 +182,7 @@ export const parseSchema = (text, prefix) => tableColumns(String(text || '').rep
 //     所以 typecho_relationships 里既有「文章↔分类」也有「文章↔标签」，两者都要写。
 //  ③ Typecho 原生吃 Markdown，正文取 `content_md`；`text` 列存的就是 Markdown 原文。
 //     我们另一列 content_html 在这条链路上用不上（它给了 WordPress / Z-Blog）。
-function buildTypecho(src, prefix) {
+function buildTypecho(src, prefix, off = 0) {
   const T = (n) => prefix + n;
   const tagOf = new Map(src.post_tags.map((r) => [r.post_id + ':' + r.tag_id, r]));
   const tagsOfPost = new Map();
@@ -150,9 +198,10 @@ function buildTypecho(src, prefix) {
   const postsOfTag = new Map();
   for (const r of src.post_tags) postsOfTag.set(r.tag_id, (postsOfTag.get(r.tag_id) || 0) + 1);
 
-  // ①②：mid 全局唯一
+  // ①②：mid 全局唯一。★ 重编号从 `off + 1` 起：off=0 时与原来完全一致（1 起），
+  //    off>0 时整段搬到「目标站不可能用到的编号」上，这才叫平移。
   const mid = new Map();
-  let seq = 0;
+  let seq = off;
   for (const c of src.categories) mid.set('c' + c.id, ++seq);
   for (const t of src.tags) mid.set('t' + t.id, ++seq);
 
@@ -161,7 +210,10 @@ function buildTypecho(src, prefix) {
     metas.push({
       mid: mid.get('c' + c.id), name: c.name || '', slug: c.slug || '',
       type: 'category', description: c.description || '',
-      count: postsOfCat.get(c.id) || 0, order: 0, parent: c.parent_id || 0,
+      // ★ 父分类也必须过 mid 映射。原来直接写 `parent_id` 只是**碰巧**成立（分类先编号、
+      //   恰好 id 与 mid 一一相等），一平移 offset 就立刻错位到别的分类上。
+      count: postsOfCat.get(c.id) || 0, order: 0,
+      parent: c.parent_id ? (mid.get('c' + c.parent_id) || 0) : 0,
     });
   }
   for (const t of src.tags) {
@@ -173,7 +225,7 @@ function buildTypecho(src, prefix) {
 
   const allowComment = src.settingMap.get('allow_comments') === '1' ? '1' : '0';
   const contents = src.posts.map((p) => ({
-    cid: p.id,
+    cid: shiftId(off, p.id),
     title: p.title || '',
     slug: p.slug || '',
     created: unixOf(p.created_at),
@@ -195,16 +247,16 @@ function buildTypecho(src, prefix) {
   const relationships = [];
   for (const p of src.posts) {
     const cm = mid.get('c' + p.category_id);
-    if (cm) relationships.push({ cid: p.id, mid: cm });
+    if (cm) relationships.push({ cid: shiftId(off, p.id), mid: cm });
     for (const tid of (tagsOfPost.get(p.id) || [])) {
       const tm = mid.get('t' + tid);
-      if (tm) relationships.push({ cid: p.id, mid: tm });
+      if (tm) relationships.push({ cid: shiftId(off, p.id), mid: tm });
     }
   }
 
   const comments = src.comments.map((c) => ({
-    coid: c.id,
-    cid: c.post_id,
+    coid: shiftId(off, c.id),
+    cid: shiftId(off, c.post_id),
     created: unixOf(c.created_at),
     author: c.author || '',
     authorId: c.is_admin ? 1 : 0,      // 博主自己的回复挂到 1 号，前台会渲染成「作者」
@@ -216,7 +268,7 @@ function buildTypecho(src, prefix) {
     text: c.content || '',
     type: 'comment',
     status: oneOf(TE_CMT_STATUS, c.status, 'waiting'),
-    parent: c.parent_id || 0,
+    parent: shiftId(off, c.parent_id),
   }));
 
   // 站点配置只动这两个键（Typecho 的 title / description 就是站点名与副标题）。
@@ -260,7 +312,7 @@ function buildTypecho(src, prefix) {
 //     我们直接按前缀拼名字，不生成 DDL，所以不涉及占位符替换。
 //  ③ 状态是**数字**：log_Status 0=公开 1=草稿 2=审核；log_Type 0=文章 1=页面。
 //     评论没有独立状态列，只有 comm_IsChecking（1 = 待审核）。
-function buildZblog(src, prefix) {
+function buildZblog(src, prefix, off = 0) {
   const T = (n) => prefix + n;
   const tagsOfPost = new Map();
   for (const r of src.post_tags) {
@@ -276,10 +328,13 @@ function buildZblog(src, prefix) {
   for (const r of src.post_tags) postsOfTag.set(r.tag_id, (postsOfTag.get(r.tag_id) || 0) + 1);
 
   const post = src.posts.map((p) => ({
-    log_ID: p.id,
-    log_CateID: p.category_id == null ? 0 : p.category_id,
-    log_AuthorID: 1,
-    log_Tag: (tagsOfPost.get(p.id) || []).map((id) => '{' + id + '}').join(''),
+    log_ID: shiftId(off, p.id),
+    log_CateID: p.category_id == null ? 0 : shiftId(off, p.category_id),
+    log_AuthorID: 1,                   // ← 目标站的管理员，不是我们的 id，绝不平移
+    // ★ log_Tag 里存的是 `{标签ID}` 拼接串（见上面①），所以它**是外键、必须跟着平移**。
+    //   它是唯一一处「id 藏在字符串里」的地方 —— 漏掉它，导入不报错，但所有标签会指向
+    //   一堆不存在的标签ID（Z-Blog 直接判定为「没有标签」），静默丢数据。
+    log_Tag: (tagsOfPost.get(p.id) || []).map((id) => '{' + shiftId(off, id) + '}').join(''),
     log_Status: p.status === 'draft' ? 1 : 0,
     log_Type: p.type === 'page' ? 1 : 0,
     log_Alias: p.slug || '',
@@ -298,7 +353,7 @@ function buildZblog(src, prefix) {
   }));
 
   const category = src.categories.map((c) => ({
-    cate_ID: c.id,
+    cate_ID: shiftId(off, c.id),
     cate_Name: c.name || '',
     cate_Order: 0,
     cate_Type: 0,
@@ -307,7 +362,7 @@ function buildZblog(src, prefix) {
     cate_Group: '',
     cate_Intro: c.description || '',
     cate_RootID: 0,
-    cate_ParentID: c.parent_id || 0,
+    cate_ParentID: shiftId(off, c.parent_id),
     cate_CreateTime: unixOf(c.created_at),
     cate_PostTime: unixOf(c.created_at),
     cate_UpdateTime: unixOf(c.created_at),
@@ -316,7 +371,7 @@ function buildZblog(src, prefix) {
   }));
 
   const tag = src.tags.map((t) => ({
-    tag_ID: t.id,
+    tag_ID: shiftId(off, t.id),
     tag_Name: t.name || '',
     tag_Order: 0,
     tag_Type: 0,
@@ -332,12 +387,13 @@ function buildZblog(src, prefix) {
   }));
 
   const comment = src.comments.map((c) => ({
-    comm_ID: c.id,
-    comm_LogID: c.post_id,
+    comm_ID: shiftId(off, c.id),
+    comm_LogID: shiftId(off, c.post_id),
     comm_IsChecking: (c.status === 'pending' || c.status === 'trash') ? 1 : 0,
-    comm_RootID: rootCommentId(c, src.cmtById),
-    comm_ParentID: c.parent_id || 0,
-    comm_AuthorID: c.is_admin ? 1 : 0,
+    // 话题根评论（0 = 自己就是根）：must 走后一个参数，0 不许被平移
+    comm_RootID: shiftId(off, rootCommentId(c, src.cmtById)),
+    comm_ParentID: shiftId(off, c.parent_id),
+    comm_AuthorID: c.is_admin ? 1 : 0,   // ← 同上：目标站账号，不平移
     comm_Name: c.author || '',
     comm_Email: c.email || '',
     comm_HomePage: c.website || '',
@@ -371,7 +427,7 @@ function buildZblog(src, prefix) {
 //  ④ 友链表叫 **wp_links**（新版后台已经不提供界面，但表仍在官方 schema 里）。
 //     WordPress 是三个程序里唯一有原生友链表的，所以只有它写这块数据。
 //  ⑤ WordPress 官方只支持 MySQL / MariaDB，所以它的 allow 里只有 mysql。
-function buildWordpress(src, prefix) {
+function buildWordpress(src, prefix, off = 0) {
   const T = (n) => prefix + n;
   const guidBase = String(src.settingMap.get('site_url') || '').replace(/\/+$/, '');
   const openComments = src.settingMap.get('allow_comments') === '1' ? 'open' : 'closed';
@@ -389,9 +445,10 @@ function buildWordpress(src, prefix) {
   const postsOfTag = new Map();
   for (const r of src.post_tags) postsOfTag.set(r.tag_id, (postsOfTag.get(r.tag_id) || 0) + 1);
 
-  // ①：term_id / term_taxonomy_id 全局唯一，分类在前、标签在后
+  // ①：term_id / term_taxonomy_id 全局唯一，分类在前、标签在后。
+  // ★ 与 Typecho 的 mid 同一个道理：从 `off + 1` 起，off=0 时与原来完全一致。
   const tid = new Map();
-  let seq = 0;
+  let seq = off;
   for (const c of src.categories) tid.set('c' + c.id, ++seq);
   for (const t of src.tags) tid.set('t' + t.id, ++seq);
 
@@ -400,7 +457,8 @@ function buildWordpress(src, prefix) {
   for (const c of src.categories) {
     const id = tid.get('c' + c.id);
     terms.push({ term_id: id, name: c.name || '', slug: c.slug || '', term_group: 0 });
-    taxonomy.push({ term_taxonomy_id: id, term_id: id, taxonomy: 'category', description: c.description || '', parent: c.parent_id || 0, count: postsOfCat.get(c.id) || 0 });
+    // 父分类取的是**平移后的** term_id（原来直接写 parent_id 只是碰巧对，一平移就错位）
+    taxonomy.push({ term_taxonomy_id: id, term_id: id, taxonomy: 'category', description: c.description || '', parent: c.parent_id ? (tid.get('c' + c.parent_id) || 0) : 0, count: postsOfCat.get(c.id) || 0 });
   }
   for (const t of src.tags) {
     const id = tid.get('t' + t.id);
@@ -409,8 +467,8 @@ function buildWordpress(src, prefix) {
   }
 
   const posts = src.posts.map((p) => ({
-    ID: p.id,
-    post_author: 1,
+    ID: shiftId(off, p.id),
+    post_author: 1,                    // ← 目标站的 1 号用户，不平移
     post_date: localOf(p.created_at),
     post_date_gmt: gmtOf(p.created_at),
     post_content: p.content_html || '',   // WordPress 正文吃 HTML
@@ -429,7 +487,9 @@ function buildWordpress(src, prefix) {
     post_parent: 0,
     // guid 对 WP 只是个不透明的唯一串（内部链接另由 rewrite 规则算），
     // 所以这里用站点地址拼 ?p=<id>，与 WP 自己的默认固定链接形态一致。
-    guid: guidBase + '/?p=' + p.id,
+    // ★ guid 里的 id 必须跟着平移：它得指回**这份文件里真正写进去的那个 ID**，
+    //   否则 WP 会认为每篇文章的 guid 都没见过（重复导入时判定失效）。
+    guid: guidBase + '/?p=' + shiftId(off, p.id),
     menu_order: 0,
     post_type: p.type === 'page' ? 'page' : 'post',
     post_mime_type: '',
@@ -439,16 +499,16 @@ function buildWordpress(src, prefix) {
   const relationships = [];
   for (const p of src.posts) {
     const cm = tid.get('c' + p.category_id);
-    if (cm) relationships.push({ object_id: p.id, term_taxonomy_id: cm, term_order: 0 });
+    if (cm) relationships.push({ object_id: shiftId(off, p.id), term_taxonomy_id: cm, term_order: 0 });
     for (const t of (tagsOfPost.get(p.id) || [])) {
       const tm = tid.get('t' + t);
-      if (tm) relationships.push({ object_id: p.id, term_taxonomy_id: tm, term_order: 0 });
+      if (tm) relationships.push({ object_id: shiftId(off, p.id), term_taxonomy_id: tm, term_order: 0 });
     }
   }
 
   const comments = src.comments.map((c) => ({
-    comment_ID: c.id,
-    comment_post_ID: c.post_id,
+    comment_ID: shiftId(off, c.id),
+    comment_post_ID: shiftId(off, c.post_id),
     comment_author: c.author || '',
     comment_author_email: c.email || '',
     comment_author_url: c.website || '',
@@ -460,20 +520,20 @@ function buildWordpress(src, prefix) {
     comment_approved: oneOf(WP_CMT_STATUS, c.status, '0'),
     comment_agent: '',
     comment_type: 'comment',
-    comment_parent: c.parent_id || 0,
-    user_id: c.is_admin ? 1 : 0,
+    comment_parent: shiftId(off, c.parent_id),
+    user_id: c.is_admin ? 1 : 0,       // ← 目标站的 1 号用户，不平移
   }));
 
   // ④：只有 WordPress 有原生友链表
   const links = src.links.map((l) => ({
-    link_id: l.id,
+    link_id: shiftId(off, l.id),
     link_url: l.url || '',
     link_name: l.name || '',
     link_image: l.logo || '',
     link_target: '_blank',
     link_description: l.description || '',
     link_visible: l.status === 'approved' ? 'Y' : 'N',
-    link_owner: 1,
+    link_owner: 1,                     // ← 目标站的 1 号用户，不平移
     link_rating: 0,
     link_updated: localOf(l.updated_at || l.created_at),
     link_rel: '',
@@ -559,6 +619,23 @@ export const TARGETS = {
 
 export const TARGET_KEYS = Object.keys(TARGETS);
 
+// 每个目标程序里**自增主键**的列（内部表 key → 列名）。PG 形态的文件末尾要按它逐个补 setval。
+//    原理：PG 的序列（SERIAL / IDENTITY）**不会**因为 INSERT 显式写了 id 而前进，
+//    不补的话导完之后目标站自己在后台新建第一条内容就撞主键。
+//    SQLite 有 sqlite_sequence 会自动跟上、MySQL 的 AUTO_INCREMENT 在插入显式值时也会自动抬高
+//    ——**只有 PG 需要**（与全库导出那条线同一个道理，见 sql.js 的 setvalStatement）。
+//    ⚠️ 只列自增的：Typecho 的 relationships（复合主键）、Typecho options、WP options /
+//    term_relationships 都不是自增、没有序列，写了反而会在目标站上报错。
+//    ⚠️ 用 key 而不是表名查 —— 用户上传的建表脚本可能把表名换掉，key 才是稳定内部名。
+const SERIAL_PK = {
+  typecho: { contents: 'cid', metas: 'mid', comments: 'coid' },
+  zblog: { post: 'log_ID', category: 'cate_ID', tag: 'tag_ID', comment: 'comm_ID' },
+  wordpress: {
+    posts: 'ID', terms: 'term_id', term_taxonomy: 'term_taxonomy_id',
+    comments: 'comment_ID', links: 'link_id',
+  },
+};
+
 // 别名的归一：全项目只此一份判定（同 normalizeFmt 的约定）。
 const TARGET_ALIAS = {
   typecho: 'typecho',
@@ -592,7 +669,8 @@ export const targetCapability = () => TARGET_KEYS.map((k) => ({
  * @param {string} fmt      方言（sqlite / mysql / pg，接受别名）
  * @param {string} targetKey normalizeTarget() 归一后的目标程序 key
  * @param {string} nowText  导出时间文本
- * @param {object} opts     { prefix?: string, override?: [{name, cols}] }
+ * @param {object} opts     { prefix?: string, override?: [{name, cols}], mode?: string, offset?: number }
+ *                          mode: append（默认，只追加） | shift（ID 平移后追加） | wipe（先清空）
  * @returns {string} SQL 文本
  */
 export async function dumpTarget(db, fmt, targetKey, nowText = '', opts = {}) {
@@ -601,8 +679,14 @@ export async function dumpTarget(db, fmt, targetKey, nowText = '', opts = {}) {
   const f = fmt;                                   // 调用方已 normalizeFmt 过
   const q = (n) => quoteIdent(f, n);
   const prefix = sanitizePrefix(opts.prefix) || T.prefix;
+  // ★ 目标站已有的行怎么处理：三档互斥，默认 `append`（一条 DELETE 都不发、ID 也不动）。
+  //   认不出的值一律回落 append —— 落在「不动目标站数据」那一侧（同 wipe 那次的教训：
+  //   默认值即安全承诺）。
+  const mode = normalizeMode(opts.mode);
+  // ★ offset 只在 shift 档读；另外两档一律按 0（不平移），免得留下「以为平移了」的假象。
+  const offset = mode === 'shift' ? normalizeOffset(opts.offset) : 0;
   const src = await loadSource(db);
-  const built = T.build(src, prefix);
+  const built = T.build(src, prefix, offset);
 
   // 用上传的建表脚本覆盖「表名与列名」。只覆盖这两样，DDL 原文一律不输出。
   const warns = [];
@@ -635,6 +719,20 @@ export async function dumpTarget(db, fmt, targetKey, nowText = '', opts = {}) {
     ? ' WHERE ' + t.delFilter.map((f) => q(f.col) + ' IN (' + f.values.map((v) => literal(v)).join(', ') + ')').join(' AND ')
     : '');
 
+  // ★★ PG 独有的收尾：重设自增序列（2026-10-16 补的一处隐患）。
+  //    前面所有 INSERT 都把 id 显式写了进去，而 PG 的序列不会因此前进 —— 导完之后
+  //    目标站自己在后台新建第一条内容就会撞主键。这跟 wipe / shift / append 无关，
+  //    三档都有这个毛病，所以是**无条件**补（只看方言是不是 pg）。
+  //    ★ 值用 `SELECT MAX(pk) FROM 表` 在**导入时**现算，不是导出时写死：
+  //      append / shift 两档下目标站原有的行 id 可能比我们的更大，写死我们的最大值
+  //      会把序列往回拨 —— 导出时根本无从得知目标站的状态，只有目标站自己算得准。
+  //    ★ 两个不发的情形：主键列被上传的建表脚本过滤掉了、或这张表这次没有数据
+  //      —— 这两种情况下我们没往那个 id 列里写过任何数字，序列保持原样才是对的。
+  const serialPk = SERIAL_PK[targetKey] || {};
+  const seqs = f === 'pg'
+    ? emitted.filter((t) => serialPk[t.key] && t.cols.includes(serialPk[t.key]) && t.rows.length)
+    : [];
+
   const head = [];
   head.push('-- 云尚博客 · 迁移到 ' + T.label + '（' + (f === 'pg' ? 'PostgreSQL' : f === 'mysql' ? 'MySQL' : 'SQLite') + '）');
   head.push('-- 导出时间：' + (nowText || ''));
@@ -642,12 +740,35 @@ export async function dumpTarget(db, fmt, targetKey, nowText = '', opts = {}) {
   head.push('--');
   head.push('-- ⚠️ 这是**只数据**文件，不含建表语句。正确用法：');
   head.push('--    ① 先用 ' + T.label + ' 自己的安装程序把站装好（它会写系统配置、建管理员）；');
-  head.push('--    ② 再用这份文件导入，把站上的内容整批替换进去。');
+  head.push('--    ② 再用这份文件导入。');
   head.push('--    ' + T.label + ' 必须靠它自己的安装程序才能启动，光灌数据是起不来的。');
   head.push('--');
-  head.push('-- ⚠️ 每一段 INSERT 之前都有 DELETE，会**清空目标站对应表里现有的行**（内容、评论等会被替换）。');
-  head.push('--    站点配置只按名字定点替换自己写的那几个键，不会清空整张配置表。');
+  // ★ 三档的头部口径必须**各不相同**，而且要和真正生成的语句对得上：
+  //   写死一句的话，用户就会按「没清空」的样子去读一份带着 DELETE 的文件（或反过来）。
+  //   这三段文案与后台 #t-note 是同一套说辞，改一处必须改另一处。
+  if (mode === 'wipe') {
+    head.push('-- ⚠️ 处理方式：**先清空目标站对应表** —— 每一段 INSERT 之前都有 DELETE。');
+    head.push('--    目标站对应表里现有的行会被清掉（内容、评论等整批替换）。');
+    head.push('--    站点配置只按名字定点替换自己写的那几个键，不会清空整张配置表。');
+  } else if (mode === 'shift') {
+    head.push('-- ⚠️ 处理方式：**ID 平移后追加** —— 不清空、也不覆盖任何东西。');
+    head.push('--    我们内容的 ID 整体加了 ' + offset + '：本站 1 号内容在这份文件里是 ' + (1 + offset) + ' 号。');
+    head.push('--    分类与标签、评论、以及文章与分类/标签的关联（含 Z-Blog 的 {标签ID} 串）都跟着一起平移，');
+    head.push('--    指向**账号**的列（作者、评论人）保持 1 / 0 不动 —— 它指的是目标站装出来的那个管理员。');
+    head.push('--    目标站原有的行**一行都不动**，所以不会撞主键、导入也不会中途报错。');
+    head.push('--    （目标站后台里看到的是新编号。若目标站是刚装好的空站，用默认的「只追加」更好，');
+    head.push('--      平移会白白留下一段空号。）');
+  } else {
+    head.push('-- ⚠️ 处理方式：**只追加** —— 不含 DELETE，ID 也不动，目标站里已有的行一律留着。');
+    head.push('--    所以导进一个「已经装好、并且已经有内容」的站时，撞上已有的主键（默认分类、示例文章、');
+    head.push('--    同名配置键……）就会在导入中途报错停下。要避免请重新导一份，选「用新 ID 追加」或「先清空」。');
+  }
   head.push('--');
+  if (seqs.length) {
+    head.push('-- ✔ 文件末尾按表补了 setval 重设自增序列（PG 独有的一步）：PG 的序列不会因为上面');
+    head.push('--    显式插入了 id 而前进，不补的话导入后目标站自己新建的第一条内容就会撞主键。');
+    head.push('--    它取的是**导入时**该表的最大 id，所以三档都适用（只追加时目标站原有更大的 id 也算进去）。');
+  }
   head.push('-- ✔ 已映射：' + T.notes.join('\n--            '));
   head.push('-- ✘ 未迁移：' + T.skip.join('、'));
   head.push('--');
@@ -677,8 +798,22 @@ export async function dumpTarget(db, fmt, targetKey, nowText = '', opts = {}) {
   body.push('');
 
   for (const t of emitted) {
-    body.push('DELETE FROM ' + q(t.name) + whereOf(t) + ';');
+    // ★ 只有 wipe 档才发 DELETE。append 与 shift 都不许碰目标站已经有的行 ——
+    //   尤其 shift：它的全部意义就是「一行不删也能导进去」，这里多发一条就白做了。
+    if (mode === 'wipe') body.push('DELETE FROM ' + q(t.name) + whereOf(t) + ';');
     for (const st of insertStatements(t.name, t.cols, t.rows, f)) body.push(st);
+    body.push('');
+  }
+
+  // ★ PG 独有：把每张自增表的序列拨到「导入时该表的最大 id」。
+  //   排在数据之后、COMMIT 之前（与全库导出那条线同一个位置）。setval 本身是非事务的
+  //   —— 事务回滚不会撤销它，但它取的值永远是当时真实的最大 id，所以重复执行、
+  //   以及导入中途失败都不会把序列弄坏。
+  //   `guard` 见 sql.js：目标程序自己建的表万一主键没序列（改了 UUID / 复合主键），
+  //   加了 guard 之后是「这条不执行」，而不是 setval(NULL::regclass) 把导入卡死在这一行。
+  if (seqs.length) {
+    body.push('-- 重设自增序列（PG 独有）：不补的话，导入后目标站新建的第一条内容会撞主键。');
+    for (const s of seqs) body.push(setvalStatement(s.name, serialPk[s.key], { guard: true }));
     body.push('');
   }
 

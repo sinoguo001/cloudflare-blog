@@ -1007,7 +1007,7 @@ async function api(ctx, url, seg, method) {
     // GET /api/backup/sql?fmt=sqlite|mysql|pg —— 导出整库为可导入的 .sql（Ver 0.6 ⑦ / ⑧）
     // ⚠️ 必须放在下面那条「GET /:name 取 R2 里的备份」之前，否则 `sql` 会被当成备份文件名去 R2 查，永远 404。
     // 只下载、不落 R2（Wei 的选择）：不占空间，也不打扰上面那套「最多 20 份」的轮转。
-    // GET /api/backup/sql?fmt=sqlite|mysql|pg[&to=typecho|zblog|wordpress][&prefix=xxx]
+    // GET /api/backup/sql?fmt=sqlite|mysql|pg[&to=typecho|zblog|wordpress][&prefix=xxx][&mode=append|shift|wipe][&offset=100000]
     //   · 不带 to（或 to=default）→ 整库导出（Ver 0.6 ⑦ / ⑧ 第一步）
     //   · 带 to → 目标程序迁移文件（只数据；表名/列名与字段映射全在 _lib/targets.js）
     if (method === 'GET' && seg.length === 2 && seg[1] === 'sql') {
@@ -1030,7 +1030,14 @@ async function api(ctx, url, seg, method) {
       }
       const prefix = targets.sanitizePrefix(url.searchParams.get('prefix')) || prog.prefix;
       const override = await readTargetSchema(env, toKey, prefix);
-      const text = await targets.dumpTarget(dbx, fmt, toKey, stamp, { prefix, override });
+      // ★ 目标站已经有的行怎么处理：&mode=append|shift|wipe 三档互斥，**不传 = append 只追加**
+      //   （2026-10-16）。默认值一律落在「不动目标站数据」这一侧 —— 这跟 ⑨ 的 DELETE 是同一条
+      //   教训：清空 / 覆盖类开关一旦默认成真，一次误点就不可逆地清掉别人的站。
+      //   &offset 只在 shift 档有意义（我们的内容整体换一段新编号追加，目标站一行不动）。
+      //   两个参数的归一与兜底都在 _lib/targets.js 里，**路由不自己判**（全项目只此一份）。
+      const mode = url.searchParams.get('mode');
+      const offset = url.searchParams.get('offset');
+      const text = await targets.dumpTarget(dbx, fmt, toKey, stamp, { prefix, override, mode, offset });
       return sqlFile(text, 'blog-' + label + '-' + toKey + '-' + stamp.replace(/[-: ]/g, '') + '.sql');
     }
     // /api/backup/schema?to=typecho|zblog|wordpress —— 目标程序建表脚本的上传覆盖
