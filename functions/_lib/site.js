@@ -455,6 +455,31 @@ img{max-width:100%}
 .link-body{display:flex;flex-direction:column;min-width:0}
 .link-body b{font-size:15px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .link-body small{color:var(--muted);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 友链跳转提醒页（Ver 0.6 ⑨）：友链不再直接跳外部站，中间先说清「去哪」再放行。
+   ★ .jump-logo 复用 .link-logo 的方块底，必须排在其**之后**（同特异性下后者赢）。 */
+.jump{max-width:560px;margin:0 auto}
+.jump-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px 24px;text-align:center}
+.jump-logo{width:56px;height:56px;border-radius:14px;font-size:22px;margin:0 auto 12px}
+.jump-card h1{font-size:20px;margin:0 0 6px}
+.jump-sub{color:var(--muted);margin:0 0 16px;font-size:13.5px}
+.jump-ring{position:relative;width:78px;height:78px;margin:0 auto 14px}
+.jump-ring svg{width:100%;height:100%;transform:rotate(-90deg)}
+.jump-ring circle{fill:none;stroke-width:5;stroke-linecap:round}
+.jr-bg{stroke:var(--line)}
+/* 圆环随倒计时清空：dasharray 写成整圈周长（2π×27≈169.6），
+   动画时长由渲染时按秒数写进 style，别在 CSS 里写死 */
+.jr-fg{stroke:var(--accent);stroke-dasharray:169.6;stroke-dashoffset:0;animation:jump-cd linear forwards}
+@keyframes jump-cd{to{stroke-dashoffset:169.6}}
+.jump-num{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:27px;font-weight:800;color:var(--accent)}
+.jump-site{margin:0 0 4px;font-size:15.5px}
+.jump-url{color:var(--muted);font-size:12.5px;word-break:break-all}
+.jump-go{display:inline-block;margin-top:16px;padding:11px 28px;border-radius:10px;background:var(--accent);color:var(--on-accent);font-weight:700;font-size:15px}
+.jump-go:hover{opacity:.9;text-decoration:none;color:var(--on-accent)}
+.jump-note{margin:22px 0 0;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--tint);text-align:left;color:var(--text-soft);font-size:13.5px;line-height:1.8}
+.jump-note h2{font-size:14px;margin:0 0 6px}
+.jump-note p{margin:0 0 6px}
+.jump-note ul{margin:0;padding-left:18px}
+.jump-note b{color:var(--text)}
 /* 申请表单：前台独立样式。注意后台的 .inp / .txa 样式不会加载到前台，
    这里不能用那套 class，否则输入框会退回浏览器默认样式（此前就是这么丑的） */
 .link-form{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px 24px 18px;margin-top:10px;box-shadow:0 1px 3px rgba(20,30,55,.03)}
@@ -662,6 +687,7 @@ export function layout(s, o) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${o.title ? esc(o.title) + ' · ' + esc(title) : esc(title)}</title>
 <meta name="description" content="${esc(desc)}">
+${o.robots ? `<meta name="robots" content="${esc(o.robots)}">` : ''}
 <link rel="icon" href="${esc(faviconHref(s))}"${faviconMime(faviconHref(s)) ? ` type="${faviconMime(faviconHref(s))}"` : ''}>
 <link rel="alternate" type="application/rss+xml" title="${esc(title)}" href="/rss.xml">
 <style>${THEME_VARS}:root{${accentVars(accent)}}${FRONT_CSS}${DARK_VARS}${GRAY_CSS}${side ? SIDEBAR_CSS : ''}${auPanel ? audio.AUDIO_CSS : ''}${codeThemeCss(s.get('code_theme'))}</style>
@@ -1155,11 +1181,85 @@ function linkCard(l) {
   const logo = l.logo
     ? `<img src="${esc(l.logo)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
     : esc(ch);
-  return `<a class="link-card" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">
+  // ★ 卡片不再直接指向对方站点，改走本站的跳转提醒页（Ver 0.6 ⑨）：
+  //   友链是别人家的站，出站前先说清「你要去哪、出了本站不负责」。
+  //   地址里只放**本站的 links.id**，对方网址由 /jump 路由现查 —— 这样这里
+  //   就没有任何可由访客控制的跳转目标（开放重定向）。
+  return `<a class="link-card" href="/jump/${esc(String(l.id == null ? '' : l.id))}" target="_blank" rel="noopener noreferrer">
     <span class="link-logo">${logo}</span>
     <span class="link-body"><b>${esc(l.name)}</b>
       <small>${esc(l.description || l.url)}</small></span>
   </a>`;
+}
+
+// ---------- 友链跳转提醒页（Ver 0.6 ⑨） ----------
+// Wei：「增加一个跳转提醒页面，倒计时 5 秒后自动跳转到链接的网站，页面上有免责说明」。
+// 页面自带的这段脚本只做两件事：数字每秒减一、到点 location.replace 到目标。
+// ★ 目标地址从**「立即前往」按钮的 href** 上读（getAttribute 拿的是转义后的原值），
+//   不在 JS 里再拼一次 —— 省掉一层 JS 字符串转义，少一个能出错的地方。
+export const JUMP_SEC = 5;
+export function renderJump(s, { link, seconds = JUMP_SEC } = {}) {
+  const l = link || {};
+  const url = String(l.url || '');
+  const name = String(l.name || '').trim() || '该站点';
+  const sec = Math.max(1, parseInt(seconds, 10) || JUMP_SEC);
+  const ch = (name[0] || '?').toUpperCase();
+  const logo = l.logo
+    ? `<img src="${esc(l.logo)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+    : esc(ch);
+  // 只把域名单独拎出来显一眼，长地址仍然完整给出（可复制、可核对）
+  let host = url;
+  try { host = new URL(url).host; } catch (e) { host = url; }
+  return layout(s, {
+    title: '正在离开本站', active: 'links',
+    desc: `即将离开本站，前往 ${name}`,
+    // 中转页不该被搜索引擎收录（否则收录的是这一页，而不是对方的文章）
+    robots: 'noindex,follow',
+    content: `<section class="article jump">
+      <div class="jump-card">
+        <span class="link-logo jump-logo">${logo}</span>
+        <h1>即将离开本站</h1>
+        <p class="jump-sub">正在前往 <b>${esc(name)}</b>，<span id="jump-sec">${sec}</span> 秒后自动跳转</p>
+        <div class="jump-ring" aria-hidden="true">
+          <svg viewBox="0 0 64 64">
+            <circle class="jr-bg" cx="32" cy="32" r="27"></circle>
+            <circle class="jr-fg" cx="32" cy="32" r="27" style="animation-duration:${sec}s"></circle>
+          </svg>
+          <span class="jump-num" id="jump-num">${sec}</span>
+        </div>
+        <p class="jump-site">目标站点：<b>${esc(name)}</b></p>
+        <p class="jump-url">${esc(host)}<br>${esc(url)}</p>
+        ${l.description ? `<p class="jump-sub" style="margin:10px 0 0">${esc(l.description)}</p>` : ''}
+        <a class="jump-go" id="jump-go" href="${esc(url)}" rel="noopener noreferrer">立即前往 →</a>
+        <noscript><p class="jump-sub" style="margin:12px 0 0">自动跳转需要浏览器启用 JavaScript，请点上面的按钮前往。</p></noscript>
+
+        <div class="jump-note">
+          <h2>免责说明</h2>
+          <p>本站友情链接仅供互相交流，<b>不代表本站认同对方站点的观点或内容</b>。</p>
+          <ul>
+            <li>您即将访问的是<b>第三方网站</b>，其内容、可用性与安全性均由对方负责，本站无法控制、也不作任何担保。</li>
+            <li>跳转后请注意保护个人隐私与账号安全，谨防钓鱼与诈骗。</li>
+            <li>若该链接已失效或指向不当内容，欢迎在友链页留言告知，本站会尽快处理。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+    <script>(function(){
+  var go = document.getElementById('jump-go'), num = document.getElementById('jump-num'),
+      txt = document.getElementById('jump-sec');
+  var left = ${sec};
+  var timer = setInterval(function(){
+    left--;
+    var show = left > 0 ? left : 0;
+    if (num) num.textContent = show;
+    if (txt) txt.textContent = show;   // 文案里那句「N 秒后自动跳转」跟着一起走，免得两处数字对不上
+    if (left <= 0) clearInterval(timer);
+  }, 1000);
+  setTimeout(function(){
+    if (go) location.replace(go.getAttribute('href'));
+  }, ${sec * 1000});
+})();</script>`,
+  });
 }
 export function renderLinks(s, { links = [], captcha = true } = {}) {
   const grid = links.length

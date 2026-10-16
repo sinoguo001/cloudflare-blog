@@ -26,6 +26,9 @@ import * as ipgeo from './_lib/ipgeo.js';
 import * as sqldump from './_lib/sql.js';
 // 目标程序导出（Ver 0.6 ⑧ 第二步）：Typecho / Z-Blog / WordPress 的表结构 + 字段映射
 import * as targets from './_lib/targets.js';
+// 导出静态站点（Ver 0.6 ⑧）：Markdown（Hexo 惯例）+ 零依赖 ZIP 打包
+import * as hexo from './_lib/hexo.js';
+import * as zip from './_lib/zip.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
@@ -37,6 +40,18 @@ const sqlFile = (text, fn) => new Response(text, {
     'content-type': 'application/sql; charset=utf-8',
     'content-disposition': `attachment; filename="${fn}"`,
     // 导出的是「此刻」的库，任何缓存都只会给出过期的数据
+    'cache-control': 'no-store',
+  },
+});
+
+// 静态站点导出件的下载响应。
+// ⚠️ 这里必须传**二进制**（Uint8Array / ArrayBuffer），不能像上面那份 .sql 一样直接给字符串：
+//    Response 会把字符串按 UTF-8 编码，zip 里的 PNG、JPEG 当场就烂了。
+const zipFile = (body, fn) => new Response(body, {
+  headers: {
+    'content-type': 'application/zip',
+    'content-disposition': `attachment; filename="${fn}"`,
+    // 与 .sql 同理：导出的是此刻的内容，任何缓存都只会给出过期数据
     'cache-control': 'no-store',
   },
 });
@@ -259,6 +274,10 @@ const html = (str, status = 200) =>
 function sharedPath(seg) {
   // 搜索结果随 query 变化，且会把 query 铺进缓存键，不进缓存
   if ((seg[0] || '') === 'search') return false;
+  // 友链跳转提醒页不进缓存（Ver 0.6 ⑨）：友链被撤下、改地址后，缓存里的旧页面
+  // 还会把人往旧地址送（最长 10 分钟才后台刷新、条目留 24 小时）。这页只有一次
+  // 单行查询，省这点开销不值当。
+  if ((seg[0] || '') === 'jump') return false;
   // 其余前台路径（首页 / page / category|categories / tag|tags / archive / links /
   // friends / p 独立页 / 文章永久链接）输出对所有人一致，可缓存
   return true;
@@ -422,6 +441,23 @@ async function front(ctx, url, seg, method, path) {
     // 建表失败（极端情况）也不能让页面 500，退化成空列表
     const links = await db.listLinks(env.DB, { status: 'approved' }).catch(() => []);
     return html(site.renderLinks(s, { links, captcha: s.get('captcha') !== '0' }));
+  }
+
+  // 友链跳转提醒页 /jump/<id>（Ver 0.6 ⑨）：说明去哪 + 免责说明，5 秒后自动跳。
+  // ★★ 目标地址只从 links 表按 id 现查，**绝不接受 URL 参数** —— 否则这个路由就成了
+  //    开放重定向：任何人都能拿本站域名当跳板去钓鱼（`/jump?url=诈骗站`）。
+  //    因此卡片里挂的是 links.id，查不到 / 未通过 / 已撤下的友链一律 404，与前台
+  //    「只展示已通过」的口径完全一致。
+  // ★ 顺带把伪协议兜底挡住：后台手填或历史数据里若有 javascript: 之类的地址，
+  //    它会被原样写进跳转页的 <a href> 与 location.replace。
+  if (seg[0] === 'jump' && seg.length === 2 && /^\d+$/.test(seg[1])) {
+    const lk = await db.getLink(env.DB, parseInt(seg[1], 10)).catch(() => null);
+    const okUrl = /^https?:\/\/[^\s]+$/i.test(String((lk && lk.url) || ''));
+    if (!lk || lk.status !== 'approved' || !okUrl) return html(site.render404(s), 404);
+    // 中转页只有 5 秒寿命，侧边栏（热门文章 / 最新评论 / 搜索框）在这儿纯属干扰，
+    // 顺手关掉：省一次侧边栏子查询，也让页面只有「去哪 + 免责 + 立即前往」。
+    s.set('_sidebar_html', '');
+    return html(site.renderJump(s, { link: lk }));
   }
 
   // 友圈 /friends（Ver 0.4 ⑫）：把订阅的别人家的文章按发布时间倒序展示
@@ -1037,6 +1073,32 @@ async function api(ctx, url, seg, method) {
         return json({ ok: true, target: toKey, builtin: true });
       }
       return err('方法不支持', 405);
+    }
+    // GET /api/backup/md[?media=1] —— 导出为静态站点用的 Markdown 压缩包（Ver 0.6 ⑧）
+    // 产物按 Hexo 惯例组织：_posts/YYYY-MM-DD-别名.md + pages/ + _comments.json（+ media/）。
+    // ⚠️ 与上面 sql / schema 两条同一条铁律：**必须排在下面「GET /:name 取 R2 备份」之前**，
+    //    否则 `md` 会被当成备份文件名去 R2 查，永远 404。
+    if (method === 'GET' && seg.length === 2 && seg[1] === 'md') {
+      const withMedia = url.searchParams.get('media') === '1';
+      const stamp = bnNow();
+      // 不勾选打包图片时，正文里的站内路径要改写成绝对地址 —— 得先知道站点自己的域名。
+      // 设置里配了 site_url 就用它（自定义域），没配就回落到本次请求的域名。
+      const sm = await db.settingsMap(dbx);
+      const base = String((sm && sm.get && sm.get('site_url')) || '').trim() || url.origin;
+      let out;
+      try {
+        out = await hexo.dumpHexo(dbx, {
+          origin: base.replace(/\/+$/, ''),
+          withMedia,
+          r2: env.BLOG,
+          nowText: stamp,
+        });
+      } catch (e) {
+        // 「图片太多 / 合计太大 / 读不到 R2」这些都得原样告诉用户怎么办，
+        // 吞成一个 500 只会让人以为站点坏了
+        return err(e.message || '导出失败', 400);
+      }
+      return zipFile(await zip.makeZip(out.files), 'blog-hexo-' + stamp.replace(/[-: ]/g, '') + '.zip');
     }
     if (method === 'POST' && seg.length === 1) {
       const data = await db.dumpAll(dbx);

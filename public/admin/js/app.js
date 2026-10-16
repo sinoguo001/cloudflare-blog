@@ -1843,6 +1843,14 @@ async function viewBackup() {
     <button class="btn g" id="b-pg">⬇ 导出 PostgreSQL（.sql）</button>
     <span class="hint" style="margin-left:8px" id="b-hint">只下载到本地，不占 R2、不进上面那份 20 份的轮转。</span>
   </div>
+  <div class="card">
+    <div class="sec-title">导出静态站点 <small>打包成 Hexo 风格的 Markdown，可搬到任意静态博客</small></div>
+    <p class="hint" style="margin-top:0">把已发布的文章导成 <code>_posts/年-月-日-别名.md</code>，YAML front matter 已按 Hexo 惯例写好（标题、时间、分类、标签、摘要、封面）；独立页面导到 <code>pages/</code>，已过审评论导成 <code>_comments.json</code>，包根还有一份 <code>README.md</code> 说明怎么放进 Hexo / Hugo / Astro。正文本来就是 Markdown 原生存的，不做任何转换。</p>
+    <p class="hint">不导出：草稿、加密文章（导出去就失去密码保护了）、未过审与回收站里的评论。</p>
+    <div class="field"><label class="chk-line"><input type="checkbox" id="md-media"> 连同图片一起打包（正文与封面用到的图片放进包内 <code>media/</code>，适合整站搬到别处；图片多时包会很大，单次上限 30MB）</label></div>
+    <button class="btn p" id="b-md">⬇ 导出 Markdown 压缩包（.zip）</button>
+    <span class="hint" style="margin-left:8px">不勾选时，正文里的图片会改写成线上绝对地址（直接指向本站），这样包最小。</span>
+  </div>
   <div class="card"><div class="sec-title">R2 中的备份</div><div id="b-list"><div class="loading">加载中…</div></div></div>`);
 
   const listBox = view().querySelector('#b-list');
@@ -2052,6 +2060,35 @@ async function viewBackup() {
   view().querySelector('#b-sqlite').addEventListener('click', (ev) => dlSql('sqlite', ev.currentTarget));
   view().querySelector('#b-mysql').addEventListener('click', (ev) => dlSql('mysql', ev.currentTarget));
   view().querySelector('#b-pg').addEventListener('click', (ev) => dlSql('pg', ev.currentTarget));
+
+  // 导出静态站点（Ver 0.6 ⑧）。和上面那份 .sql 一样走 fetch + blob：
+  // 后端「图片太多 / 合计太大」那条 400 得能把文案弹出来，而不是甩一页 JSON 给用户。
+  const dlMd = async (btn) => {
+    const label = btn.textContent;
+    const withMedia = view().querySelector('#md-media').checked;
+    btn.disabled = true;
+    btn.textContent = '正在打包…';
+    try {
+      const res = await fetch('/api/backup/md' + (withMedia ? '?media=1' : ''), { credentials: 'same-origin' });
+      if (!res.ok) {
+        let msg = '导出失败（HTTP ' + res.status + '）';
+        try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) { /* 不是 JSON 就用默认文案 */ }
+        throw new Error(msg);
+      }
+      const cd = res.headers.get('content-disposition') || '';
+      const name = (/filename="([^"]+)"/.exec(cd) || [])[1] || 'blog-hexo.zip';
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast('已导出：' + name + '（' + fmtSize(blob.size) + '）');
+    } catch (e) { toast(e.message, 'bad'); }
+    btn.textContent = label;
+    btn.disabled = false;
+  };
+  view().querySelector('#b-md').addEventListener('click', (ev) => dlMd(ev.currentTarget));
   load();
 }
 

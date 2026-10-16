@@ -77,7 +77,10 @@ const SRC = [
   ['links', 'SELECT * FROM `links` ORDER BY sort, id'],
 ];
 
-async function loadSource(db) {
+// 取全站数据。迁移到别的博客程序（本文件）与导出静态站点（hexo.js）共用这一份 ——
+// 谁也别再手抄一遍 SELECT 列表，漏一张表就是静默丢数据。
+// （导出 .sql 那条线不走这里：它要的是 sqlite_master 的 DDL 原文，见 sql.js。）
+export async function loadSource(db) {
   const all = async (sql) => {
     try { return ((await db.prepare(sql).all()).results) || []; } catch (e) { return []; }
   };
