@@ -30,6 +30,8 @@ import * as targets from './_lib/targets.js';
 import * as hexo from './_lib/hexo.js';
 import * as jump from './_lib/jump.js';
 import * as zip from './_lib/zip.js';
+// 数据导入（Ver 0.7 ①）：只负责白名单与写库，SQL 解析在浏览器端做（理由见文件头注释）
+import * as importdb from './_lib/importdb.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
@@ -1052,6 +1054,39 @@ async function api(ctx, url, seg, method) {
     const r = await resolveEmbed(b.url);
     if (!r.ok) return err(r.error || '解析失败', 400);
     return json(r);
+  }
+
+  // --- 数据导入（Ver 0.7 ①）---
+  // 流程：GET /meta 拿本站现状（各表最大 id 与已有 slug）→ 浏览器解析 .sql 并算好
+  // 重编号 → POST /apply 分批写入 → 出错时 POST /undo 按 id 区间回滚。
+  // 解析为什么不在服务端：Workers 免费版单请求 CPU 约 10ms，几 MB 的 SQL 逐字符
+  // 扫描必然超时；浏览器解析完只回传规整后的行，服务端的工作量与文件大小无关。
+  if (seg[0] === 'import') {
+    if (!(await authUser())) return err('未登录', 401);
+    try {
+      if (method === 'GET' && seg[1] === 'meta') {
+        return json(await importdb.importMeta(dbx));
+      }
+      if (method === 'POST' && seg[1] === 'apply') {
+        const b = (await readJson(request)) || {};
+        const table = String(b.table || '');
+        const rows = Array.isArray(b.rows) ? b.rows : [];
+        return json({ ok: true, ...(await importdb.insertBatch(dbx, table, rows)) });
+      }
+      if (method === 'POST' && seg[1] === 'undo') {
+        const b = (await readJson(request)) || {};
+        return json({ ok: true, ...(await importdb.undoImport(dbx, b.ranges || {})) });
+      }
+      if (method === 'POST' && seg[1] === 'done') {
+        // 新内容落库后把首页与列表页的缓存清掉；没配 purge 就等 10 分钟新鲜期自然过期
+        clearPaths(['/', '/page/1']);
+        return json({ ok: true });
+      }
+    } catch (e) {
+      if (e instanceof importdb.ImportError) return err(e.message, e.status);
+      throw e;
+    }
+    return err('未找到', 404);
   }
 
   // --- 备份（R2） ---

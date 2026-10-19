@@ -5,6 +5,18 @@ import { API } from './api.js';
 import { esc, el, toast, dialog, confirmDanger, fmtSize, fmtTime, busy } from './ui.js';
 import { Editor } from './editor.js';
 import { dashboardHtml, bindDashboard } from './dashboard.js';
+// 数据导入（Ver 0.7 ①）：SQL 解析与重编号都在浏览器里做。
+// 服务端只接收规整后的行 —— Workers 免费版单请求 CPU 只有约 10ms，
+// 几 MB 的 .sql 交给服务端逐字符扫会直接 1102。
+import { readDump, DIALECT_LABEL } from '/js/sqlparse.js';
+import { planImport } from '/js/importplan.js';
+// 静态博客导入（Ver 0.7 ②）：压缩包在浏览器里解开，图片逐张传 R2。
+// MAX_IMAGE_BYTES 只用来说文案里的数字 —— 真正的拦截在解包层，这里硬编码会和那边走岔。
+import { unpack, MAX_IMAGE_BYTES, MAX_ENTRIES_ATTACH, MAX_TOTAL_ATTACH, isMediaPath } from '/js/unpack.js';
+import { planMarkdown, applyMedia } from '/js/mdplan.js';
+// 附件导入（Ver 0.7 ③）：SQL 里只有附件的台账，文件得另外给一个 uploads 压缩包；
+// 按「uploads 之后的相对路径」配对，与源站域名无关。
+import { planAttach, applyAttach } from '/js/attach.js';
 
 const app = document.getElementById('app');
 let state = { installed: true, authed: false, username: '' };
@@ -1856,6 +1868,25 @@ async function viewBackup() {
     <span class="hint" style="margin-left:8px" id="b-hint">只下载到本地，不占 R2、不进上面那份 20 份的轮转。</span>
   </div>
   <div class="card">
+    <div class="sec-title">导入数据 <small>三家程序的 .sql + 附件包，或静态博客的 Markdown 压缩包</small></div>
+    <p class="hint" style="margin-top:0">三家程序的 <code>.sql</code> 都能直接拖进来，SQLite / MySQL / PostgreSQL 三种写法<b>自动识别</b>，不用先告诉我们这是哪一家的数据。导入<b>文章、独立页面、分类、标签、评论</b>；站点设置、后台账号、邮件授权码一律不导（设置带过来会把本站的站点名与密钥冲掉）。</p>
+    <p class="hint">附件（图片 / 音频 / 视频）的<b>文件本体不在 .sql 里</b>：扫完会提示有多少处地址指向原站，再把 <code>wp-content/uploads</code>（Typecho 是 <code>usr/uploads</code>，Z-Blog 是 <code>zb_users/upload</code>）压成 zip 拖进来，就会按路径配对、逐张传进 R2，并把正文里的地址换成本站。两个文件可以一起拖，也可以先扫 SQL 再补包。</p>
+    <p class="hint">静态博客的压缩包（<code>.zip</code> / <code>.tar</code> / <code>.tar.gz</code> / <code>.tgz</code>）或单个 <code>.md</code> 也直接拖：认 Hexo / Hugo / Jekyll / Astro 的目录与 front matter，标题、日期、分类层级、标签、草稿状态、摘要都按原样搬；包里带图片的可以一起上传到 R2。7z / rar 请先转成 zip。</p>
+    <p class="hint" style="margin-bottom:12px">⚠️ <b>主键不会冲突</b>：所有内容从本站现有 id 之后重新编号，分类、标签、评论的引用关系跟着一起改，你现在的内容<b>一行都不会被覆盖</b>。所以「导入」永远是追加，不是替换。</p>
+    <div id="im-drop" style="border:1.5px dashed #cbd5e1;border-radius:10px;padding:20px;text-align:center;color:#64748b;cursor:pointer;background:#fafbfc">
+      <div style="font-size:20px;line-height:1">⬆</div>
+      <div style="margin-top:6px">把 <code>.sql</code>、附件包或 Markdown 压缩包拖到这里，或 <b style="color:#2563eb">点一下选择文件</b></div>
+      <div class="hint" id="im-name" style="margin-top:4px"></div>
+    </div>
+    <input type="file" id="im-file" multiple accept=".sql,.txt,.md,.markdown,.zip,.tar,.gz,.tgz,.png,.jpg,.jpeg,.gif,.webp,.avif,.bmp,.mp4,.webm,.mov,.mp3,.m4a,.wav,.flac,.ogg,text/plain,application/zip,application/gzip,application/x-tar" hidden>
+    <div id="im-report" hidden style="margin-top:14px"></div>
+    <div id="im-actions" hidden style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn p" id="im-run">开始导入</button>
+      <button class="btn g" id="im-cancel">取消</button>
+      <span class="hint" id="im-progress" style="margin:0"></span>
+    </div>
+  </div>
+  <div class="card">
     <div class="sec-title">导出静态站点 <small>打包成 Hexo 风格的 Markdown，可搬到任意静态博客</small></div>
     <p class="hint" style="margin-top:0">把已发布的文章导成 <code>_posts/年-月-日-别名.md</code>，YAML front matter 已按 Hexo 惯例写好（标题、时间、分类、标签、摘要、封面）；独立页面导到 <code>pages/</code>，已过审评论导成 <code>_comments.json</code>，包根还有一份 <code>README.md</code> 说明怎么放进 Hexo / Hugo / Astro。正文本来就是 Markdown 原生存的，不做任何转换。</p>
     <p class="hint">不导出：草稿、加密文章（导出去就失去密码保护了）、未过审与回收站里的评论。</p>
@@ -2148,7 +2179,484 @@ async function viewBackup() {
     btn.disabled = false;
   };
   view().querySelector('#b-md').addEventListener('click', (ev) => dlMd(ev.currentTarget));
+  bindImport();
   load();
+}
+
+// ================= 数据导入（Ver 0.7 ①）=================
+// 解析在浏览器：File.text() → readDump() → planImport()，几 MB 的文件也就几百毫秒，
+// 且不占 Workers 的 CPU。服务端只做白名单校验与分批写库。
+async function bindImport() {
+  const drop = view().querySelector('#im-drop');
+  const fileInput = view().querySelector('#im-file');
+  const nameBox = view().querySelector('#im-name');
+  const reportBox = view().querySelector('#im-report');
+  const actions = view().querySelector('#im-actions');
+  const runBtn = view().querySelector('#im-run');
+  const cancelBtn = view().querySelector('#im-cancel');
+  const prog = view().querySelector('#im-progress');
+
+  const LIMIT_MB = 50;
+  const BATCH = 100;
+  let pending = null;
+  let running = false;
+  let attachMode = false;   // 文件选择框这次的用途：false=主文件，true=补附件包
+
+  const reset = () => {
+    pending = null;
+    attachMode = false;
+    reportBox.hidden = true;
+    reportBox.innerHTML = '';
+    actions.hidden = true;
+    prog.textContent = '';
+    nameBox.textContent = '';
+    fileInput.value = '';
+    runBtn.disabled = false;
+  };
+
+  const nowText = () => {
+    const d = new Date(Date.now() + 8 * 3600e3);
+    return d.toISOString().slice(0, 19).replace('T', ' ');
+  };
+
+  const chip = (label, n, unit) => `<span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#eef2ff;color:#3730a3;margin:0 6px 6px 0">${esc(label)} <b>${n}</b> ${esc(unit || '')}</span>`;
+
+  const scan = async (f) => {
+    reset();
+    // 压缩包 / 单个 Markdown 走另一条路（Ver 0.7 ②）：先解包，再按 front matter 规划。
+    if (/\.(zip|tar|tgz|gz|md|markdown|mdown|mkd)$/i.test(f.name || '')) {
+      await scanArchive(f);
+      return;
+    }
+    if (!/\.(sql|txt)$/i.test(f.name || '')) {
+      toast('只认 .sql / .txt 文件', 'bad');
+      return;
+    }
+    if (f.size > LIMIT_MB * 1024 * 1024) {
+      toast(`文件 ${fmtSize(f.size)}，超过 ${LIMIT_MB} MB 上限。请先用数据库工具把大文件拆小再导。`, 'bad');
+      return;
+    }
+    nameBox.textContent = `正在读取 ${f.name}（${fmtSize(f.size)}）…`;
+    let text = '';
+    try {
+      text = await f.text();
+    } catch (e) {
+      toast('读不出文件内容：' + e.message, 'bad');
+      nameBox.textContent = '';
+      return;
+    }
+
+    let dump;
+    try {
+      dump = readDump(text);
+    } catch (e) {
+      toast('SQL 解析失败：' + e.message, 'bad');
+      nameBox.textContent = '';
+      return;
+    }
+
+    if (!dump.program || !dump.program.key) {
+      // 认不出就别让用户点下去：与其导入一堆空表，不如直接说清楚看到了什么
+      reportBox.hidden = false;
+      reportBox.innerHTML = `<div style="padding:12px 14px;border-radius:10px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412">
+        没认出这是哪家的数据。文件里共找到 <b>${dump.tables.size}</b> 张表${dump.tables.size ? '：' + esc([...dump.tables.keys()].slice(0, 12).join('、')) : ''}。<br>
+        目前支持 WordPress、Typecho、Z-BlogPHP 导出的 .sql。</div>`;
+      nameBox.textContent = f.name;
+      return;
+    }
+
+    let meta;
+    try {
+      meta = await API.get('/import/meta');
+    } catch (e) {
+      toast('读取本站现状失败：' + e.message, 'bad');
+      nameBox.textContent = '';
+      return;
+    }
+
+    const { plan, report } = planImport(dump, meta, { now: nowText() });
+    pending = { mode: 'sql', plan, report, name: f.name, attachFiles: [], media: [], attach: null };
+    nameBox.textContent = f.name;
+
+    const c = report.counts;
+    const total = c.posts + c.pages + c.categories + c.tags + c.comments;
+    const skipBits = Object.entries(report.reasons || {}).map(([k, v]) => `${esc(k)} ${v}`).join('、');
+    const warns = (report.warnings || []).length
+      ? `<ul style="margin:8px 0 0;padding-left:18px;color:#b45309;line-height:1.7">${report.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>`
+      : '';
+    const renamed = (report.renamed || []).length
+      ? `<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">${report.renamed.length} 条重名已改别名（点开看前 8 条）</summary><div class="hint" style="margin-top:4px;line-height:1.8">${report.renamed.slice(0, 8).map((r) => `${esc(r.kind)} ${esc(r.from)} → <b>${esc(r.to)}</b>`).join('<br>')}</div></details>`
+      : '';
+
+    reportBox.hidden = false;
+    reportBox.innerHTML = `<div style="padding:14px;border-radius:10px;background:#f8fafc;border:1px solid #e2e8f0">
+      <div style="margin-bottom:10px">识别为 <b>${esc(report.programName)}</b> 导出、<b>${esc(DIALECT_LABEL[dump.dialect] || dump.dialect)}</b> 方言，共 ${dump.tables.size} 张表、${dump.statements} 段语句。</div>
+      <div>${chip('文章', c.posts, '篇')}${chip('独立页面', c.pages, '个')}${chip('分类', c.categories, '个')}${chip('标签', c.tags, '个')}${chip('评论', c.comments, '条')}${chip('标签关联', c.postTags, '条')}</div>
+      ${skipBits ? `<div class="hint" style="margin-top:6px">跳过：${skipBits}</div>` : ''}
+      ${report.sourceBase ? `<div class="hint" style="margin-top:6px">源站地址识别为 <code>${esc(report.sourceBase)}</code>，正文里的相对图片地址已按它补成绝对地址。</div>` : ''}
+      <div id="im-attach" style="margin-top:10px"></div>
+      ${warns}${renamed}
+      ${total === 0 ? '<div style="margin-top:10px;color:#b91c1c"><b>这份文件里没有可导入的内容。</b>请确认导出时包含文章表与评论表，而不是只导了表结构。</div>' : ''}
+    </div>`;
+
+    actions.hidden = total === 0;
+    runBtn.textContent = `开始导入（${total} 条）`;
+    renderAttach();
+  };
+
+  // ---------- 附件（Ver 0.7 ③）----------
+  // SQL 里只有附件的台账，文件本体得另外给。这里只负责「配对 + 出清单」，
+  // 真正的上传与替换在 run() 里 —— 用户点取消时，R2 上什么都不会多出来。
+  const updateRunLabel = () => {
+    if (!pending) return;
+    const c = pending.report.counts;
+    const total = c.posts + c.pages + c.categories + c.tags + c.comments;
+    const media = pending.media || [];
+    const extra = media.length
+      ? (pending.attach && pending.attach.report.others ? ` + 附件 ${media.length} 个` : ` + 图片 ${media.length} 张`)
+      : '';
+    runBtn.textContent = `开始导入（${total} 条${extra}）`;
+  };
+
+  const renderAttach = () => {
+    const box = view().querySelector('#im-attach');
+    if (!box || !pending || pending.mode !== 'sql') return;
+
+    if (!pending.attachFiles.length) {
+      const n = pending.report.images || 0;
+      box.innerHTML = `<div style="padding:10px 12px;border-radius:8px;background:#fffbeb;border:1px solid #fde68a;color:#92400e">
+        ${n ? `正文里有 <b>${n}</b> 处图片地址指向原站。` : '正文里可能还有指向原站的附件。'}
+        SQL 里只有附件的台账、没有文件本体 —— 把 <code>wp-content/uploads</code>（Typecho 是 <code>usr/uploads</code>，Z-Blog 是 <code>zb_users/upload</code>）压成 zip 拖进来，会按路径配对并搬到本站。
+        <div style="margin-top:8px"><button class="btn sm g" id="im-attach-pick">补传附件压缩包</button>
+        <span class="hint" id="im-attach-st" style="margin-left:8px;color:#92400e"></span></div></div>`;
+      const btn = box.querySelector('#im-attach-pick');
+      if (btn) btn.addEventListener('click', () => { attachMode = true; fileInput.click(); });
+      return;
+    }
+
+    const r = pending.attach.report;
+    const media = pending.media || [];
+    const bytes = media.reduce((n, m) => n + (m.size || 0), 0);
+    const imgN = r.images || 0;
+    const otherN = r.others || 0;
+    const parts = [];
+    if (imgN) parts.push(`图片 ${imgN} 张`);
+    if (otherN) parts.push(`音视频 ${otherN} 个`);
+
+    const miss = r.unresolved
+      ? `<div style="margin-top:8px;color:#b45309">有 <b>${r.unresolved}</b> 处地址在包里没找到，导入后仍是原站地址${r.missing.length ? '：' + r.missing.slice(0, 5).map((x) => `<code>${esc(x)}</code>`).join('、') : ''}${r.missing.length > 5 ? ' 等' : ''}。压包时漏了目录或改了文件名都会这样。</div>`
+      : '';
+    const ext = r.external ? `<div class="hint" style="margin-top:6px">${r.external} 处是外站图片（别的图床 / CDN 之外的站），没有动。</div>` : '';
+    const doc = r.docRefs ? `<div class="hint" style="margin-top:6px">${r.docRefs} 个文档类附件（pdf / docx / 压缩包）暂不搬，正文里保持原地址。</div>` : '';
+
+    box.innerHTML = `<div style="padding:10px 12px;border-radius:8px;background:#f0fdf4;border:1px solid #bbf7d0;color:#166534">
+      <b>附件包对上了 ${media.length} 个</b>${parts.length ? '（' + parts.join('、') + '）' : ''}${bytes ? '，共 ' + fmtSize(bytes) : ''}。
+      ${media.length ? `<label class="chk-line" style="margin-top:8px;color:#166534"><input type="checkbox" id="im-media" checked> 上传这些附件，并把正文里的地址换成本站 <code>/media/</code></label>` : ''}
+      ${miss}${ext}${doc}
+      <div style="margin-top:8px"><button class="btn sm g" id="im-attach-pick">再补一个包</button>
+      <span class="hint" style="margin-left:8px;color:#166534">按年份拆成了几个包？可以一个个接着拖。</span></div></div>`;
+
+    const chk = box.querySelector('#im-media');
+    if (chk) chk.addEventListener('change', () => { pending.uploadMedia = chk.checked; });
+    const btn = box.querySelector('#im-attach-pick');
+    if (btn) btn.addEventListener('click', () => { attachMode = true; fileInput.click(); });
+    updateRunLabel();
+  };
+
+  const scanAttach = async (f) => {
+    if (!pending || pending.mode !== 'sql') {
+      toast('请先拖入 .sql，再补附件压缩包', 'bad');
+      return;
+    }
+    if (f.size > LIMIT_MB * 1024 * 1024) {
+      toast(`压缩包 ${fmtSize(f.size)}，超过 ${LIMIT_MB} MB 上限。请按年份拆成几个包再导。`, 'bad');
+      return;
+    }
+    const st = view().querySelector('#im-attach-st');
+    if (st) st.textContent = `正在解包 ${f.name}（${fmtSize(f.size)}）…`;
+    let packed;
+    try {
+      packed = await unpack(new Uint8Array(await f.arrayBuffer()), f.name, {
+        accept: isMediaPath,
+        maxEntries: MAX_ENTRIES_ATTACH,
+        maxTotal: MAX_TOTAL_ATTACH,
+      });
+    } catch (e) {
+      toast('解包失败：' + e.message, 'bad');
+      if (st) st.textContent = '';
+      return;
+    }
+    if (!packed.files.length) {
+      toast('这个包里没有图片 / 音频 / 视频，确认一下是不是把整个站点根目录压进来了（只压 uploads 就行）', 'bad');
+      if (st) st.textContent = '';
+      return;
+    }
+
+    // 多个包按「并集」重算一次：planAttach 每次都从头扫正文、重建配对表，
+    // 所以重复调用是幂等的，不会把上一个包的配对弄丢。
+    pending.attachFiles = (pending.attachFiles || []).concat(packed.files);
+    const { media, report } = planAttach(pending.plan, pending.attachFiles, { sourceBase: pending.report.sourceBase });
+    pending.media = media;
+    pending.attach = { report, packed, name: f.name };
+    pending.uploadMedia = media.length > 0;
+    pending.uploaded = 0;
+    pending.failed = [];
+    renderAttach();
+    if (media.length) pending.attachNote = `已读 ${pending.attachFiles.length} 个文件`;
+  };
+
+  // 一次拖进来多个文件：.sql 是主文件，其余压缩包按附件包处理。
+  // 已经扫过 SQL 之后再拖压缩包，就直接进附件流程，不重扫 SQL。
+  const scanAll = async (list) => {
+    const files = (list || []).filter(Boolean);
+    if (!files.length) return;
+    const isSql = (f) => /\.(sql|txt)$/i.test(f.name || '');
+    const sqls = files.filter(isSql);
+    const packs = files.filter((f) => !isSql(f));
+    if (!sqls.length && packs.length && pending && pending.mode === 'sql') {
+      for (const f of packs) await scanAttach(f);
+      return;
+    }
+    if (sqls.length) {
+      await scan(sqls[0]);
+      for (const f of packs) await scanAttach(f);
+      return;
+    }
+    await scan(packs[0]);
+  };
+
+
+  // 静态博客压缩包：解包 → 规划 → 出清单。图片这时只是「待上传」，
+  // 等点了「开始导入」才逐张传到 R2 —— 用户点取消时什么都还没写。
+  const scanArchive = async (f) => {
+    if (f.size > LIMIT_MB * 1024 * 1024) {
+      toast(`文件 ${fmtSize(f.size)}，超过 ${LIMIT_MB} MB 上限。请把图片拆出去、只打包文章再试。`, 'bad');
+      return;
+    }
+    nameBox.textContent = `正在解包 ${f.name}（${fmtSize(f.size)}）…`;
+    let packed;
+    try {
+      packed = await unpack(new Uint8Array(await f.arrayBuffer()), f.name);
+    } catch (e) {
+      toast('解包失败：' + e.message, 'bad');
+      nameBox.textContent = '';
+      return;
+    }
+    let meta;
+    try {
+      meta = await API.get('/import/meta');
+    } catch (e) {
+      toast('读取本站现状失败：' + e.message, 'bad');
+      nameBox.textContent = '';
+      return;
+    }
+    let planned;
+    try {
+      planned = planMarkdown(packed.files, meta, { now: nowText(), bigImages: packed.bigPaths || [] });
+    } catch (e) {
+      toast('解析失败：' + e.message, 'bad');
+      nameBox.textContent = '';
+      return;
+    }
+    const { plan, media, report } = planned;
+    const c = report.counts;
+    const total = c.posts + c.pages + c.categories + c.tags + c.comments;
+    const mediaBytes = media.reduce((n, m) => n + m.size, 0);
+    pending = { mode: 'md', plan, report, media, name: f.name, uploadMedia: media.length > 0, uploaded: 0 };
+    nameBox.textContent = f.name;
+
+    const skipBits = Object.entries(report.reasons || {}).map(([k, v]) => `${esc(k)} ${v}`).join('、');
+    const warns = (report.warnings || []).length
+      ? `<ul style="margin:8px 0 0;padding-left:18px;color:#b45309;line-height:1.7">${report.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>`
+      : '';
+    const renamed = (report.renamed || []).length
+      ? `<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">${report.renamed.length} 条重名已改别名（点开看前 8 条）</summary><div class="hint" style="margin-top:4px;line-height:1.8">${report.renamed.slice(0, 8).map((r) => `${esc(r.kind)} ${esc(r.from)} → <b>${esc(r.to)}</b>`).join('<br>')}</div></details>`
+      : '';
+    const mediaLine = media.length
+      ? `<label class="chk-line" style="margin-top:10px"><input type="checkbox" id="im-media" checked> 连同包里的 ${media.length} 张图片一起导入（${fmtSize(mediaBytes)}，上传后正文地址换成本站 <code>/media/</code>）</label>`
+      : '';
+    // 被 8MB 上限挡下的图必须点名。只说「跳过 3 个」没用 —— 用户看到的是
+    // 「图少了几张、正文里那处还是相对路径」，却不知道是哪张、为什么。
+    const bigImgs = (packed.skipped || []).filter((s) => s.code === 'image-too-large');
+    const bigShown = bigImgs.slice(0, 5).map((s) => `<code>${esc(s.path)}</code>`).join('、');
+    const bigTip = packed.tooLargeImages
+      ? `<div style="margin-top:8px;color:#b45309">有 <b>${packed.tooLargeImages}</b> 张图片超过 ${Math.round(MAX_IMAGE_BYTES / 1048576)}MB 没带上${bigShown ? '：' + bigShown : ''}${bigImgs.length > 5 ? ' 等' : ''}。这几处在正文里仍是相对路径，压到 ${Math.round(MAX_IMAGE_BYTES / 1048576)}MB 以内重新打包即可补上。</div>`
+      : '';
+
+    reportBox.hidden = false;
+    reportBox.innerHTML = `<div style="padding:14px;border-radius:10px;background:#f8fafc;border:1px solid #e2e8f0">
+      <div style="margin-bottom:10px">按 <b>${esc(report.formatName)}</b> 的目录结构解析，读到 ${packed.files.length} 个文件（跳过 ${packed.skipped.length} 个）。</div>
+      <div>${chip('文章', c.posts, '篇')}${chip('独立页面', c.pages, '个')}${chip('分类', c.categories, '个')}${chip('标签', c.tags, '个')}${chip('评论', c.comments, '条')}${chip('图片', media.length, '张')}</div>
+      ${c.drafts ? `<div class="hint" style="margin-top:6px">其中草稿 ${c.drafts} 篇（按草稿导入，不出现在前台）。</div>` : ''}
+      ${mediaLine}
+      ${bigTip}
+      ${skipBits ? `<div class="hint" style="margin-top:6px">跳过：${skipBits}</div>` : ''}
+      ${warns}${renamed}
+      ${total === 0 ? '<div style="margin-top:10px;color:#b91c1c"><b>这个包里没有可导入的文章。</b>请确认压缩包里有 .md 文件，而不是只有主题或静态资源。</div>' : ''}
+    </div>`;
+
+    const mediaChk = view().querySelector('#im-media');
+    if (mediaChk) mediaChk.addEventListener('change', () => { pending.uploadMedia = mediaChk.checked; });
+
+    actions.hidden = total === 0;
+    runBtn.textContent = `开始导入（${total} 条${media.length ? ' + 图片 ' + media.length + ' 张' : ''}）`;
+  };
+
+  const undoAll = async (ranges) => {
+    try {
+      await API.post('/import/undo', { ranges });
+      return true;
+    } catch (e) {
+      return false;
+    }
+  };
+
+  const run = async () => {
+    if (!pending || running) return;
+    const { plan } = pending;
+    running = true;
+    runBtn.disabled = true;
+    cancelBtn.disabled = true;
+
+    // 压缩包里的图片：先传到 R2，再把正文里那处地址换掉。
+    // 顺序不能反 —— 先写文章再传图，读者在这中间打开看到的就是裂图。
+    let uploaded = 0;
+    const failed = [];
+    const mediaList = pending.media || [];
+    if (mediaList.length && pending.uploadMedia) {
+      const urls = {};
+      const noun = pending.mode === 'md' ? '图片' : '附件';
+      for (let i = 0; i < mediaList.length; i++) {
+        const m = mediaList[i];
+        if (!m.bytes) { failed.push({ name: m.name, path: m.path, why: '包内文件读不出来' }); continue; }
+        prog.textContent = `正在上传${noun} ${i + 1} / ${mediaList.length}：${m.name}`;
+        try {
+          const d = await API.upload(new File([m.bytes], m.name, { type: m.mime }));
+          urls[m.path] = d.url || ('/media/' + d.key);
+          uploaded++;
+        } catch (e) {
+          // 单张失败不中断：那一处保持原样。但要记下「哪张、为什么」——
+          // 只报一个「少了 2 张」，用户既找不到图，也不知道该改什么。
+          failed.push({ name: m.name, path: m.path, why: (e && e.message) || '上传失败' });
+        }
+      }
+      // 静态博客整篇都是 Markdown，SQL 导入的正文还带着原始 HTML —— 两条各改各的，
+      // 但都会同时改 content_md 与 content_html（前台渲染的是后者）。
+      if (pending.mode === 'md') applyMedia(plan.posts, urls);
+      else applyAttach(plan.posts, urls);
+      pending.uploaded = uploaded;
+      pending.failed = failed;
+      prog.textContent = `${noun}上传完成：${uploaded} / ${mediaList.length}`;
+    } else {
+      // 没上传就别把配对表塞进请求体（服务端会忽略，但几百条也是白流量）
+      for (const p of plan.posts || []) {
+        if (p._media_map || p._cover_path || p._cover_ref) {
+          delete p._media_map; delete p._cover_path; delete p._cover_ref;
+        }
+      }
+    }
+
+    const order = [
+      ['categories', '分类'],
+      ['tags', '标签'],
+      ['posts', '文章与页面'],
+      ['post_tags', '标签关联'],
+      ['comments', '评论'],
+    ];
+    const ranges = {};
+
+    try {
+      for (const [table, label] of order) {
+        const rows = plan[table] || [];
+        if (!rows.length) continue;
+        if (table !== 'post_tags') {
+          // 重编号发的是连续号段，记首尾就能整段回滚
+          ranges[table] = [rows[0].id, rows[rows.length - 1].id];
+        }
+        for (let i = 0; i < rows.length; i += BATCH) {
+          const chunk = rows.slice(i, i + BATCH);
+          await API.post('/import/apply', { table, rows: chunk });
+          prog.textContent = `正在写入${label}：${Math.min(i + chunk.length, rows.length)} / ${rows.length}`;
+        }
+      }
+      await API.post('/import/done', {});
+      prog.textContent = '';
+      const c = pending.report.counts;
+      const isMd = pending.mode === 'md';
+      const draftNote = isMd && c.drafts ? `（含草稿 ${c.drafts} 篇）` : '';
+      const attached = !isMd && pending.attach && pending.attach.report ? pending.attach.report : null;
+      let imgNote;
+      if (isMd) {
+        imgNote = pending.media
+          ? (pending.uploaded ? `图片 ${pending.uploaded} 张已上传到 R2。` : '图片一张都没上传（未勾选或全部失败），正文里的图片仍是相对路径。')
+          : '';
+      } else if (attached && (pending.media || []).length) {
+        imgNote = pending.uploaded
+          ? `附件 ${pending.uploaded} 个已上传到 R2，正文里的地址已换成本站。`
+          : '附件一个都没传（未勾选或全部失败），正文里的地址仍是原站。';
+      } else {
+        imgNote = '正文里的图片仍指向原站 —— 把 uploads 目录压成 zip 拖进导入框，就能补搬并改写地址。';
+      }
+      const leftNote = attached && attached.unresolved
+        ? `<div class="hint" style="margin-top:6px;color:#92400e">另有 ${attached.unresolved} 处地址在附件包里没找到，仍是原站地址。</div>`
+        : '';
+      const failNote = failed.length
+        ? `<div style="margin-top:8px;color:#92400e">有 <b>${failed.length}</b> ${isMd ? '张图片' : '个附件'}没传上去，正文里保留原地址：<br>${failed.slice(0, 8).map((x) => `<code>${esc(x.name)}</code> — ${esc(x.why)}`).join('<br>')}${failed.length > 8 ? '<br>…（只列前 8 个）' : ''}</div>`
+        : '';
+      reportBox.innerHTML = `<div style="padding:14px;border-radius:10px;background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46">
+        <b>导入完成。</b>文章 ${c.posts} 篇${draftNote}、独立页面 ${c.pages} 个、分类 ${c.categories} 个、标签 ${c.tags} 个、评论 ${c.comments} 条已写入。
+        <div class="hint" style="margin-top:6px;color:#065f46">${imgNote}首页缓存已刷新，分类页最多 10 分钟后更新。</div>${leftNote}${failNote}</div>`;
+      actions.hidden = true;
+      toast('导入完成');
+    } catch (e) {
+      prog.textContent = '';
+      const ok = await undoAll(ranges);
+      reportBox.innerHTML = `<div style="padding:14px;border-radius:10px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b">
+        <b>导入中断：</b>${esc(e.message)}
+        <div style="margin-top:6px">${ok
+          ? '本次已写入的内容<b>已全部回滚</b>，站点保持导入前的状态。'
+          : '<b>自动回滚也失败了</b>，请到「文章」列表检查有没有重复内容，必要时用导入前的备份恢复。'}</div>
+        ${uploaded ? `<div style="margin-top:6px">注意：已经上传的 ${uploaded} 张图片仍留在 R2 的 <code>media/</code> 里（没有文章引用它们），需要时到媒体库删除。</div>` : ''}
+        ${failed.length ? `<div style="margin-top:6px">另有 ${failed.length} 张图片没能上传（${failed.slice(0, 3).map((x) => esc(x.name)).join('、')}${failed.length > 3 ? ' 等' : ''}），下次重新导入时会再试。</div>` : ''}</div>`;
+      toast('导入失败：' + e.message, 'bad');
+      runBtn.disabled = false;
+      cancelBtn.disabled = false;
+    } finally {
+      running = false;
+    }
+  };
+
+  drop.addEventListener('click', () => fileInput.click());
+  drop.addEventListener('dragover', (ev) => {
+    ev.preventDefault();
+    drop.style.borderColor = '#2563eb';
+    drop.style.background = '#eff6ff';
+  });
+  drop.addEventListener('dragleave', () => {
+    drop.style.borderColor = '#cbd5e1';
+    drop.style.background = '#fafbfc';
+  });
+  drop.addEventListener('drop', async (ev) => {
+    ev.preventDefault();
+    drop.style.borderColor = '#cbd5e1';
+    drop.style.background = '#fafbfc';
+    await scanAll(ev.dataTransfer ? ev.dataTransfer.files : []);
+  });
+  fileInput.addEventListener('change', async () => {
+    const list = fileInput.files ? [...fileInput.files] : [];
+    // 清空 value，否则同一个文件第二次选不会触发 change（补包重试时会踩到）
+    fileInput.value = '';
+    const wasAttach = attachMode;
+    attachMode = false;
+    if (!list.length) return;
+    if (wasAttach) { await scanAttach(list[0]); return; }
+    await scanAll(list);
+  });
+  runBtn.addEventListener('click', run);
+  cancelBtn.addEventListener('click', () => {
+    if (running) return;
+    reset();
+  });
 }
 
 // ================= 设置 =================

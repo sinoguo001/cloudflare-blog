@@ -5,6 +5,18 @@
 
 ---
 
+## Ver 0.7
+
+0.7 版本先做数据导入：
+
+| # | 类型 | 问题 / 需求 | 解决方法 |
+|---|---|---|---|
+| 1 | 新增 | 想从 WordPress / Typecho / Z-BlogPHP 搬过来，它们导出的 `.sql` 有 SQLite、MySQL、PostgreSQL 三种方言，要能在一个对话框里自动认出来并整批导进本站；新旧编号会撞，绝不能覆盖已有的文章 | 新建 `public/js/sqlparse.js` / `html2md.js` / `importplan.js` 与 `functions/_lib/importdb.js`，接口 `GET /api/import/meta`、`POST /api/import/apply`、`/undo`、`/done`。**解析放在浏览器**：免费版 Workers 单请求 CPU 10ms，几 MB 的 SQL 必超时；前端切语句、认程序（`log_ID` / `typecho_` / `wp_posts`）与方言（`AUTO_INCREMENT` / `nextval(` / `AUTOINCREMENT`），映射成文章、页面、分类、标签、评论，HTML 正文转 Markdown。**主键全量重编号**：先拉本站各表最大 id 与 slug，旧 id 建映射、重名 slug 加后缀，绝不覆盖现有文章；正文相对图片按 `siteurl` 补绝对。只导这五类：设置、账号、邮件授权码与附件一律不导（会冲掉本站设置）。服务端 200 行一批 `batch()` 原子写入，出错按 id 区间倒序删回（子表先删）。加密文章的密码无法还原，只带标题与状态；不落 R2 |
+| 2 | 新增 | 想从 Hexo / Hugo / Jekyll / Astro 这类静态博客搬过来，把 `_posts` 目录打成压缩包直接导；包里带的图片也要一起进站，不能留一堆相对路径的裂图 | 新建 `public/js/unpack.js`（zip / tar / tar.gz / tgz）与 `mdplan.js`（front matter → 与 ① 同构的 plan，复用重编号/写库）。**全在浏览器里拆**：平台自带 `DecompressionStream`，零依赖。★ zip 只信中央目录尺寸（data descriptor 的本地头 size 是 0，照它读到空文件），文件名 UTF-8 解不动退 GBK；tar 拼 ustar 的 prefix，GNU 长名 / PAX 另走。★ 目录：Hexo `source/_posts`、Hugo 的 bundle `index.md`、`_index.md` 跳过、`content/about.md` 与 `layout: page` 认成独立页面、`_drafts/` 与 `draft: true` 进草稿。★ 图片按「md 同名资源目录 → md 所在目录 → 包根 → 唯一同名」解析，逐张经 `/api/media` 传 R2，正文引用换成 `/media/<key>`、封面写 `cover_key`；先传图后写库，否则读者看到的是裂图。护栏：3000 条目 / 24MB 单文件 / 64MB 合计 |
+| 3 | 新增 | 新增 | 新建 `public/js/attach.js`（配对 + 改写），放宽 `unpack.js` 的白名单与体积分档。**SQL 里只有附件台账、没有文件本体**，所以文件另给一个 uploads 压缩包：可以和 .sql 一起拖，也可以先扫再补。★ 只按「uploads 之后的相对路径」配对，不比域名（WP 的 `guid` 常留着搬家前的旧域名）；包里多套一层（压整个 `wp-content`）走后缀匹配。★ 正文常引用 `-300x200` 缩略图：包里有就用，没有就去掉尺寸后缀退回原图；同名多份不猜。★ 抓地址覆盖 Markdown、`src` / `href` / `poster` / `data-src` 与 `srcset`；外站图床不动，pdf 如实报「暂不搬」。★ 改写**同时落在 `content_md` 与 `content_html`**（前台渲染后者，只改 md 等于没改）；先传完再写库。★ WP 特色图（`_thumbnail_id` → `_wp_attached_file`）写进 `cover_key`。★ 体积对齐 `MEDIA_MAX`：图片 8 / 音频 20 / 视频 80MB，附件包 5000 条目 / 128MB |
+
+---
+
 ## Ver 0.6
 
 0.6 版本新增了九项功能与一项优化：
