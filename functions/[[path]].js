@@ -28,6 +28,7 @@ import * as sqldump from './_lib/sql.js';
 import * as targets from './_lib/targets.js';
 // 导出静态站点（Ver 0.6 ⑧）：Markdown（Hexo 惯例）+ 零依赖 ZIP 打包
 import * as hexo from './_lib/hexo.js';
+import * as jump from './_lib/jump.js';
 import * as zip from './_lib/zip.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
@@ -89,11 +90,33 @@ const GEO_SYNC_MAX = 12;
 
 export async function onRequest(ctx) {
   try {
-    return await handle(ctx);
+    // 所有 HTML 响应在这里统一过一道：渲染层留下的 jump:<b64> 标记，到出口才换成
+    // 带 HMAC 签名的 /jump?u=&s= 地址（理由见 sealJump）。
+    return await sealJump(await handle(ctx), ctx.env);
   } catch (e) {
     console.error('route error:', e);
     return err('服务器内部错误：' + e.message, 500);
   }
+}
+
+// 外链中转标记的出口处理（Ver 0.6 ⑪）
+// 为什么不在渲染时签：md.js / site.js 全是同步函数，HMAC 是异步的；而且同一份 HTML
+// 还要喂给 RSS、静态导出、后台预览，那几处必须保持原始地址。放在出口只影响浏览器
+// 真正看到的那一份。只碰 text/html：JSON 接口、静态资源、RSS/XML 原样放行。
+async function sealJump(resp, env) {
+  if (!resp || resp.status === 204 || resp.status === 304) return resp;
+  if (!/text\/html/i.test(resp.headers.get('content-type') || '')) return resp;
+  const text = await resp.text();
+  const out = text.includes('href="jump:')
+    ? (env && env.AUTH_SECRET
+      ? await jump.signTokens(text, env.AUTH_SECRET)
+      : jump.restoreTokens(text))   // 没配密钥就别生成坏链接，退回直链
+    : text;
+  // body 已经被读掉，必须重建；content-length / content-encoding 交给运行时重算
+  const h = new Headers(resp.headers);
+  h.delete('content-length');
+  h.delete('content-encoding');
+  return new Response(out, { status: resp.status, statusText: resp.statusText, headers: h });
 }
 
 const STATIC_EXT = /\.(css|js|mjs|png|jpe?g|gif|webp|avif|svg|ico|woff2?|txt|xml|webmanifest|json|map)$/i;
@@ -441,6 +464,36 @@ async function front(ctx, url, seg, method, path) {
     // 建表失败（极端情况）也不能让页面 500，退化成空列表
     const links = await db.listLinks(env.DB, { status: 'approved' }).catch(() => []);
     return html(site.renderLinks(s, { links, captcha: s.get('captcha') !== '0' }));
+  }
+
+  // 外链中转提醒页 /jump?u=<b64url>&s=<hmac>（Ver 0.6 ⑪）
+  // 正文 / 评论昵称 / 友圈标题三处的外链都走这里。★ 必须验签：没有 s 或 s 不对一律
+  // 400 —— 否则 /jump?u=<任意地址> 立刻变成开放重定向，谁都能拿本站域名当跳板。
+  // 签名只证明「这条地址是本站生成的」，不证明对方站点安全，所以页面照旧显示
+  // 目标域名 + 免责说明，并给满 5 秒。
+  if (seg[0] === 'jump' && seg.length === 1) {
+    const tk = url.searchParams.get('u') || '';
+    const sig = url.searchParams.get('s') || '';
+    let target = '';
+    try { target = jump.safeJumpUrl(jump.unb64url(tk)); } catch (e) { target = ''; }
+    if (!target || !(await jump.verifyToken(tk, sig, env.AUTH_SECRET))) {
+      const bad = html(site.renderJumpBad(s), 400);
+      bad.headers.set('cache-control', 'no-store');
+      return bad;
+    }
+    // 正文里偶尔会写死本站的完整地址：别绕一圈提醒页，直接回去。
+    // 不用 Response.redirect（它的响应头是只读的，serveFront 后面还要删内部标记）
+    try {
+      if (new URL(target).host === url.host) {
+        return new Response(null, { status: 302, headers: { location: target } });
+      }
+    } catch (e) { /* 忽略：URL 解析失败就按普通外链处理 */ }
+    s.set('_sidebar_html', '');
+    let host = '';
+    try { host = new URL(target).host; } catch (e) { host = ''; }
+    const r = html(site.renderJump(s, { url: target, name: host, kind: 'out' }));
+    r.headers.set('cache-control', 'no-store');
+    return r;
   }
 
   // 友链跳转提醒页 /jump/<id>（Ver 0.6 ⑨）：说明去哪 + 免责说明，5 秒后自动跳。
@@ -1362,6 +1415,15 @@ async function api(ctx, url, seg, method) {
     if (b.allow_comments != null) await db.setSetting(dbx, 'allow_comments', b.allow_comments ? '1' : '0');
     if (b.comment_audit != null) await db.setSetting(dbx, 'comment_audit', b.comment_audit ? '1' : '0');
     if (b.captcha != null) await db.setSetting(dbx, 'captcha', b.captcha ? '1' : '0');
+    // ---- 旧评论外链降级（Ver 0.6 ⑩）：默认开、默认 365 天 ----
+    // 只影响渲染时「要不要输出 <a>」，一条评论数据都不改；改完末尾 clearAll() 会清缓存。
+    // 天数按「正数才算数」夹取：0 / 负数 / 非数字一律回落到默认 365，不让人一个手滑关掉整站外链。
+    if (b.comment_link_on != null) await db.setSetting(dbx, 'comment_link_on', b.comment_link_on ? '1' : '0');
+    if (b.comment_link_days != null) {
+      const n = parseInt(b.comment_link_days, 10);
+      await db.setSetting(dbx, 'comment_link_days',
+        String(n > 0 ? Math.min(site.COMMENT_LINK_MAX_DAYS, n) : site.COMMENT_LINK_DAYS));
+    }
     // ---- IP 归属地（Ver 0.5 ⑦）：开关默认开；接口只认白名单里的 id，
     //      传了别的一律忽略（读的一方还有 pickProvider 兜底，双保险）----
     if (b.ipgeo_on != null) await db.setSetting(dbx, 'ipgeo_on', b.ipgeo_on ? '1' : '0');
@@ -1837,6 +1899,13 @@ async function api(ctx, url, seg, method) {
   if (seg[0] === 'admin' && seg[1] === 'comments' && seg.length === 2 && method === 'GET') {
     const status = String(url.searchParams.get('status') || 'pending');
     const items = await db.listComments(dbx, { status, limit: 300 });
+    // 旧评论外链降级（Ver 0.6 ⑩）：后台列表标一个「外链已停用」，方便博主核对
+    // 到底哪些留言被降级了。这里和前台渲染调的是同一个 linkDowngraded()，
+    // 不各算一套年龄规则。读设置失败就只是不显示徽标，不影响评论列表。
+    try {
+      const linkS = await db.settingsMap(dbx);
+      for (const c of items) c.link_off = site.linkDowngraded(linkS, c) ? 1 : 0;
+    } catch (e) { /* 忽略 */ }
     // 归属地：缓存里有的直接贴上；没有的这一次请求顺手补一批（上限 GEO_SYNC_MAX），
     // 补不完的报给前端，由博主决定要不要继续催（POST /api/ipgeo/sync）。
     // 整段包 try：归属地只是评论旁边的一行小字，绝不能因为它导致评论列表打不开。

@@ -891,6 +891,8 @@ async function viewComments() {
         const author = (c.is_admin ? esc(c.author) + ' <span class="tag-mini">博主</span>' : esc(c.author))
           + (web ? ` <a class="hint" href="${esc(web)}" target="_blank" rel="noopener nofollow ugc">↗ 网址</a>` : '');
         const st = c.status === 'pending' ? '<span class="st pending">待审核</span>' : c.status === 'trash' ? '<span class="st trash">回收站</span>' : '<span class="st approved">已通过</span>';
+        // 旧评论外链降级（Ver 0.6 ⑩）：判定在后端（与前台渲染同一套年龄规则），这里只负责标出来
+        const offTag = c.link_off ? '<span class="st off" title="这条评论已超过设定天数，前台不再输出外链">外链已停用</span>' : '';
         const geo = geoText(c.geo_loc, c.geo_isp);
         const ops = [];
         if (c.status !== 'approved') ops.push(`<button class="btn sm ok" data-o="app" data-id="${c.id}">通过</button>`);
@@ -899,7 +901,7 @@ async function viewComments() {
         ops.push(`<button class="btn sm d" data-o="del" data-id="${c.id}">彻底删除</button>`);
         return `<div class="card" style="margin-bottom:12px">
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
-            <b>${author}</b>${st}
+            <b>${author}</b>${st}${offTag}
             <span class="hint">${fmtTime(c.created_at)}${c.ip ? ' · IP ' + esc(c.ip) : ''}${geo ? ' · <span class="geo">' + esc(geo) + '</span>' : ''}</span>
             <span style="margin-left:auto;font-size:13px">${c.post_title ? `评论于 <a href="/post/${esc(c.post_slug)}" target="_blank">《${esc(c.post_title)}》</a>` : '（文章已删除）'}</span>
           </div>
@@ -2461,6 +2463,13 @@ async function viewSettings(tabArg) {
           </select>
         </div>
         <p class="hint" style="margin-bottom:0">只在访客留下新评论、或你打开评论管理页时才去查，查到的结果会缓存，同一个 IP 不会再查第二遍。前台只显示「江苏 电信」这类位置，<b>不会显示完整 IP 地址</b>（完整 IP 仅后台可见）。接口查不到或临时打不开时，只是不显示归属地，不影响评论本身。</p>
+
+        <div class="sec-title" style="margin-top:16px">旧评论外链 <small>按评论年龄兜底，防旧链接变风险站</small></div>
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><input type="checkbox" id="s-comment_link_on"> 旧评论的外链自动降级（只留昵称，不再跳转）</label>
+        <div class="field"><label>评论发布超过多少天后停用外链</label>
+          <input class="inp" id="s-comment_link_days" type="number" min="1" max="3650" step="1" style="width:120px">
+        </div>
+        <p class="hint" style="margin-bottom:0">早年留言里的网址，域名一旦过期被别人抢注，就可能指向博彩或色情站点 —— 读者从你的站里点出去，等于你替他背了书。这里按<b>评论年龄</b>做兜底：超期的评论只显示昵称，后面缀一行灰色「（外链已停用）」。<b>不会去访问那些网址</b>，也不影响页面缓存；超过 3650 天按 3650 算。</p>
       </div>
       <div class="card">
         <div class="sec-title">评论头像 <small>Gravatar 全球通用头像</small></div>
@@ -2588,6 +2597,9 @@ async function viewSettings(tabArg) {
   v.querySelector('#s-audit').checked = s.comment_audit !== '0';
   v.querySelector('#s-captcha').checked = s.captcha !== '0';
   v.querySelector('#s-ipgeo').checked = s.ipgeo_on !== '0';
+  // 旧评论外链降级（Ver 0.6 ⑩）：老站没有这两行设置 → 默认开、365 天
+  v.querySelector('#s-comment_link_on').checked = s.comment_link_on !== '0';
+  set('s-comment_link_days', s.comment_link_days || '365');
   v.querySelector('#s-ipgeo_src').value = IPGEO_SRC.includes(s.ipgeo_src) ? s.ipgeo_src : IPGEO_DEFAULT;
   // ---- 文章目录（Ver 0.5 ⑧）：没设过即默认开启 ----
   v.querySelector('#s-toc_on').checked = s.toc_on !== '0';
@@ -3189,6 +3201,9 @@ async function viewSettings(tabArg) {
       allow_comments: v.querySelector('#s-allow').checked,
       comment_audit: v.querySelector('#s-audit').checked,
       captcha: v.querySelector('#s-captcha').checked,
+      // 旧评论外链降级（Ver 0.6 ⑩）：年龄门槛由后端再夹一次（0 / 乱填回落 365）
+      comment_link_on: v.querySelector('#s-comment_link_on').checked,
+      comment_link_days: v.querySelector('#s-comment_link_days').value,
       ipgeo_on: v.querySelector('#s-ipgeo').checked,
       ipgeo_src: v.querySelector('#s-ipgeo_src').value,
       // 文章目录（Ver 0.5 ⑧）

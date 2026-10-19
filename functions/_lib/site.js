@@ -10,6 +10,7 @@ import { geoText } from './ipgeo.js';
 import * as toc from './toc.js';
 import { fontHead } from './font.js';
 import * as audio from './audio.js';
+import { jumpHref, jumpifyHtml } from './jump.js';
 
 // Gravatar 头像源：国内优先（实测 weavatar ≈23ms、cravatar ≈88ms；官方源国内不可达）
 const GRAVATAR_SRC = {
@@ -380,6 +381,8 @@ img{max-width:100%}
 .tag-mini{font-size:11px;background:var(--admin-soft);color:var(--admin-text);padding:1px 8px;border-radius:999px}
 .cmt-time{font-size:12px;color:var(--muted)}
 .cmt-geo{opacity:.85}
+/* 旧评论外链已停用：跟着昵称走的一行灰色小字，不抢内容注意力 */
+.cmt-linkoff{font-size:11px;color:var(--muted);margin-left:4px;white-space:nowrap}
 .cmt-body{color:var(--quote-text);font-size:15px;word-break:break-word}
 .cmt-body p{margin:0 0 .4em}
 .cmt-child{margin-left:52px}
@@ -894,6 +897,9 @@ export function renderArticle(s, post, extra) {
   // 好处是老文章不用挨个重新保存就有目录，存储结构也一点不用动。
   // 开关关掉时下面这段完全不执行，输出的 DOM 与没做这个功能前一模一样。
   let body = String(post.content_html || '');
+  // 正文里的 http(s) 外链改走中转提醒页（Ver 0.6 ⑪）。只在前台文章页这一步做，
+  // 不动库里的 content_html —— RSS、静态导出、后台预览看到的仍是原始地址。
+  body = jumpifyHtml(body);
   let tocBox = '';
   if (toc.enabled(s)) {
     const r = toc.buildToc(body);
@@ -951,12 +957,53 @@ export function renderPage(s, post) {
     <article class="article">
       <h1>${esc(post.title)}</h1>
       ${upd}
-      <div class="art-body">${post.content_html}</div>
+      <div class="art-body">${jumpifyHtml(post.content_html)}</div>
     </article>`;
   return layout(s, {
     content, title: post.title, active: 'p:' + post.slug,
     desc: post.excerpt || '', bodySlug: '',
   });
+}
+
+// ---------- 旧评论外链降级（Ver 0.6 ⑩）----------
+// 由来：早年留言里的网址，域名一旦过期被别人抢注，就可能变成博彩 / 色情站，
+// 而博主不可能把几千条老评论逐条复核。所以按「评论年龄」做一道兜底 ——
+// 超过 N 天的评论，昵称只输出纯文本，后面缀一行灰色「（外链已停用）」。
+//
+// 这里**不访问外链**：只在渲染时拿 created_at 算天数，不产生任何出网请求，
+// 页面照样能进边缘缓存。判定完全由数据决定，同一份数据每次渲染结果一致。
+export const COMMENT_LINK_DAYS = 365;        // 默认值
+export const COMMENT_LINK_MAX_DAYS = 3650;   // 上限（10 年），防止填个巨大的数字把功能关掉
+
+// 合法外链：必须以 http(s):// 开头且不含空白；其余（javascript:、data:、空值）一律当没填
+export const safeWebsite = (v) => (/^https?:\/\/[^\s]+$/i.test(String(v == null ? '' : v).trim())
+  ? String(v).trim() : '');
+
+// 返回天数上限；0 表示「降级已关闭」。
+// 读不到设置（老站没有这两行）时按默认：开、365 天。
+export function commentLinkLimit(s) {
+  const get = (k) => (s && typeof s.get === 'function' ? s.get(k) : undefined);
+  if (get('comment_link_on') === '0') return 0;
+  const n = parseInt(get('comment_link_days'), 10);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, COMMENT_LINK_MAX_DAYS) : COMMENT_LINK_DAYS;
+}
+
+// 评论发布了多少天。格式不认识时返回 NaN —— NaN 一律**不降级**：
+// 脏数据不该让整站老评论的链接集体消失（宁可少降一条，也不误伤）。
+export function commentAgeDays(createdAt) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(String(createdAt || ''));
+  if (!m) return NaN;
+  // created_at 全站统一存北京时间字符串（见 util.bnNow），按 +08:00 换算成绝对时刻
+  const t = Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)) - 8 * 3600e3;
+  return (Date.now() - t) / 86400e3;
+}
+
+// 这条评论的外链该不该降级。三个条件缺一不可：功能开着、填了合法网址、确实超期。
+export function linkDowngraded(s, c) {
+  const limit = commentLinkLimit(s);
+  if (!limit || !c || !safeWebsite(c.website)) return false;
+  const age = commentAgeDays(c.created_at);
+  return Number.isFinite(age) && age > limit;
 }
 
 // ---------- 评论区 ----------
@@ -972,11 +1019,19 @@ function commentNode(c, level, s) {
   const avatarHtml = `<span class="avatar${avatarCls}">${initial}${
     av ? `<img class="avt" src="${esc(av)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''
   }</span>`;
-  // 网址选填：填了合法 http(s) 地址，昵称即可点击跳转（nofollow，防垃圾链接权重传递）
-  const web = /^https?:\/\/[^\s]+$/i.test(String(c.website || '').trim()) ? String(c.website).trim() : '';
-  const name = web
-    ? `<a href="${esc(web)}" target="_blank" rel="noopener nofollow ugc" style="color:inherit;text-decoration:underline">${esc(c.author)}</a>`
+  // 网址选填：填了合法 http(s) 地址，昵称即可点击跳转（nofollow，防垃圾链接权重传递）。
+  // 超过上限的老评论**不再输出 <a>**：只留昵称 + 一行灰色说明，避免旧域名被别人接手后，
+  // 这条留言成了通往违规站的入口。降级只影响「能不能点」，评论内容一个字都不动。
+  const web = safeWebsite(c.website);
+  const aged = linkDowngraded(s, c);
+  // 外链先落本站的中转提醒页（出口再签名成 /jump?u=&s=），不再直接出站。
+  // rel 保留 nofollow ugc：中转页自己也是 noindex，权重一样不往外传。
+  const name = web && !aged
+    ? `<a href="${esc(jumpHref(web))}" target="_blank" rel="noopener nofollow ugc" style="color:inherit;text-decoration:underline">${esc(c.author)}</a>`
     : esc(c.author);
+  const linkOff = aged
+    ? `<span class="cmt-linkoff" title="该评论发布已超过 ${commentLinkLimit(s)} 天，为避免旧链接指向已被他人接手的站点，不再提供跳转">（外链已停用）</span>`
+    : '';
   // IP 归属地（Ver 0.5 ⑦）：只显示「位置 运营商」，前台不下发完整 IP ——
   // 读者看到的是「江苏 电信」，而不是「114.114.114.114」。
   // 归属地是给评论添一点现场感，不是拿来点名访客的。
@@ -984,7 +1039,7 @@ function commentNode(c, level, s) {
   const geoHtml = geo ? ` · <span class="cmt-geo">${esc(geo)}</span>` : '';
   return `<div class="cmt">
     <div class="cmt-top">${avatarHtml}
-      <div><span class="cmt-who"><b>${name}</b> ${who}</span><br>
+      <div><span class="cmt-who"><b>${name}</b>${linkOff} ${who}</span><br>
       <span class="cmt-time">${fmtDate(c.created_at, true)}${geoHtml}</span></div></div>
     <div class="cmt-body">${body}</div>
     ${child}</div>`;
@@ -1198,28 +1253,32 @@ function linkCard(l) {
 // ★ 目标地址从**「立即前往」按钮的 href** 上读（getAttribute 拿的是转义后的原值），
 //   不在 JS 里再拼一次 —— 省掉一层 JS 字符串转义，少一个能出错的地方。
 export const JUMP_SEC = 5;
-export function renderJump(s, { link, seconds = JUMP_SEC } = {}) {
+export function renderJump(s, { link, url = '', name = '', kind = 'link', seconds = JUMP_SEC } = {}) {
   const l = link || {};
-  const url = String(l.url || '');
-  const name = String(l.name || '').trim() || '该站点';
+  // 两种入口：友链传 { link }（按 id 从 links 表查到的整行），
+  // 正文 / 评论 / 友圈传 { url, name, kind }（已验过签名的目标地址）。
+  const target = String(link ? (l.url || '') : url);
+  const siteName = String(l.name || name || '').trim() || '该站点';
   const sec = Math.max(1, parseInt(seconds, 10) || JUMP_SEC);
-  const ch = (name[0] || '?').toUpperCase();
+  const ch = (siteName[0] || '?').toUpperCase();
+  // 友链之外的三处不是「友情链接」，免责口径要分开说，否则等于说错话
+  const isLink = kind === 'link';
   const logo = l.logo
     ? `<img src="${esc(l.logo)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
     : esc(ch);
   // 只把域名单独拎出来显一眼，长地址仍然完整给出（可复制、可核对）
-  let host = url;
-  try { host = new URL(url).host; } catch (e) { host = url; }
+  let host = target;
+  try { host = new URL(target).host; } catch (e) { host = target; }
   return layout(s, {
-    title: '正在离开本站', active: 'links',
-    desc: `即将离开本站，前往 ${name}`,
+    title: '正在离开本站', active: isLink ? 'links' : '',
+    desc: `即将离开本站，前往 ${siteName}`,
     // 中转页不该被搜索引擎收录（否则收录的是这一页，而不是对方的文章）
     robots: 'noindex,follow',
     content: `<section class="article jump">
       <div class="jump-card">
         <span class="link-logo jump-logo">${logo}</span>
         <h1>即将离开本站</h1>
-        <p class="jump-sub">正在前往 <b>${esc(name)}</b>，<span id="jump-sec">${sec}</span> 秒后自动跳转</p>
+        <p class="jump-sub">正在前往 <b>${esc(siteName)}</b>，<span id="jump-sec">${sec}</span> 秒后自动跳转</p>
         <div class="jump-ring" aria-hidden="true">
           <svg viewBox="0 0 64 64">
             <circle class="jr-bg" cx="32" cy="32" r="27"></circle>
@@ -1227,20 +1286,25 @@ export function renderJump(s, { link, seconds = JUMP_SEC } = {}) {
           </svg>
           <span class="jump-num" id="jump-num">${sec}</span>
         </div>
-        <p class="jump-site">目标站点：<b>${esc(name)}</b></p>
-        <p class="jump-url">${esc(host)}<br>${esc(url)}</p>
+        <p class="jump-site">目标站点：<b>${esc(siteName)}</b></p>
+        <p class="jump-url">${esc(host)}<br>${esc(target)}</p>
         ${l.description ? `<p class="jump-sub" style="margin:10px 0 0">${esc(l.description)}</p>` : ''}
-        <a class="jump-go" id="jump-go" href="${esc(url)}" rel="noopener noreferrer">立即前往 →</a>
+        <a class="jump-go" id="jump-go" href="${esc(target)}" rel="noopener noreferrer">立即前往 →</a>
         <noscript><p class="jump-sub" style="margin:12px 0 0">自动跳转需要浏览器启用 JavaScript，请点上面的按钮前往。</p></noscript>
 
         <div class="jump-note">
           <h2>免责说明</h2>
-          <p>本站友情链接仅供互相交流，<b>不代表本站认同对方站点的观点或内容</b>。</p>
+          ${isLink ? `<p>本站友情链接仅供互相交流，<b>不代表本站认同对方站点的观点或内容</b>。</p>
           <ul>
             <li>您即将访问的是<b>第三方网站</b>，其内容、可用性与安全性均由对方负责，本站无法控制、也不作任何担保。</li>
             <li>跳转后请注意保护个人隐私与账号安全，谨防钓鱼与诈骗。</li>
             <li>若该链接已失效或指向不当内容，欢迎在友链页留言告知，本站会尽快处理。</li>
-          </ul>
+          </ul>` : `<p>这条链接指向<b>本站之外</b>的页面，<b>不代表本站认同对方的观点或内容</b>。</p>
+          <ul>
+            <li>您即将访问的是<b>第三方网站</b>，其内容、可用性与安全性均由对方负责，本站无法控制、也不作任何担保。</li>
+            <li>链接可能因对方站点改版而失效，也可能随时间被他人接手 —— 请留意地址栏里的域名是不是您预期的那一个。</li>
+            <li>跳转后请注意保护个人隐私与账号安全，谨防钓鱼与诈骗。</li>
+          </ul>`}
         </div>
       </div>
     </section>
@@ -1324,7 +1388,7 @@ export function renderLinks(s, { links = [], captcha = true } = {}) {
 }
 
 // ---------- 友圈（Ver 0.4 ⑫） ----------
-// 展示订阅到的别人的文章：标题跳原文（外链，加 nofollow），来源跳对方站点。
+// 展示订阅到的别人的文章：标题跳原文（先过本站中转页），来源跳对方站点。
 // 摘要抓取时已清洗成纯文本，这里只做转义，不信任任何 HTML。
 function friendCard(p) {
   const name = String(p.feed_name || '').trim() || '未命名站点';
@@ -1339,7 +1403,7 @@ function friendCard(p) {
   return `<article class="fr-item">
     <span class="fr-ava">${avatar}</span>
     <div class="fr-body">
-      <a class="fr-title" href="${esc(p.link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(p.title)}</a>
+      <a class="fr-title" href="${esc(jumpHref(p.link))}" target="_blank" rel="noopener noreferrer nofollow">${esc(p.title)}</a>
       <div class="fr-meta">${site}<span class="dot">·</span><time>${esc(time)}</time>${p.author ? `<span class="dot">·</span><span>${esc(p.author)}</span>` : ''}</div>
       ${p.summary ? `<p class="fr-sum">${esc(p.summary)}</p>` : ''}
     </div></article>`;
@@ -1356,6 +1420,20 @@ export function renderFriends(s, { posts = [], feeds = [], total = 0, page = 1, 
     title: '友圈', active: 'friends',
     desc: `${String(s.get('site_title') || '').trim()} 的朋友们最近写了什么`,
     content: `<section class="page-head"><h1>友圈</h1><p class="desc">${esc(desc)}</p></section>${body}`,
+  });
+}
+
+// 中转链接验签失败时的页面（Ver 0.6 ⑪）。不用 404 页：这句话得说清是「链接坏了」，
+// 而不是「文章没了」—— 密钥轮换、复制时被截断、有人手改地址，都会落到这里。
+export function renderJumpBad(s) {
+  return layout(s || new Map(), {
+    title: '跳转链接无效', robots: 'noindex,nofollow',
+    content: `<section class="article"><div class="empty" style="padding:32px 24px;text-align:center;margin-top:40px">
+      <h1 style="font-size:21px;margin:0 0 10px">这个跳转链接无效</h1>
+      <p style="color:var(--muted);margin:0 0 4px">地址不完整、被改动过，或者本站的签名密钥已经更换。</p>
+      <p style="color:var(--muted);margin:0">请回到文章页重新点击；如果是复制来的，可能是复制时被截断了。</p>
+      <p style="margin:18px 0 0"><a class="btn" href="/">回首页</a></p>
+    </div></section>`,
   });
 }
 

@@ -83,7 +83,8 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .st.draft{background:#fef4e6;color:#b45309}
 .st.pending{background:#fef3f2;color:#dc2626}
 .st.approved{background:#e9f9ef;color:#15803d}
-.st.trash{background:#f1f2f6;color:#6b7280}
+.st.trash{background:#f1f2f6;color:#6b7280}.st.off{background:#fff7e6;color:#b45309}
+
 .empty-note{text-align:center;color:var(--mut);padding:42px 10px;font-size:14px}
 
 /* tabs */
