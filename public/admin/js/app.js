@@ -1671,12 +1671,16 @@ async function viewThemes() {
 
   const themeIdOf = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
   const cardHtml = (t) => {
-    const shot = t.builtin
+    // 只有「系统默认」没有预览图；预置主题是带 preview.png 的真主题，要走 <img>。
+    // （预置项的 builtin 也是 true —— 它决定的是「不显示删除按钮」，不是「有没有图」。）
+    const shot = (t.builtin && !t.preset)
       ? '<div style="height:108px;background:linear-gradient(135deg,#f3f6ff,#e6f1fb);display:flex;align-items:center;justify-content:center;color:#185FA5;font-size:22px;font-weight:700">默认</div>'
       : `<img src="/theme-assets/${esc(t.id)}/preview.png" alt="" loading="lazy" style="width:100%;height:108px;object-fit:cover;display:block" onerror="this.style.display='none';this.insertAdjacentHTML('afterend','<div style=\\'height:108px;background:#eef2ff;display:flex;align-items:center;justify-content:center;color:#185FA5;font-size:26px;font-weight:700\\'>${esc((t.name || t.id).slice(0, 1))}</div>')">`;
     const meta = `<div style="padding:10px 12px">
       <div style="display:flex;align-items:center;gap:8px"><b style="font-size:14.5px">${esc(t.name)}</b>
-        ${t.builtin ? '<span style="font-size:11px;background:#eef1f5;color:#5f5e5a;padding:1px 8px;border-radius:99px">内置</span>' : ''}
+        ${t.preset
+          ? '<span style="font-size:11px;background:#ecfdf5;color:#047857;padding:1px 8px;border-radius:99px">预置</span>'
+          : (t.builtin ? '<span style="font-size:11px;background:#eef1f5;color:#5f5e5a;padding:1px 8px;border-radius:99px">内置</span>' : '')}
         ${t.active ? '<span style="font-size:11px;background:#15803d;color:#fff;padding:1px 8px;border-radius:99px">使用中</span>' : ''}
       </div>
       <div style="font-size:12px;color:#6b7280;margin-top:2px">${esc(t.author || '佚名')}${t.version ? ' · v' + esc(t.version) : ''}${t.builtin ? '' : ' · ' + esc(t.id)}</div>
@@ -1735,7 +1739,7 @@ async function viewThemes() {
   };
   const render = (data) => {
     listEl.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:14px">${data.items.map(cardHtml).join('')}</div>
-    <p class="hint">点「预览」可以先看效果，宽度可切桌面 / 平板 / 手机 —— 预览只对你这个登录态生效，访客看到的仍是当前主题；满意后再点「启用」。启用后打开前台任意页面即可看到新外观；正在使用的主题被删除时会自动恢复「系统默认」。设计主题的方法见 README 的《主题设计指南》。</p>`;
+    <p class="hint">点「预览」可以先看效果，宽度可切桌面 / 平板 / 手机 —— 预览只对你这个登录态生效，访客看到的仍是当前主题；满意后再点「启用」。启用后打开前台任意页面即可看到新外观；正在使用的主题被删除时会自动恢复「系统默认」。「预置」主题随仓库发布，不能删除；想改它就在同 id 下上传一份覆盖。设计主题的方法见 README 的《主题设计指南》。</p>`;
     listEl.querySelectorAll('button[data-pv]').forEach((b) => b.addEventListener('click', () => {
       openPreview(b.dataset.pv, b.dataset.pvname || b.dataset.pv);
     }));

@@ -1,0 +1,7 @@
+{
+  "id": "wp-2012",
+  "name": "印记 2012",
+  "author": "移植自 huhexian/2012-huhexian（GPL-2.0）",
+  "version": "1.0.0",
+  "description": "灰底白纸 + 蓝色链接的极简中文博客外观：标题字距拉宽、导航通栏双细线、正文首行缩进两字、小标题左侧蓝竖线。移植自 WordPress 主题 2012-huhexian，只改样式，不动页面结构。"
+}

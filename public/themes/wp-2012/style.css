@@ -1,0 +1,502 @@
+/* ============================================================
+   印记 2012 —— 移植自 WordPress 主题 2012-huhexian（GPL-2.0）
+   ------------------------------------------------------------
+   原主题的结构是「灰底 + 居中的白纸卡片」：
+     body{#e6e6e6}  →  .site{白底、max-width:1080、padding:0 40、
+                             margin:24px auto、0 2px 6px rgba(100,100,100,.3) 投影}
+   本站的主题层只注入 CSS、不能改 DOM，于是把「白纸」直接落在 body 上：
+   html 铺灰、body 当卡片。这样页头、正文、页脚天然在同一张纸上，
+   不需要给三段各画一次背景（也不会在段与段之间露出缝）。
+
+   配色全部取自原主题的实测值（取自 screenshot.png 与 style.css）：
+     站点标题 #515151 / 副标题 #757575 / 正文 #444 / 链接 #21759b
+     分隔线 #ededed / 页面底色 #e6e6e6 / 小标题底 #f6f6f6 / 引用底 #f7f7f7
+   ============================================================ */
+
+:root {
+  --bg: #e6e6e6;
+  --card: #ffffff;
+  --text: #444444;
+  --text-soft: #555555;
+  --muted: #757575;
+  --line: #ededed;
+  --accent: #21759b;
+  --accent-soft: #eef4f8;
+  --on-accent: #ffffff;
+  --tint: #f6f6f6;
+  --quote-bg: #f7f7f7;
+  --quote-text: rgba(0, 0, 0, .5);
+  --code-bg: #f7f7f7;
+  --code-text: #666666;
+  --inline-code-bg: #f2f2f2;
+  --ok: #2f7d32;
+  --bad: #b3261e;
+  /* 原主题正文用的是 -apple-system 那一套，中文落到苹方 / 微软雅黑 */
+  --font-body: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial,
+    "PingFang SC", "Microsoft YaHei", "Source Han Sans SC", "Noto Sans CJK SC", sans-serif;
+}
+
+/* ---------- 一、页面 = 一张纸 ---------- */
+html { background: var(--bg) }
+
+body {
+  background: var(--card);
+  max-width: 1080px;
+  margin: 24px auto;
+  padding: 0;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.8;
+  box-shadow: 0 2px 6px rgba(100, 100, 100, .3);
+  /* 圆角原主题没有；这里也不给，保持「一张纸」的直角 */
+}
+
+.wrap { max-width: 1000px; padding: 0 40px }
+.wrap.wide { max-width: 1000px }   /* 双栏也只到纸边，不再向外撑 */
+
+/* 单栏：把纸和正文一起收窄。
+   原主题是固定两栏（没挂件时正文会拉满 1000px，一行太长、并不好读），
+   这里用 :has() 识别「主区没有 wide（= 侧栏关）」，纸收到 900、正文 820。
+   旧浏览器不认 :has() 就退回满宽，不影响可用性。 */
+@media (min-width: 1081px) {
+  body:has(.main .wrap:not(.wide)) { max-width: 900px }
+  body:has(.main .wrap:not(.wide)) .wrap { max-width: 820px }
+}
+
+/* ---------- 二、页头 ---------- */
+/* 原主题：标题在上、导航独占一行并带上下两条细线；右侧原本是印章 / 搜索 */
+.hd {
+  background: transparent;
+  border-bottom: 0;
+  padding-top: 26px;
+}
+.hd-in {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0;
+  padding: 0 0 0;
+}
+.brand {
+  order: 1;
+  margin-right: auto;
+  display: block;              /* 站点名与副标题各占一行 */
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.85;
+  color: #515151;
+  letter-spacing: .06em;
+}
+.brand small {
+  display: block;
+  margin-top: 0;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.85;
+  color: #757575;
+  letter-spacing: 0;
+}
+.brand-mark {
+  display: none;               /* 原主题的站点名是纯文字，没有色块图标 */
+}
+.brand-img { border-radius: 3px }
+
+/* 右上角的图标按钮：原主题是一枚朱红印章，这里收成细边方块 */
+.hd-acts { order: 2; margin-bottom: 8px; gap: 8px }
+.theme-btn, .search-btn {
+  width: 30px;
+  height: 30px;
+  border: 1px solid #e0e0e0;
+  border-radius: 2px;
+  background: #fff;
+  color: #8a8a8a;
+}
+.theme-btn:hover, .search-btn:hover { border-color: #21759b; color: #21759b }
+
+/* 导航：通栏、上下细线、项与项之间 32px，不再有胶囊底色 */
+.nav {
+  order: 3;
+  flex-basis: 100%;
+  margin-top: 14px;
+  gap: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  align-items: stretch;
+}
+.nav a {
+  padding: 10px 0;
+  margin-right: 32px;
+  border-radius: 0;
+  background: none;
+  color: #6a6a6a;
+  font-size: 14px;
+  line-height: 1.8;
+  letter-spacing: .04em;
+}
+.nav a:hover {
+  background: none;
+  color: #21759b;
+  text-decoration: none;
+}
+/* 原主题的当前项只加粗、不变色也不加下划线 —— 这里照做，别自己发明一个 tab 条 */
+.nav a.on {
+  background: none;
+  color: #636363;
+  font-weight: 700;
+}
+/* 带下拉的项（「朋友」）对齐修正。
+   骨架里 .nav-drop 是 inline-block、里面的 <a> 是**行内元素**：行内盒按基线定位，
+   实测 a.top=133 / h=36，而普通链接是 top=137 / h=45 —— 于是「朋友」那几个字
+   比邻居高出一截，下面的留白也更大。把它变成 flex 容器，<a> 就成了撑满整行的
+   块级项，六项就齐了。只在桌面生效：≤640px 时骨架会把下拉平铺成普通链接。 */
+@media (min-width: 641px) {
+  .nav-drop { display: flex; align-items: stretch }
+  /* 只把外层变成 flex 就够了：<a> 作为 flex 项会被块级化并撑满高度，
+     文字靠自身的 10px 内边距垂直居中。不要再给 <a> 加 display:flex ——
+     那样「朋友」与 ▾ 会各自变成 flex 项，被当成两块排开（innerText 里会多出一个换行）。 */
+}
+
+.nav-drop > .caret { font-size: 10px; opacity: .5 }
+.nav-sub {
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: #efefef;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .08);
+}
+.nav-sub a {
+  margin: 0;
+  padding: 8px 14px;
+  border-bottom: 0;
+  color: #555;
+  font-size: 13px;
+}
+.nav-sub a:hover { background: #e3e3e3; color: #333; border-bottom-color: transparent }
+
+/* 顶栏搜索框：跟着纸面走，不要圆角 */
+.hd-search input {
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  background: #fff;
+  color: var(--text);
+}
+.hd-search input:focus { border-color: #21759b; outline: none }
+
+/* ---------- 三、主体 ---------- */
+.main { padding: 24px 0 40px }
+
+/* 列表卡片：原主题没有卡片框，只有条目之间的一条虚线/细线 */
+.pc {
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 0 0 26px;
+  margin: 0 0 26px;
+  gap: 20px;
+}
+.pc:last-of-type { border-bottom: 0 }
+.pc-title {
+  margin: 0 0 10px;
+  font-size: 22px;
+  font-weight: 400;            /* 原主题标题不加粗，靠蓝色与字号立起来 */
+  line-height: 1.45;
+}
+.pc-title a { color: #21759b }
+.pc-title a:hover { color: #0f3647; text-decoration: none }
+.pc-meta { font-size: 12.5px; color: var(--muted); margin-bottom: 8px }
+.pc-meta a { color: var(--muted) }
+.pc-meta a:hover { color: #21759b }
+.pc-excerpt { font-size: 15px; line-height: 1.9; color: var(--text) }
+.pc-tags { margin-top: 10px }
+.tag-chip {
+  background: none;
+  border: 1px solid #e4e4e4;
+  border-radius: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 2px 9px;
+}
+.tag-chip:hover { border-color: #21759b; color: #21759b; background: none }
+.pc-cover img { border-radius: 3px; box-shadow: 0 1px 4px rgba(0, 0, 0, .2) }
+.pin-badge { background: #21759b; border-radius: 2px }
+
+/* 分类 / 标签 / 友链等小卡片：一律去掉圆角与阴影，只留细边 */
+.chip, .cat-card, .link-card, .tag-pill {
+  border-radius: 2px;
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+.chip:hover, .tag-pill:hover, .link-card:hover { border-color: #21759b; color: #21759b }
+
+/* 分页：原主题是蓝色方块（#0073aa，当前页 #00a0d2） */
+.pager { gap: 0; margin-top: 34px }
+.pager a, .pager span {
+  background: #0073aa;
+  border: 0;
+  border-radius: 0;
+  color: #fff;
+  font-size: 14px;
+  padding: 7px 13px;
+  margin-right: 4px;
+}
+.pager a:hover { background: #005f8d; color: #fff; text-decoration: none }
+.pager .cur { background: #00a0d2; color: #fff }
+.pager .dim { background: #d8d8d8; color: #fff; opacity: 1 }
+
+/* ---------- 四、文章页 ---------- */
+.article { background: none; border: 0; border-radius: 0; padding: 0 }
+.article h1 {
+  margin: 0 0 12px;
+  font-size: 26px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: #21759b;
+}
+.art-meta { font-size: 12.5px; color: var(--muted) }
+.art-body {
+  margin-top: 22px;
+  font-size: 16px;
+  line-height: 1.9;
+  color: var(--text);
+}
+/* 原主题正文首行缩进两字，段与段之间靠行距而不是空白分隔 */
+.art-body > p { text-indent: 2em; margin: 0 0 .9em }
+.art-body p { margin: 0 0 .9em }
+.art-body a {
+  color: #21759b;
+  border-bottom: 1px solid rgba(33, 117, 155, .28);
+}
+.art-body a:hover { color: #0f3647; border-bottom-color: #0f3647; text-decoration: none }
+
+/* 小标题：左侧 5px 竖线 + 浅灰底（原主题的标志性样式） */
+.art-body h2 {
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.6;
+  margin: 26px 0 16px;
+  padding: 6px 12px;
+  background: #f6f6f6;
+  border-left: 5px solid #21759b;
+  border-radius: 0;
+}
+.art-body h3 {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.7;
+  margin: 22px 0 14px;
+  padding: 4px 12px;
+  background: #f6f6f6;
+  border-left: 5px solid #53a7dc;
+  border-radius: 0;
+}
+.art-body h4 { font-size: 16px; font-weight: 700; margin: 18px 0 10px }
+
+/* 引用：无左边框、8px 圆角、浅灰底 + 一层很轻的投影 */
+.art-body blockquote {
+  margin: 24px 8px;
+  padding: 1em 1.1em;
+  background: #f7f7f7;
+  border: 0;
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .2);
+  color: rgba(0, 0, 0, .5);
+  font-size: 14.5px;
+  line-height: 1.8;
+}
+.art-body blockquote p { text-indent: 0; margin: 0 0 .55em }
+.art-body blockquote p:last-child { margin-bottom: 0 }
+
+/* 配图：3px 圆角 + 轻投影 */
+.art-body img { border-radius: 3px; box-shadow: 0 1px 4px rgba(0, 0, 0, .2) }
+.art-body .video-embed, .art-body video { border-radius: 3px; overflow: hidden }
+
+/* 代码：原主题是浅色块（pre 的 color 是 #666） */
+.art-body pre {
+  background: #f7f7f7;
+  border: 1px solid #ededed;
+  border-radius: 3px;
+  padding: 16px 18px;
+  color: #666;
+  font-size: 13.5px;
+  line-height: 1.8;
+}
+.art-body pre code { background: none; color: inherit; padding: 0 }
+.art-body code {
+  background: #f2f2f2;
+  color: #555;
+  border-radius: 2px;
+  padding: 1px 5px;
+  font-size: .92em;
+}
+.art-body hr { border: 0; border-top: 1px solid var(--line); margin: 34px 0 }
+
+.art-body table { border-collapse: collapse; font-size: 14.5px }
+.art-body th, .art-body td { border: 1px solid #e5e5e5; padding: 8px 12px }
+.art-body th { background: #f6f6f6; font-weight: 700; color: #636363 }
+
+/* 目录卡片：细边、无圆角 */
+.toc { background: #fafafa; border: 1px solid var(--line); border-radius: 3px }
+.toc-i a.on { color: #21759b; border-left-color: #21759b }
+
+/* 上一篇 / 下一篇 */
+.pn { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); border-radius: 0; background: none }
+.pn a:hover { color: #21759b }
+
+/* 点赞条 */
+.like-bar { background: none; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding-top: 18px }
+.like-btn { border: 1px solid #ddd; border-radius: 2px; background: #fff; color: #666 }
+.like-btn.on { border-color: #21759b; background: #eef4f8; color: #21759b }
+
+/* ---------- 五、评论 ---------- */
+.comments { background: none; border: 0; border-radius: 0; padding: 0; margin-top: 30px }
+.comments h2 { font-size: 16px; font-weight: 700; color: #636363 }
+.cmt { border-top: 1px solid var(--line); padding-top: 16px }
+.cmt-top { gap: 10px }
+.avatar { border-radius: 50% }   /* 原主题头像是圆的，且悬停会转一圈 */
+.avatar img { border-radius: 50% }
+.cmt-who b { color: #3d3d3d }
+.cmt-body { font-size: 14.5px; line-height: 1.85; color: var(--text) }
+.cform input, .cform textarea, .lock-inp, .lf-input {
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  background: #fff;
+  color: var(--text);
+}
+.cform input:focus, .cform textarea:focus { border-color: #21759b; outline: none }
+.cform .btn, .lock-btn, .lf-foot .btn-p, .btn-p {
+  background: #0073aa;
+  border-radius: 2px;
+  color: #fff;
+}
+.btn { border-radius: 2px }
+
+/* ---------- 六、侧边栏 ---------- */
+/* 原主题的挂件没有卡片框，靠 4.8rem 的间距分开 */
+.sd { gap: 34px }
+.sd-w {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+.sd-t {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #636363;
+  letter-spacing: 0;
+}
+.sd-t::before { display: none }   /* 去掉骨架的小竖条，原主题标题是纯文字 */
+.sd-body p, .sd-list, .sd-cmt { font-size: 13.5px; line-height: 2; color: var(--text-soft) }
+.sd-i a { color: #555 }
+.sd-i a:hover { color: #21759b }
+.sd-tag { background: #fff; border: 1px solid #e4e4e4; border-radius: 2px; color: #666 }
+.sd-tag:hover { background: #21759b; border-color: #21759b; color: #fff }
+.sd-search input { border: 1px solid #ccc; border-radius: 3px; background: #fff }
+.sd-search button { background: #0073aa; border-radius: 2px }
+.sd-about b { color: #3d3d3d }
+.sd-body img, .sd-about img { border-radius: 50%; box-shadow: 0 1px 4px rgba(0, 0, 0, .2) }
+
+/* 侧栏的统计 / 热力图 / 状态：去圆角、去描边，跟纸面融为一体 */
+.sd-stat, .sd-svr, .sd-svkv, .sd-hlg { color: var(--text-soft) }
+.sd-svbar { border-radius: 0 }
+.sd-hc { border-radius: 0 }       /* 原主题没有任何圆角，高亮格子也切成小方块 */
+.sd-svr b.ok { color: #2f7d32 }
+.sd-svr b.warn { color: #b26a00 }
+.sd-svr b.bad { color: #b3261e }
+
+/* ---------- 七、页脚 ---------- */
+.ft {
+  background: transparent;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 18px 0 26px;
+}
+.ft a { color: var(--muted); border-bottom: 1px solid #dcdcdc }
+.ft a:hover { color: #21759b; border-bottom-color: #21759b; text-decoration: none }
+
+/* 空态、提示、归档等零碎：统一成细边 + 直角 */
+.empty, .desc, .hint { color: var(--muted) }
+.arc-tabs a { border-radius: 2px }
+.arc-tabs a.on { background: #0073aa; color: #fff }
+.arc-block, .arc-g { border-radius: 0 }
+
+/* ---------- 八、夜间（原主题自带 dark，切到深灰而不是纯黑） ---------- */
+html[data-theme="dark"] {
+  --bg: #1c1c1c;
+  --card: #2b2b2b;
+  --text: #c9c9c9;
+  --text-soft: #b3b3b3;
+  --muted: #8d8d8d;
+  --line: #3a3a3a;
+  --accent: #6aa9c9;
+  --accent-soft: #26343b;
+  --on-accent: #12212a;
+  --tint: #333333;
+  --quote-bg: #333333;
+  --quote-text: rgba(255, 255, 255, .58);
+  --code-bg: #262626;
+  --code-text: #bdbdbd;
+  --inline-code-bg: #3a3a3a;
+}
+html[data-theme="dark"] { background: var(--bg) }
+html[data-theme="dark"] body { background: var(--card); box-shadow: 0 2px 6px rgba(0, 0, 0, .5) }
+html[data-theme="dark"] .brand { color: #d0d0d0 }
+html[data-theme="dark"] .nav a { color: #a8a8a8 }
+html[data-theme="dark"] .nav a.on { color: #e2e2e2 }
+html[data-theme="dark"] .nav-sub { background: #303030; border-color: #3f3f3f }
+html[data-theme="dark"] .nav-sub a { color: #b5b5b5 }
+html[data-theme="dark"] .nav-sub a:hover { background: #3a3a3a; color: #e2e2e2 }
+html[data-theme="dark"] .pc-title a { color: #79b6d6 }
+html[data-theme="dark"] .pc-title a:hover { color: #a8d3e8 }
+html[data-theme="dark"] .article h1 { color: #79b6d6 }
+html[data-theme="dark"] .art-body h2 { background: #333; border-left-color: #4d8fae }
+html[data-theme="dark"] .art-body h3 { background: #333; border-left-color: #3f7a97 }
+html[data-theme="dark"] .art-body blockquote { background: #333; box-shadow: 0 1px 4px rgba(0, 0, 0, .4) }
+html[data-theme="dark"] .art-body pre { background: #262626; border-color: #3a3a3a; color: #bdbdbd }
+html[data-theme="dark"] .art-body code { background: #3a3a3a; color: #cfcfcf }
+html[data-theme="dark"] .art-body th { background: #333; color: #cfcfcf }
+html[data-theme="dark"] .art-body th, html[data-theme="dark"] .art-body td { border-color: #3f3f3f }
+html[data-theme="dark"] .tag-chip { border-color: #444; color: #a3a3a3 }
+html[data-theme="dark"] .tag-chip:hover { border-color: #79b6d6; color: #79b6d6 }
+html[data-theme="dark"] .chip, html[data-theme="dark"] .cat-card, html[data-theme="dark"] .link-card,
+html[data-theme="dark"] .tag-pill { background: #2f2f2f; border-color: #3d3d3d }
+html[data-theme="dark"] .theme-btn, html[data-theme="dark"] .search-btn { background: #2f2f2f; border-color: #3f3f3f; color: #9a9a9a }
+html[data-theme="dark"] .cform input, html[data-theme="dark"] .cform textarea,
+html[data-theme="dark"] .lock-inp, html[data-theme="dark"] .lf-input,
+html[data-theme="dark"] .sd-search input, html[data-theme="dark"] .hd-search input {
+  background: #262626; border-color: #444; color: #cfcfcf;
+}
+html[data-theme="dark"] .toc { background: #2f2f2f; border-color: #3d3d3d }
+html[data-theme="dark"] .like-btn { background: #2f2f2f; border-color: #444; color: #b5b5b5 }
+
+/* ---------- 九、窄屏 ---------- */
+/* ≤1080：纸边贴满屏幕，投影与上下留白取消（原主题在窄屏就是这么退的） */
+@media (max-width: 1080px) {
+  body {
+    max-width: none;
+    margin: 0;
+    box-shadow: none;
+  }
+  .wrap, .wrap.wide { max-width: none; padding: 0 22px }
+  .hd { padding-top: 18px }
+}
+
+@media (max-width: 640px) {
+  .brand { font-size: 22px; line-height: 1.7 }
+  .brand small { font-size: 12.5px }
+  /* 导航在手机上是横向滑动条，别被 32px 的项距撑出横向溢出 */
+  .nav { margin: 10px -22px 0; padding: 0 12px; overflow-x: auto; flex-wrap: nowrap }
+  .nav a { margin-right: 22px; padding: 9px 0; white-space: nowrap }
+  .main { padding: 18px 0 30px }
+  .pc-title { font-size: 19px }
+  .article h1 { font-size: 22px }
+  .art-body { font-size: 15.5px; line-height: 1.85 }
+  .art-body h2 { font-size: 17.5px; margin: 22px 0 14px }
+  .art-body h3 { font-size: 16px }
+  .art-body blockquote { margin: 20px 0 }
+  .art-body pre { font-size: 12.5px; padding: 14px }
+  .sd { gap: 26px }
+}

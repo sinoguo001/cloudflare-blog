@@ -33,6 +33,7 @@ import * as zip from './_lib/zip.js';
 // 数据导入（Ver 0.7 ①）：只负责白名单与写库，SQL 解析在浏览器端做（理由见文件头注释）
 import * as importdb from './_lib/importdb.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
+import * as presets from './_lib/presets.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
 import { newCaptcha, checkCaptcha, clearCaptchaCookie } from './_lib/captcha.js';
 
@@ -209,13 +210,29 @@ async function handle(ctx) {
     if (!rel.length || rel.some((x) => x === '..' || x === '.' || x.includes('\\'))) return err('非法路径', 400);
     const key = 'themes/' + rel.join('/');
     const obj = await env.BLOG.get(key);
-    if (!obj) return err('资源不存在', 404);
-    const ct = obj.httpMetadata?.contentType || obj.customMetadata?.ct || mimeOfExt(key);
-    return new Response(obj.body, {
+    if (obj) {
+      const ct = obj.httpMetadata?.contentType || obj.customMetadata?.ct || mimeOfExt(key);
+      return new Response(obj.body, {
+        headers: {
+          'content-type': ct,
+          'cache-control': 'public, max-age=300',
+          'etag': obj.httpEtag || '',
+        },
+      });
+    }
+    // 预置主题兜底（Ver 0.7 ⑥）：文件在 public/themes/<id>/，由静态资源层托管。
+    // 顺序是「R2 先、预置后」—— 想改某个预置主题，上传一份同 id 的覆盖它即可，
+    // 不用改仓库、也不用重新部署。地址形状仍是 /theme-assets/<id>/style.css，
+    // 所以 themeLink() 与后台卡片一个字都不用改。
+    if (!presets.isPreset(rel[0])) return err('资源不存在', 404);
+    const assetUrl = new URL('/themes/' + rel.join('/'), url.origin).toString();
+    const res = await env.ASSETS.fetch(new Request(assetUrl, { method: 'GET' }));
+    if (!res || !res.ok) return err('资源不存在', 404);
+    return new Response(method === 'HEAD' ? null : res.body, {
       headers: {
-        'content-type': ct,
+        'content-type': res.headers.get('content-type') || mimeOfExt(key),
+        // 与 R2 主题资源同一个新鲜期：5 分钟。仓库里的文件更新后不用等 4 小时的平台默认缓存
         'cache-control': 'public, max-age=300',
-        'etag': obj.httpEtag || '',
       },
     });
   }
@@ -384,12 +401,17 @@ async function front(ctx, url, seg, method, path) {
   // 存在性用 head() 核实：id 合法但主题已被删时不覆盖，页面照旧显示当前主题。
   const pvId = previewThemeId(url.searchParams.get('theme'));
   if (pvId && user) {
-    const exists = pvId === 'default' || (env.BLOG && await env.BLOG.head('themes/' + pvId + '/style.css'));
+    const exists = pvId === 'default' || presets.isPreset(pvId)
+      || (env.BLOG && await env.BLOG.head('themes/' + pvId + '/style.css'));
     if (exists) {
       s.set('active_theme', pvId);
-      // 预览条要显示中文名：theme.json 读不到就退回 id
-      //（横幅不该因为元数据损坏而消失，否则人会分不清自己看的是预览还是线上）
+      // 预览条要显示中文名：预置主题的元信息在 presets.js，别的主题读 theme.json，
+      // 都拿不到就退回 id（横幅不该因为元数据损坏而消失，否则人分不清预览与线上）
       let pvName = pvId === 'default' ? '系统默认' : '';
+      if (!pvName && presets.isPreset(pvId)) {
+        const t = presets.LIST.find((x) => x.id === pvId);
+        if (t) pvName = t.name;
+      }
       if (!pvName) {
         try {
           const mj = env.BLOG && await env.BLOG.get('themes/' + pvId + '/theme.json');
@@ -1291,6 +1313,9 @@ async function api(ctx, url, seg, method) {
         id: 'default', name: '系统默认', author: '内置', version: '1.0',
         description: '页面骨架自带的默认外观（浅色），无需任何文件。', builtin: true, active: active === 'default',
       }];
+      // 预置主题（Ver 0.7 ⑥）：随仓库发布，不查 R2 也能列出来。
+      // 不用 R2.list 一起扫 —— 它们的文件根本不在 R2 里。
+      for (const t of presets.all()) items.push({ ...t, active: active === t.id });
       const list = await env.BLOG.list({ prefix: 'themes/', limit: 1000 });
       const ids = new Set();
       for (const o of list.objects || []) {
@@ -1298,6 +1323,9 @@ async function api(ctx, url, seg, method) {
         if (m) ids.add(m[1]);
       }
       for (const id of [...ids].sort()) {
+        // 同 id 的以预置那条为准，免得列表里出现两行一模一样的主题。
+        // （用户上传的同名文件仍然生效：资源代理是「R2 先、预置后」。）
+        if (presets.isPreset(id)) continue;
         const meta = { id, name: id, author: '', version: '', description: '', builtin: false, active: active === id };
         try {
           const j = await env.BLOG.get('themes/' + id + '/theme.json');
@@ -1340,8 +1368,11 @@ async function api(ctx, url, seg, method) {
         return json({ ok: true, active: 'default' });
       }
       if (!/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(id)) return err('主题 ID 不合法', 400);
-      const css = await env.BLOG.get('themes/' + id + '/style.css');
-      if (!css) return err('主题不存在或缺少 style.css', 404);
+      // 预置主题的文件在 public/themes/，R2 里查不到是正常的，不能因此判它不存在
+      if (!presets.isPreset(id)) {
+        const css = await env.BLOG.get('themes/' + id + '/style.css');
+        if (!css) return err('主题不存在或缺少 style.css', 404);
+      }
       await db.setSetting(dbx, 'active_theme', id);
       clearAll();
       return json({ ok: true, active: id });
@@ -1351,6 +1382,11 @@ async function api(ctx, url, seg, method) {
     if (method === 'DELETE' && seg.length === 2) {
       const id = String(seg[1]).toLowerCase().replace(/[^a-z0-9-]+/g, '').slice(0, 40);
       if (!id || id === 'default') return err('内置主题不可删除', 400);
+      // 预置主题的文件在仓库里，R2 里本来就没有东西可删 —— 混进来只会清空一个不存在的目录，
+      // 让人误以为「删掉了」。直接拒绝，并说清正确的改法。
+      if (presets.isPreset(id)) {
+        return err('预置主题随仓库发布，不能删除；想改它的样式，请上传一份同 id 的主题覆盖', 400);
+      }
       let cursor;
       let deleted = 0;
       do {
