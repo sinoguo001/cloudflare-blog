@@ -214,133 +214,6 @@
 
 ---
 
-## 🚀 部署（一次性）
-
-> 需要：一个 Cloudflare 账号。两种部署方式任选其一：
-> - **方式 A（命令行）**：需要一台装有 Node.js 18+ 的电脑，跑下方 4 条命令；
-> - **方式 B（零本地，全浏览器）**：不想在本机安装任何软件（含 Node）时使用，见文末《免本地部署（Pages + GitHub）》。绑定变量名见下文注释。
-
-**方式 A（命令行）**
-
-> 📄 **先准备配置文件**：仓库里只提供模板 `wrangler.example.toml`（刻意不带 `wrangler.toml`，以免锁死网页绑定管理，详见文末"绑定锁"坑）。命令行部署前先复制一份：
-> ```bash
-> cp wrangler.example.toml wrangler.toml     # Windows：copy wrangler.example.toml wrangler.toml
-> ```
-> 然后打开生成的 `wrangler.toml`，取消 `[[d1_databases]]`、`[[r2_buckets]]` 两段注释，把 `database_id` 换成下一步输出的真实 ID。
-> 若改用方式 B（Git 集成），**不要**把模板改名提交上去。
-
-```bash
-# 1) 登录（弹出浏览器授权一次）
-npx wrangler login
-
-# 2) 创建 D1 数据库与 R2 存储桶
-npx wrangler d1 create blog-db     # 把输出的 database_id 填进 wrangler.toml
-npx wrangler r2 bucket create blog-assets
-
-# 3) 建表（读取 migrations/ 目录）
-npx wrangler d1 migrations apply blog-db
-
-# 4) 部署（目录内含 functions/，自动作为 API 与渲染层）
-npx wrangler pages deploy public --project-name blog
-```
-
-部署完成后打开 `https://blog.pages.dev/admin`：
-
-1. 首次进入会看到**初始化向导**——填写站点名称、副标题、作者署名与管理员账号（仅此一次可用），提交后自动登录；
-2. 点「写文章」，享受所见即所得编辑 → 一键发布；
-3. 到「设置」页把站点信息、主题色调好（前台即时生效）。
-
-**安全必做**：在 Pages 控制台 `Settings → Variables and Secrets` 添加同名**加密变量** `AUTH_SECRET`（随机长字符串，覆盖 toml 里的兜底值）。密码以 PBKDF2 加盐哈希存储，会话为 HMAC 签名的 HttpOnly Cookie。
-
-**可选**：再加 `CF_ZONE_ID` 与 `CF_API_TOKEN`（Cache Purge 权限）两个变量，内容变动后系统会主动清边缘缓存、发布即刻可见；不加也能用，只是新内容最长 10 分钟后才自动出现。详见《边缘缓存与清缓存》。
-
-> 关于绑定（D1 `DB`、R2 `BLOG`）：命令行部署时写在 `wrangler.toml` 里即可。**免本地 Git 部署则相反——仓库里只要存在 `wrangler.toml`，Pages 就会锁定网页上的绑定管理**（Bindings 页提示“此项目的绑定在通过 wrangler.toml 进行管理”，Add binding 按钮不可用）。因此 Git 部署请**删除仓库里的 `wrangler.toml`**（删除不影响构建：输出目录 `public` 已存在 Pages 项目设置里），随后在 `Settings → Functions → Bindings` 手动添加绑定（变量名严格用 `DB` 与 `BLOG`），再 Deployments 里 Retry 一次生效。详见文末《免本地部署》第 5 步的坑说明。
-
----
-
-## ⚡ 边缘缓存与清缓存
-
-前台页面会缓存到 Cloudflare 边缘节点：匿名访客命中缓存时**不查数据库、也不渲染**，所以打开很快（更接近静态站）。缓存**新鲜期 10 分钟**，过期后系统会**先把旧页给访客、同时在后台重渲染**一份新的，访客不会卡在等待上。
-
-**不缓存的内容**：博主登录态、加密文章解锁后的正文（这两类响应标了 `private, no-store`）、搜索页、404 页、密码输错页；`/api/*` 接口一律不缓存。
-
-**清缓存（可选，推荐配）**：想让「发布 / 改完就立刻全网可见」，在 Pages 项目 `Settings → Variables and Secrets` 再加两个变量；内容变动后系统会自动把受影响的页面清掉：
-
-| 变量名 | 类型 | 值 |
-|---|---|---|
-| `CF_ZONE_ID` | 明文 | 域名所在区域的 **Zone ID**：控制台首页点进你的域名（如 `100825.xyz`），页面右侧滚到底部的 **API** 区域，点 **Copy** 即可（**别拿成旁边的 Account ID**） |
-| `CF_API_TOKEN` | **加密** | 右上角头像 → **My Profile** → **API Tokens** → **Create Token** → 找到 **Purge Cache** 模板点 **Use template** → Zone Resources 选 `Include → Specific zone → 你的域名` → **Continue to summary** → **Create Token**。**这串只在创建时显示一次，务必当场复制存好** |
-
-> ⚠️ **加完变量必须重新部署一次才生效**：`Deployments` 页 → 最新那条右边的 `…` → **Retry deployment**。少了这一步，前面白配。
-> **不配也能正常用**，只是新内容最多 10 分钟后自动出现（缓存自然过期）。
-> 用 `*.pages.dev` 域名时清缓存不可用（没有可授权的 Zone），此时不必配。
-> 加一个 `CF_PURGE_MODE=all` 可让它一律整区清空——比起只清受影响的几个地址更彻底，但会消耗更多配额。
-
-**怎么确认缓存生效**：F12 → Network → 刷新，看页面请求的响应头 `x-edge-cache`：
-
-| 值 | 含义 |
-|---|---|
-| `HIT` | 命中缓存，这次没查库 |
-| `MISS` | 未命中，这次重新渲染并已写入缓存 |
-| 没有这个头 | 该请求不参与缓存（你正登录着，或这是搜索 / 404 / 密码错误页 / API） |
-
----
-
-## 💻 本地预览（可选）
-
-```bash
-npx wrangler d1 migrations apply blog-db --local   # 首次建本地库
-npx wrangler pages dev public                                # http://127.0.0.1:8788
-```
-
----
-
-## 📁 工程结构
-
-```
-cloudflare-blog/
-├── CHANGELOG.md             # 完整更新历史（倒序），README 只放最新版本摘要
-├── wrangler.example.toml    # 命令行部署的配置模板（复制为 wrangler.toml 并填 database_id 后用）；Git 部署不要提交 wrangler.toml，否则会锁死网页绑定
-├── migrations/0001_init.sql # 数据库建表 + 默认设置（命令行迁移用）
-├── migrations/d1-console.sql # 最新完整结构（12 表 + 11 索引 + 默认设置），D1 网页 Console 整段粘贴一次成型
-├── migrations/0005~0012.sql # 老库升级的增量迁移（页面 / 二级分类 / 导航 / 加密 / 点赞 / 置顶 / 友圈 / 友圈白名单），新装不必跑
-├── themes-example/          # 示例主题（可整个拖入后台安装）
-│   ├── ocean-blue/          #   浅色主题：theme.json + style.css
-│   └── ink-night/           #   深色主题
-├── functions/               # = Workers（Pages Functions）
-│   ├── [[path]].js          # 唯一入口：/api/*、前台 SSR、rss/sitemap/robots、/media 与 /theme-assets 代理
-│   └── _lib/
-│       ├── admin-shell.js   # 后台入口 HTML（自动生成，勿手改；改 index.html 后跑 .gen-admin-shell.mjs）
-│       ├── md.js            # 自研 Markdown 渲染器（GFM 子集 + XSS 全转义）
-│       ├── hl.js            # 代码高亮（21 种语言 / 7 套配色，输出 hljs 标准类名）
-│       ├── md5.js           # Gravatar 头像地址所需的 MD5
-│       ├── captcha.js       # 算术验证码：SVG 生成 + 答案 HMAC 签名校验
-│       ├── db.js            # D1 数据访问层
-│       ├── auth.js          # PBKDF2 密码哈希 + HMAC 会话
-│       ├── cache.js         # 边缘缓存（Cache API）：匿名请求先读缓存，过期后台重渲染
-│       ├── purge.js         # 内容变动后调 purge API 全局清缓存（未配置则静默跳过）
-│       ├── site.js          # 前台模板与骨架 CSS（THEME_VARS 变量表 + SIDEBAR_CSS）+ 主题外链注入
-│       ├── sidebar.js       # 侧边栏：挂件目录、配置清洗、按勾选拼 HTML（配置存 settings，不建表）
-│       ├── embed.js         # 外站视频解析：B 站 / YouTube 页地址 → 内嵌播放器（含 b23.tv 短链逐跳校验）
-│       ├── ipgeo.js         # IP 归属地：百度 / 太平洋 / 纯真三接口、公网 IP 判定、缓存与批量补齐
-│       ├── toc.js           # 文章目录：从正文 HTML 现场抽 h2/h3 生成锚点与目录（老文章不用重存）
-│       └── util.js          # 时间(UTC+8)/转义/分页/MIME 等工具
-├── public/                  # = Pages 静态资源
-│   ├── _routes.json         # Functions 路由排除表：/admin* 走纯静态托管（不占函数额度）
-│   ├── js/site.js           # 前台：评论异步提交 + 阅读量 + 加载后补「我赞过没」
-│   ├── favicon.svg
-│   └── admin/               # 后台单页应用（零依赖原生 JS，含「主题」管理页）
-│       ├── index.html
-│       ├── css/app.css
-│       └── js/{app,editor,api,ui}.js   # api.js 内含上传前 WebP 转码
-├── .gen-admin-shell.mjs     # 由 public/admin/index.html 重新生成 admin-shell.js（node .gen-admin-shell.mjs）
-└── .smoke.mjs               # Markdown 渲染器自检脚本（node .smoke.mjs）
-```
-
-依赖：**零 npm 运行时依赖**（渲染器、编辑器、后台全部手写），部署即拷即用。
-
----
-
 ## 🔄 日常使用路径
 
 | 你想做 | 怎么做 |
@@ -409,44 +282,6 @@ export default {
 
 **Q：评论旁边的「江苏省南京市 电信」是怎么来的？能关掉吗？**
 留言时会顺带查一次访客 IP 的归属地，结果存进自己的数据库，**同一个 IP 只查一次**。后台看得到完整 IP + 归属地，**前台只显示位置**，不会把访客的完整地址公开；内网地址（192.168.x 之类）不查也不显示。「设置 → 评论设置」里可随时关掉，也能换查询接口：**百度**（默认）、**太平洋电脑网**、**纯真 IP 库**。三家 IP 库数据略有出入，同一个地址可能给出不同的省市，换一个接口就是换一套数据源；某个接口查不到或临时打不开时，只是不显示归属地，**不影响评论本身**。
-
----
-
-## 🧪 本地自检
-
-```bash
-node .smoke.mjs             # 对 Markdown 渲染器跑一轮输出与 XSS 断言
-node .theme-smoke.mjs       # 校验主题系统：变量注入 / 主题外链 / 编辑器预览联动
-node --experimental-sqlite .permalink-smoke.mjs   # 永久链接：预设生成、路由命中、旧地址 301、非法规则拦截
-node --experimental-sqlite .copyright-smoke.mjs   # 版权说明：留空不显示、变量替换、XSS 转义、换行
-node .cpui-smoke.mjs                              # 版权说明后台卡片结构（无浏览器时的静态校验）
-node --experimental-sqlite .pages-smoke.mjs       # 独立页面：/p/别名 可访问、不进首页/归档/搜索/RSS、进站点地图
-node --experimental-sqlite .subcat-smoke.mjs      # 二级分类：层级路由与 301、父页归集子文章、删父提子
-node --experimental-sqlite .nav-smoke.mjs         # 导航栏：五项开关、分类 in_nav、二级分类下拉
-node --experimental-sqlite .navmobile-smoke.mjs   # 手机版页头：导航条不换行可横滑、下拉平铺不被裁、触控高度、桌面不受影响
-node --experimental-sqlite .lock-smoke.mjs        # 文章加密：锁屏渲染、密码校验与 Cookie、RSS 排除
-node --experimental-sqlite .accent-smoke.mjs      # 主题色：注入顺序、后台变量写入、浅色主色转深字
-node --experimental-sqlite .brand-smoke.mjs       # 品牌图标：favicon 与页头恒为品牌蓝、自定义图标让位、缓存版本号
-node --experimental-sqlite .migr-smoke.mjs        # 建库脚本：d1-console.sql 与迁移链结构等价、可重复执行
-node --experimental-sqlite .like-smoke.mjs        # 文章点赞：自动建表、再点取消、加密/页面不给赞、备份与清理
-node --experimental-sqlite .dark-smoke.mjs        # 日夜模式：导航按钮、首帧定色、暗色变量压得住主题
-node --experimental-sqlite .gray-smoke.mjs        # 全站灰度：默认关闭、开启后整站变灰、换主题仍生效
-node --experimental-sqlite .searchbar-smoke.mjs   # 顶栏搜索：图标展开、搜索页自动展开回显、Esc / 点别处收起
-node --experimental-sqlite .pin-smoke.mjs         # 文章置顶：自动补列、优先级连续、上下调序、前台排序与角标、归档/RSS 不受影响
-node --experimental-sqlite .friends-smoke.mjs     # 友圈：RSS/Atom 解析、内网地址拦截、抓取超时与失败、订阅增删改查、前台友圈页与「朋友」下拉
-node --experimental-sqlite .friendwl-smoke.mjs    # 友圈白名单：默认需审核、老库升级不丢文章、审核/批量/忽略、设为白名单自动放行历史待审、前台可见性
-node --experimental-sqlite .pager-smoke.mjs       # 翻页：首页/分类/二级分类/标签/友圈的链接正确、只有一页不出空分页条
-node --experimental-sqlite .archive-smoke.mjs     # 归档页：统计口径、分类/热门标签分布、按年与按月两种分组、折叠默认态、空态
-node --experimental-sqlite .cache-smoke.mjs       # 边缘缓存：命中不查库、登录与解锁态绕开、过期后台刷新、清缓存接口与跳过规则
-node --experimental-sqlite .sidebar-smoke.mjs     # 侧边栏：默认关闭、左右位置、各挂件渲染、条数与调序、脏数据兜底、后台目录与服务端一致
-node --experimental-sqlite .media-smoke.mjs       # 多媒体：上传类型与体积上限、Range(206) 与 416、外站解析与短链逐跳校验、Markdown 重建标签、编辑器白名单
-node --experimental-sqlite .ipgeo-smoke.mjs       # IP 归属地：三家接口解析（含太平洋 GBK）、公网 IP 判定、缓存与失败重试、后台自动补齐限量、前台不泄露完整 IP
-node --experimental-sqlite .toc-smoke.mjs         # 文章目录：锚点生成规则（中文/去重/沿用已有 id）、层级与空标题、条目不足不出、开关关闭 DOM 与旧版一致、侧边栏时不悬浮
-```
-
-> 涉数据库的脚本需要 Node 20+ 的 `--experimental-sqlite`：会在内存里建一张真库、直接调用 `onRequest` 跑端到端请求，不碰线上数据。
-
-> 提示：Markdown 支持 GFM 常用子集（标题/粗斜体/删除线/引用/列表/任务列表/围栏代码/行内码/链接/图片/表格/分割线/转义）；不支持 setext 标题与多层列表嵌套（缩进内容并入上一项），编辑时请用工具栏生成结构。
 
 ---
 
@@ -527,7 +362,7 @@ my-theme/
 4. **Pages** → Create project → Connect to Git → 授权并选择仓库 → 框架预设 **None**、构建命令**留空**、输出目录 **`public`** → Save and Deploy（首次部署可能失败，属正常）；
 5. **确认仓库里没有 `wrangler.toml`**（仓库自带的是模板 `wrangler.example.toml`，无需处理；若确实存在 `wrangler.toml`，打开它 → 右上角垃圾桶 → Commit）。⚠️ 此文件在 Git 部署模式下**没有作用还会锁死网页绑定**——只要它在，Bindings 页就提示“此项目的绑定在通过 wrangler.toml 进行管理”、无法手动添加（详见下方“绑定锁”坑）。删除不影响构建（输出目录 `public` 已存在 Pages 项目设置里）；
 6. 项目 **Settings → Functions → Bindings**：添加 D1 绑定（变量名 **`DB`**）、R2 绑定（变量名 **`BLOG`**）；**Settings → Variables and Secrets**：添加加密变量 **`AUTH_SECRET`**（随机长串）；
-   - 可选（**推荐，用于「发布后立刻生效」**）：加两个变量让系统在内容变动后主动清缓存，见《边缘缓存与清缓存》一节。**不加也能正常用**，只是新发布的内容最多 10 分钟后才自动出现；
+   - 可选（**推荐，用于「发布后立刻生效」**）：再加 `CF_ZONE_ID` 与 `CF_API_TOKEN`（Cache Purge 权限）两个变量，系统会在内容变动后主动清边缘缓存。**不加也能正常用**，只是新发布的内容最多 10 分钟后才自动出现；
 7. **Deployments** 里对最新一次点 Retry（重新部署，让绑定生效），随后打开 `https://<项目名>.pages.dev/admin` 完成初始化向导即可。
 
 > ⚠️ **D1 网页 Console 建表坑（2026-09 实测）**：把 `migrations/0001_init.sql` 原样复制到 Console 执行会失败——文件开头的 `--` 注释行与行内注释会被 Console 的多语句解析误判，报 `The request is malformed: Requests without any query are not supported`（看起来像"没粘贴成功"，实际已粘贴、只是解析失败）。典型特征是：单独跑 `SELECT 1;` 正常、整段大 SQL 必失败。
