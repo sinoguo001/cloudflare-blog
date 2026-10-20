@@ -461,10 +461,12 @@ async function front(ctx, url, seg, method, path) {
       const u = esc(postUrl(s, p));   // 永久链接：随「文章设置」里的规则变化
       const cover = p.cover_key ? `<div class="pc-cover"><a href="${u}"><img src="/media/${esc(p.cover_key)}" alt="" loading="lazy"></a></div>` : '';
       const tags = (p.tags || []).map((t) => `<a class="tag-chip" href="/tag/${esc(t.slug)}">${esc(t.name)}</a>`).join('');
+      const ex = site.excerptOf(p);
       return `<article class="pc${cover ? '' : ' no-cover'}"><div>
         <div class="pc-meta"><time>${esc(p.published_at || '').slice(0, 10)}</time><span class="dot">·</span><span>阅读 ${p.view_count || 0}</span></div>
         <h2 class="pc-title">${site.pinBadge(p)}<a href="${u}">${esc(p.title)}</a></h2>
-        ${p.excerpt ? `<p class="pc-excerpt">${esc(p.excerpt)}</p>` : ''}
+        ${p.locked ? '<p class="pc-excerpt lock-note">本文已加密，需输入密码访问</p>'
+    : (ex ? `<p class="pc-excerpt">${esc(ex)}</p>` : '')}
         ${tags ? `<div class="pc-tags">${tags}</div>` : ''}</div>${cover}</article>`;
     }).join('');
     // 顶级分类页顶上列出它的二级分类入口；二级分类页则给出返回上级的链接
@@ -617,7 +619,7 @@ async function front(ctx, url, seg, method, path) {
         <div class="pc-meta"><time>${esc(p.published_at || '').slice(0, 10)}</time><span class="dot">·</span><span>${p.view_count || 0} 阅读</span></div>
         <h2 class="pc-title">${site.pinBadge(p)}${p.locked ? '<span class="lock-mark">🔒</span>' : ''}<a href="${esc(postUrl(s, p))}">${esc(p.title)}</a></h2>
         ${p.locked ? '<p class="pc-excerpt lock-note">本文已加密，需输入密码访问</p>'
-    : (p.excerpt ? `<p class="pc-excerpt">${esc(p.excerpt)}</p>` : '')}</div></article>`).join('');
+    : (site.excerptOf(p) ? `<p class="pc-excerpt">${esc(site.excerptOf(p))}</p>` : '')}</div></article>`).join('');
     }
     return html(site.renderListPage(s, {
       head: q ? `“${esc(q)}” 的搜索结果` : '搜索', active: '', title: '搜索', q,

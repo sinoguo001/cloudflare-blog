@@ -833,6 +833,32 @@ ${pvBar}
 }
 
 // ---------- 通用片段 ----------
+// ---------- 列表摘要：被截断的补省略号，本来完整的不加 ----------
+// 摘要入库时会被截断：没手填就取**正文前 180 字**，手填的最多 300 字。
+// 截断处不带任何标记，读者看到的是「话说一半」。
+// 「是不是被截断了」这样判（宁缺勿滥，只加得准）：
+//   · 自动摘要：正好等于正文前 180 字（含入库时可能被 trim 掉尾随空格的情况），
+//     且正文比它长 —— 正文本来就短的整段都在，一个字都不补；
+//   · 手写摘要：正好顶到 300 字上限；
+//   · 结尾已经是 … 的不再动（防重复加）。
+// 不改库里存的值：老文章不用迁移，RSS 等其它出口保持原样。
+export function excerptOf(p, cap = 180) {
+  const stored = String(p.excerpt || '');
+  const raw = stored.trim();
+  if (!raw) {
+    const text = stripHtml(p.content_html || '');
+    return text.length > cap ? text.slice(0, cap) + '…' : text;
+  }
+  if (raw.endsWith('…')) return raw;
+  const full = stripHtml(p.content_html || '');
+  // head = 按入库规则会得到的那 180 字。库里的值可能带尾随空格（slice 不 trim），
+  // 渲染时我们 trim 了，所以两种形态都要认：原样相等，或去空格后相等。
+  const head = full.slice(0, 180);
+  if (full.length > 180 && (head === stored || head.trim() === raw)) return raw + '…';
+  if (raw.length === 300) return raw + '…';
+  return raw;
+}
+
 function catChips(list, base = '/category') {
   if (!list.length) return '';
   // base 分两种：分类用 /category（二级分类拼成 父/子），标签用 /tag（只有一级）
@@ -847,7 +873,7 @@ function postCard(p, s) {
   const url = esc(s ? postUrl(s, p) : '/post/' + p.slug);
   // 加密文章：摘要不能外泄（列表、RSS 都只看得到标题）
   const locked = !!p.locked;
-  const excerpt = locked ? '' : (p.excerpt || stripHtml(p.content_html).slice(0, 260));
+  const excerpt = locked ? '' : excerptOf(p, 260);
   const tags = locked ? '' : (p.tags || []).map((t) => `<a class="tag-chip" href="/tag/${esc(t.slug)}">${esc(t.name)}</a>`).join('');
   // 加密文章：分类仍可显示（不泄露正文），标签与封面不外露
   const cat = p.category ? `<a href="${esc(catUrl(p.category))}">${esc(p.category.name)}</a>` : '';
@@ -1616,7 +1642,7 @@ export async function rssHtml(env, s, origin) {
   const siteTitle = s.get('site_title') || '云尚博客';
   const items = data.items.map((p) => {
     const body = p.content_html || '';
-    const ex = esc((p.excerpt || stripHtml(body).slice(0, 220)) || '（无摘要）');
+    const ex = esc(excerptOf(p, 220) || '（无摘要）');
     const d = p.published_at ? fmtDate(p.published_at) : '';
     return `<a class="it" href="${origin}${esc(postUrl(s, p))}">
   <span class="t">${esc(p.title)}</span>
