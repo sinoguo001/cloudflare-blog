@@ -166,6 +166,16 @@ html[data-theme="dark"] ::selection { background: #4a322c; color: #f2e9dc }
     font-size: 14.5px;
     letter-spacing: .05em;
   }
+  /* 「朋友」这类带下拉的项：骨架里 .nav-drop 是 inline-block、里面的 <a> 是行内元素，
+     行内盒按基线摆放 → 实测整块比邻居**低 5px**（top 27.9 vs 22.9），就是它看起来偏下。
+     外层改 flex 并撑满行高，里面的 <a> 变成撑满的块级项；再给两者同样的
+     height / line-height，文字基线就完全锁死了（不靠 padding 凑高度）。 */
+  .nav-drop { display: flex; align-items: stretch; align-self: stretch }
+  .nav > a, .nav-drop > a {
+    height: 40px;
+    line-height: 38px;      /* 40 - 上下 1px 边框 */
+    padding: 0 11px;
+  }
   .nav a:hover {
     background: none;
     color: var(--accent);

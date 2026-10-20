@@ -151,9 +151,11 @@ body {
    块级项，六项就齐了。只在桌面生效：≤640px 时骨架会把下拉平铺成普通链接。 */
 @media (min-width: 641px) {
   .nav-drop { display: flex; align-items: stretch }
-  /* 只把外层变成 flex 就够了：<a> 作为 flex 项会被块级化并撑满高度，
-     文字靠自身的 10px 内边距垂直居中。不要再给 <a> 加 display:flex ——
-     那样「朋友」与 ▾ 会各自变成 flex 项，被当成两块排开（innerText 里会多出一个换行）。 */
+  /* 只把外层变成 flex 就够了：<a> 作为 flex 项会被块级化并撑满高度。
+     再加一道保险：直接给导航项固定 height + line-height，文字基线不再依赖内边距凑数，
+     双栏 / 单栏 / 任意视口下都落在同一条线上（实测双栏此前有 1-2px 的观感差）。
+     不要再给 <a> 加 display:flex —— 那样「朋友」与 ▾ 会各自变成 flex 项，被当成两块排开。 */
+  .nav > a, .nav-drop > a { height: 46px; line-height: 46px; padding: 0 }
 }
 
 .nav-drop > .caret { font-size: 10px; opacity: .5 }
@@ -374,6 +376,10 @@ body {
 /* ---------- 六、侧边栏 ---------- */
 /* 原主题的挂件没有卡片框，靠 4.8rem 的间距分开 */
 .sd { gap: 34px }
+/* 侧栏收窄：骨架默认 296px，这里收到 264px（正文列相应变宽）。
+   两处都要写，左栏版是 296px + 1fr 的反向顺序。 */
+.ly.sd-right { grid-template-columns: minmax(0, 1fr) 264px }
+.ly.sd-left { grid-template-columns: 264px minmax(0, 1fr) }
 .sd-w {
   background: none;
   border: 0;
