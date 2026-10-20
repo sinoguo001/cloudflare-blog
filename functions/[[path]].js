@@ -359,7 +359,7 @@ async function front(ctx, url, seg, method, path) {
   }))));
   // 侧边栏（Ver 0.5 ②）：没开就立刻返回空串、一次库都不查；开了才按勾选项查。
   // HTML 塞进 s（本请求新建的 Map），layout() 再取出来拼两列，并发请求互不干扰。
-  s.set('_sidebar_html', await buildSidebar(env, s).catch(() => ''));
+  s.set('_sidebar_html', await buildSidebar(env, s, ctx).catch(() => ''));
   const per = Math.min(20, Math.max(1, parseInt(s.get('per_page'), 10) || 8));
   const user = await userFromRequest(env, ctx.request);
   const pageNum = (p) => Math.max(1, parseInt(p, 10) || 1);
@@ -1407,11 +1407,16 @@ async function api(ctx, url, seg, method) {
       // 发信授权码任何情况下都不回传（回显只会增加泄露面）
       // 本接口位于登录守卫之后，属私有接口；这里再兜一层，防止日后被挪到公开区
       const hasPass = !!all.mail_pass;
+      // Cloudflare API Token 同样只回传「有没有配过」，绝不把值送回浏览器。
+      // 它比邮件授权码更敏感：拿到就能读整个 Zone 的流量数据。
+      const hasCfToken = !!all.cf_api_token;
       delete all.admin_pass_hash;
       delete all.admin_pass_salt;
       delete all.admin_pass_iter;
       delete all.mail_pass;
+      delete all.cf_api_token;
       all.mail_pass_set = hasPass ? '1' : '0';
+      all.cf_api_token_set = hasCfToken ? '1' : '0';
       if (!(await authUser())) delete all.email;
       return json(all);
     }
@@ -1477,6 +1482,20 @@ async function api(ctx, url, seg, method) {
     if (b.sidebar_side != null) await db.setSetting(dbx, 'sidebar_side', String(b.sidebar_side) === 'left' ? 'left' : 'right');
     if (b.sidebar_items != null) {
       await db.setSetting(dbx, 'sidebar_items', JSON.stringify(normalizeItems(b.sidebar_items)));
+    }
+    // ---- 服务器状态挂件（Ver 0.7 ⑤）：Cloudflare Analytics 是可选增强 ----
+    // Zone ID 与 API Token 都留空时，前台只显示本站自算的指标（数据库延迟 / 体积 /
+    // 媒体量 / 待审 / 运行天数），一个外部请求都不发。
+    // Token 按「留空 = 保持原值」处理，跟邮件授权码一个规矩：否则每次点保存，
+    // 表单里那个被打了码的框一提交就把真 Token 冲成空串了。
+    if (b.cf_zone_id != null) await db.setSetting(dbx, 'cf_zone_id', String(b.cf_zone_id).trim().slice(0, 64));
+    if (b.cf_api_token != null && String(b.cf_api_token).trim()) {
+      await db.setSetting(dbx, 'cf_api_token', String(b.cf_api_token).trim().slice(0, 200));
+    }
+    if (b.cf_clear_token) await db.setSetting(dbx, 'cf_api_token', '');
+    // 配置一动就把快照作废：否则最长一小时都还在显示旧数字，或者旧的那条报错
+    if (b.cf_zone_id != null || b.cf_api_token != null || b.cf_clear_token) {
+      await db.setSetting(dbx, '_cf_stat', '');
     }
     // ---- 全站灰度：默认关，启用后整站转灰（优先级高于主题） ----
     if (b.gray_mode != null) await db.setSetting(dbx, 'gray_mode', b.gray_mode ? '1' : '0');

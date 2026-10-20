@@ -35,6 +35,13 @@ const concat = (parts) => {
   return out;
 };
 
+// 已经压缩过的格式，直接 store，不试 deflate。
+// 这些格式的熵接近饱和，压完只会更大 —— 本来就会在下面 `z.length < data.length`
+// 那里退回 store，但白跑一次全量扫描要吃掉几百毫秒 CPU 和一份临时缓冲。
+// 「单次打包上限 50MB」能不能在 Workers 上站住，靠的就是这里不干无用功。
+// ⚠️ bmp / wav 不在这里：它们是未压缩的裸数据，deflate 真能压小。
+const STORE_ONLY_RE = /\.(png|jpe?g|gif|webp|avif|ico|mp4|webm|mov|m4v|ogv|mp3|m4a|aac|flac|ogg|opus|weba|zip|gz|tgz|rar|7z|ozip)$/i;
+
 // ⚠️ ZIP 里没有「时区」这个概念，时间戳就得挑一个明确的基准。
 // 这里一律用 **UTC 的 getUTC*** —— Worker 运行时本来就没有本地时区，
 // 用 getHours() 在本地与线上会得到不同数字，测试也没法复现。
@@ -102,7 +109,7 @@ export async function makeZip(files, opts = {}) {
     let method = 0;
     let body = data;
     // 空文件没什么可压的；压完比原文还大（小文件常态）也老实存原文。
-    if (compress && data.length) {
+    if (compress && data.length && !STORE_ONLY_RE.test(name)) {
       const z = await deflateRaw(data);
       if (z && z.length < data.length) { method = 8; body = z; }
     }

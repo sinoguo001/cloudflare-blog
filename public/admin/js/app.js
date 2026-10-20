@@ -1890,7 +1890,7 @@ async function viewBackup() {
     <div class="sec-title">导出静态站点 <small>打包成 Hexo 风格的 Markdown，可搬到任意静态博客</small></div>
     <p class="hint" style="margin-top:0">把已发布的文章导成 <code>_posts/年-月-日-别名.md</code>，YAML front matter 已按 Hexo 惯例写好（标题、时间、分类、标签、摘要、封面）；独立页面导到 <code>pages/</code>，已过审评论导成 <code>_comments.json</code>，包根还有一份 <code>README.md</code> 说明怎么放进 Hexo / Hugo / Astro。正文本来就是 Markdown 原生存的，不做任何转换。</p>
     <p class="hint">不导出：草稿、加密文章（导出去就失去密码保护了）、未过审与回收站里的评论。</p>
-    <div class="field"><label class="chk-line"><input type="checkbox" id="md-media"> 连同图片一起打包（正文与封面用到的图片放进包内 <code>media/</code>，适合整站搬到别处；图片多时包会很大，单次上限 30MB）</label></div>
+    <div class="field"><label class="chk-line"><input type="checkbox" id="md-media"> 连同图片一起打包（正文与封面用到的图片放进包内 <code>media/</code>，适合整站搬到别处；图片多时包会很大，单次上限 50MB）</label><div class="hint" style="margin-top:2px">⚠️ 超过 50MB 的附件不会打进包里，请自行从媒体库下载。</div></div>
     <button class="btn p" id="b-md">⬇ 导出 Markdown 压缩包（.zip）</button>
     <span class="hint" style="margin-left:8px">不勾选时，正文里的图片会改写成线上绝对地址（直接指向本站），这样包最小。</span>
   </div>
@@ -2683,6 +2683,8 @@ const SB_CATALOG = [
   { type: 'archive', name: '按月归档', title: '归档', on: false, count: 6, text: false },
   { type: 'links', name: '友情链接', title: '友情链接', on: false, count: 5, text: false },
   { type: 'stats', name: '站点统计', title: '站点统计', on: false, count: 0, text: false },
+  { type: 'heat', name: '站点热力图', title: '站点热力图', on: true, count: 0, text: false },
+  { type: 'server', name: '服务器状态', title: '服务器状态', on: true, count: 0, text: false },
   { type: 'custom', name: '自定义内容', title: '自定义', on: false, count: 0, text: true },
 ];
 const sbMeta = (t) => SB_CATALOG.find((x) => x.type === t) || null;
@@ -2717,6 +2719,20 @@ function sbFix(raw) {
       o.id = /^[A-Za-z0-9_-]{1,24}$/.test(String((it && it.id) || '')) ? String(it.id) : sbNewId();
     }
     out.push(o);
+  }
+  // 与服务端 normalizeItems 同一步：老配置里没有的内置挂件补进来（插在自定义项之前），
+  // 否则新版本加的挂件在后台列表里根本不出现，也就没法勾选。
+  const missing = [];
+  for (const w of SB_CATALOG) {
+    if (w.type === 'custom' || seen.has(w.type)) continue;
+    const o = { type: w.type, title: w.title, on: !!w.on, text: '' };
+    if (w.count) o.count = w.count;
+    missing.push(o);
+  }
+  if (missing.length) {
+    let at = out.findIndex((x) => x.type === 'custom');
+    if (at < 0) at = out.length;
+    out.splice(at, 0, ...missing);
   }
   return out.length ? out : fallback();
 }
@@ -2946,6 +2962,32 @@ async function viewSettings(tabArg) {
           「条数」只出现在列表类挂件上（1–30）；「内容」按 <b>Markdown</b> 写（链接、图片、列表、代码块都支持），
           <b>不解析 HTML</b>，写不坏页面。<b>自定义项目</b>可以加多个，标题与内容都由你定——想放二维码、公众号、广告位就加它。
           各项只有当站点里真有内容时才出现（例如一篇评论都没有时，「最新评论」自动不显示）。
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="sec-title">服务器状态挂件 <small>可选的 Cloudflare 统计</small></div>
+        <p class="hint" style="margin-top:0">
+          不填这两项也能用：挂件会显示本站自己算得出来的指标——数据库响应耗时、数据库体积、
+          媒体库文件数与占用、待审评论、已运行天数。
+          <b>Workers 读不到 CPU / 内存 / 磁盘</b>，那几项本程序不会拿假数字填。
+          填了下面两项，才会再多一块「近 24 小时的请求数 / 流量 / 缓存命中率」。
+        </p>
+        <div class="field">
+          <label>Cloudflare Zone ID <small>域名概览页右下角「区域 ID」</small></label>
+          <input class="inp" id="s-cf_zone_id" placeholder="32 位十六进制；留空则不接入" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="field">
+          <label>API Token <small>只需 Zone → Analytics → Read 权限</small></label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <input class="inp" id="s-cf_api_token" type="password" autocomplete="new-password" placeholder="留空则不接入" style="flex:1;min-width:190px">
+            <button class="btn" type="button" id="cf-clear-token">清除</button>
+          </div>
+        </div>
+        <p class="hint" style="margin-bottom:0">
+          缓存命中率按<b>字节</b>算（不是按请求数），因为按请求数算会把一堆 304 小响应算成高命中，看着好看但不真实。
+          统计结果缓存 1 小时，不会每次打开页面都去调一次 Cloudflare。
+          ⚠️ Token 存在数据库里，<b>会随「导出数据库」一并带出</b>，导出的文件请自己收好。
         </p>
       </div>
     </div>
@@ -3660,6 +3702,17 @@ async function viewSettings(tabArg) {
     if (last) last.scrollIntoView({ block: 'nearest' });
   });
   sbOnEl.checked = s.sidebar_enabled === '1';
+  // ---- 服务器状态（Ver 0.7 ⑤）：Zone ID 回填；Token 只标记「已保存」 ----
+  set('s-cf_zone_id', s.cf_zone_id);
+  const cfTokEl = v.querySelector('#s-cf_api_token');
+  cfTokEl.placeholder = s.cf_api_token_set === '1' ? '已保存，留空表示不修改' : '留空则不接入';
+  let cfClearToken = false;
+  v.querySelector('#cf-clear-token').addEventListener('click', () => {
+    cfClearToken = true;
+    cfTokEl.value = '';
+    cfTokEl.placeholder = '点「保存全部设置」后生效';
+    toast('保存后才会真正清除');
+  });
   sbSideEl.value = s.sidebar_side === 'left' ? 'left' : 'right';
   sbRender();
   sbSync();
@@ -3738,6 +3791,10 @@ async function viewSettings(tabArg) {
       sidebar_enabled: sbOnEl.checked,
       sidebar_side: sbSideEl.value,
       sidebar_items: sbItems,
+      // 服务器状态（Ver 0.7 ⑤）：Token 留空 = 保持原值，单独用一个布尔标记表示「清除」
+      cf_zone_id: v.querySelector('#s-cf_zone_id').value.trim(),
+      cf_api_token: cfTokEl.value.trim(),
+      cf_clear_token: cfClearToken,
       logo_image: logoIn.value.trim(),
       favicon_image: favIn.value.trim(),
       mail_enabled: v.querySelector('#s-mail_enabled').checked,

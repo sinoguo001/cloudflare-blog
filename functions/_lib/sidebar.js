@@ -14,6 +14,7 @@
 import * as db from './db.js';
 import { esc, postUrl, catUrl } from './util.js';
 import { render as renderMd } from './md.js';
+import * as status from './status.js';
 
 // ---------- 挂件目录 ----------
 // count > 0 表示「这个挂件有显示条数」，后台给数字框；text 表示「有可编辑内容」。
@@ -29,6 +30,9 @@ export const WIDGETS = [
   { type: 'archive', name: '按月归档', title: '归档', on: false, count: 6, text: false },
   { type: 'links', name: '友情链接', title: '友情链接', on: false, count: 5, text: false },
   { type: 'stats', name: '站点统计', title: '站点统计', on: false, count: 0, text: false },
+  // Ver 0.7 ⑤：热力图与状态。都不带条数 / 内容 —— 数据是算出来的，没有可调项
+  { type: 'heat', name: '站点热力图', title: '站点热力图', on: true, count: 0, text: false },
+  { type: 'server', name: '服务器状态', title: '服务器状态', on: true, count: 0, text: false },
   { type: 'custom', name: '自定义内容', title: '自定义', on: false, count: 0, text: true },
 ];
 
@@ -85,6 +89,22 @@ export function normalizeItems(raw) {
       item.id = /^[A-Za-z0-9_-]{1,24}$/.test(String(it.id || '')) ? String(it.id) : newId();
     }
     out.push(item);
+  }
+  // ★ 老配置里没有的「内置」挂件要补进来：新增挂件（如 Ver 0.7 ⑤ 的热力图与状态）
+  //   不会自动出现在已经存过 sidebar_items 的站点上 —— 更麻烦的是后台列表也是照
+  //   这份配置渲染的，列表里没有的那一项就**根本无从勾选**。
+  //   补在第一个自定义项之前（自定义项按惯例排最后），是否显示仍按目录的 on。
+  const missing = [];
+  for (const w of WIDGETS) {
+    if (w.type === 'custom' || seen.has(w.type)) continue;
+    const item = { type: w.type, title: w.title, on: !!w.on, text: '' };
+    if (w.count) item.count = w.count;
+    missing.push(item);
+  }
+  if (missing.length) {
+    let at = out.findIndex((x) => x.type === 'custom');
+    if (at < 0) at = out.length;
+    out.splice(at, 0, ...missing);
   }
   return out.length ? out : defaultItems();
 }
@@ -222,6 +242,21 @@ async function wStats(DB, s, it) {
   return box(it.title, `<div class="sd-stats">${cells.join('')}</div>`);
 }
 
+// 站点热力图（Ver 0.7 ⑤）：近半年每天的文章 / 评论数
+async function wHeat(DB, s, it) {
+  const m = await status.heatData(DB);
+  if (!m) return '';
+  return box(it.title, status.renderHeat(m), 'sd-w-heat');
+}
+
+// 服务器状态（Ver 0.7 ⑤）：见 status.js 顶部注释 —— Workers 上没有 CPU / 内存可读，
+// 这里给的是本站真实可测的指标，Cloudflare 那层没配 Token 就整块不出现。
+async function wServer(env, s, it, ctx) {
+  const m = await status.serverModel(env, s, ctx);
+  if (!m) return '';
+  return box(it.title, status.renderServer(m), 'sd-w-sv');
+}
+
 function wSearch(s, it) {
   return box(it.title,
     `<form class="sd-search" action="/search" method="get">
@@ -251,7 +286,7 @@ function wCustom(s, it) {
 
 // ---------- 入口 ----------
 // 返回 '' 表示「这一页不出现侧边栏」（没开、一个都没勾、或全都没内容）。
-export async function buildSidebar(env, s) {
+export async function buildSidebar(env, s, ctx) {
   const DB = env && env.DB;
   if (!DB) return '';
   if (String(s.get('sidebar_enabled')) !== '1') return '';
@@ -276,6 +311,8 @@ export async function buildSidebar(env, s) {
         case 'archive': h = await wArchive(DB, s, it); break;
         case 'links': h = await wLinks(DB, s, it); break;
         case 'stats': h = await wStats(DB, s, it); break;
+        case 'heat': h = await wHeat(DB, s, it); break;
+        case 'server': h = await wServer(env, s, it, ctx); break;
         case 'custom': h = wCustom(s, it); break;
         default: h = '';
       }

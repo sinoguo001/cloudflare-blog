@@ -140,6 +140,66 @@ export const SIDEBAR_CSS = `
 .sd-stat{background:var(--tint);border-radius:10px;padding:8px 10px;display:grid;gap:1px}
 .sd-stat b{font-size:17px;line-height:1.2;color:var(--accent);font-variant-numeric:tabular-nums}
 .sd-stat span{font-size:12px;color:var(--muted)}
+/* ---------- 站点热力图（Ver 0.7 ⑤） ----------
+   26 列 × 7 行。格子尺寸**不写死 px**：侧边栏在 296px 与窄屏单栏（正文整宽）
+   两种情况下都会出现，写死只会在宽的那头缩成一小坨。列 1fr + 格子 aspect-ratio:1
+   让两种宽度都铺满、都是正方形。
+   双色：文章跟主题色，评论用固定的青色系；深浅靠 opacity 叠在卡片底色上，
+   换主题 / 夜间模式都不用另配一套颜色。 */
+.sd-heat{--hc:#0d9488;display:grid;gap:8px}
+html[data-theme="dark"] .sd-heat{--hc:#2dd4bf}
+.sd-hbox{display:flex;gap:6px;align-items:stretch}
+.sd-hdow{display:grid;grid-template-rows:repeat(7,1fr);gap:2px;width:11px;flex:none;
+  font-size:9.5px;line-height:1;color:var(--muted);text-align:center}
+.sd-hdow i{display:flex;align-items:center;justify-content:center;font-style:normal;
+  min-height:0;overflow:hidden}
+.sd-hmain{flex:1;min-width:0;display:grid;gap:3px;align-content:start}
+.sd-hmon{display:grid;gap:2px;height:11px;font-size:9.5px;line-height:1;color:var(--muted)}
+.sd-hmon span{white-space:nowrap;overflow:visible}
+.sd-hgrid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,auto);gap:2px}
+.sd-hc{display:block;aspect-ratio:1;border-radius:1.5px;background:var(--tint);min-width:0}
+.sd-hc.out{visibility:hidden}
+.sd-hc.p.lv1{background:var(--accent);opacity:.42}
+.sd-hc.p.lv2{background:var(--accent);opacity:.62}
+.sd-hc.p.lv3{background:var(--accent);opacity:.82}
+.sd-hc.p.lv4{background:var(--accent);opacity:1}
+.sd-hc.c.lv1{background:var(--hc);opacity:.42}
+.sd-hc.c.lv2{background:var(--hc);opacity:.62}
+.sd-hc.c.lv3{background:var(--hc);opacity:.82}
+.sd-hc.c.lv4{background:var(--hc);opacity:1}
+.sd-hlg{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11.5px;color:var(--muted)}
+.sd-hlg span{display:inline-flex;align-items:center;gap:4px}
+.sd-hdot{width:8px;height:8px;border-radius:2px;flex:none}
+.sd-hdot.p{background:var(--accent)}
+.sd-hdot.c{background:var(--hc)}
+.sd-hnote{font-size:10.5px;color:var(--muted);opacity:.75}
+/* ---------- 服务器状态（Ver 0.7 ⑤） ---------- */
+.sd-sv{display:grid;gap:7px}
+.sd-svst{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--text)}
+.sd-svst i{width:7px;height:7px;border-radius:50%;flex:none;background:var(--ok);
+  box-shadow:0 0 0 3px rgba(21,128,61,.18)}
+.sd-svst.bad{color:var(--bad)}
+.sd-svst.bad i{background:var(--bad);box-shadow:0 0 0 3px rgba(185,28,28,.18)}
+.sd-svr{display:flex;align-items:baseline;justify-content:space-between;gap:8px;
+  font-size:12.5px;color:var(--muted);margin-top:2px}
+.sd-svr b{font-size:12.5px;color:var(--text);font-variant-numeric:tabular-nums;font-weight:600}
+.sd-svr b.ok{color:var(--ok)}
+.sd-svr b.warn{color:#d97706}
+.sd-svr b.bad{color:var(--bad)}
+.sd-svbar{height:5px;border-radius:3px;background:var(--tint);overflow:hidden}
+.sd-svbar i{display:block;height:100%;border-radius:3px;background:var(--accent);min-width:2px}
+.sd-svbar i.ok{background:var(--ok)}
+.sd-svbar i.warn{background:#d97706}
+.sd-svbar i.bad{background:var(--bad)}
+.sd-svkv{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:4px;
+  padding-top:9px;border-top:1px dashed var(--line)}
+.sd-svkv span{display:grid;gap:1px;font-size:10.5px;color:var(--muted);text-align:center}
+.sd-svkv b{font-size:14px;line-height:1.2;color:var(--text);font-variant-numeric:tabular-nums}
+.sd-svpend{margin-top:2px;padding:5px 9px;border-radius:7px;font-size:11.5px;
+  background:var(--admin-soft);color:var(--admin-text)}
+.sd-svsep{margin-top:6px;font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;
+  color:var(--muted);opacity:.8}
+.sd-svwarn{font-size:11.5px;color:var(--bad);line-height:1.5;word-break:break-word}
 /* 搜索 */
 .sd-search{display:flex;gap:8px}
 .sd-search input{flex:1;min-width:0;padding:8px 11px;border:1px solid var(--line);border-radius:9px;

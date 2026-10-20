@@ -21,10 +21,11 @@ import { postUrl, pageUrl } from './util.js';
 // 勾选「连同图片一起打包」时的护栏。Workers 的内存与响应体都有上限，
 // 不设限就是拿一个 500 收场；宁可当场报错说清楚，也不给一个半截包。
 export const MEDIA_MAX_FILES = 300;
-// 30MB 而不是更大：打包时「所有图片的字节」与「拼好的 zip」会同时在内存里，
-// 峰值差不多是两倍 —— Workers 的内存上限 128MB，卡在 30MB 才留得住余量。
-// 真超了会明确报错让用户取消勾选，不会给一个半截包。
-export const MEDIA_MAX_BYTES = 30 * 1024 * 1024;
+// 50MB 是能撑住的上限，不是随便挑的：打包时「所有媒体的字节」与「拼好的 zip」
+// 会同时驻留内存，峰值约两倍 —— Workers 内存硬上限 128MB，50MB 时约 100MB，
+// 再往上加就没有余量给 Markdown 文本与 D1 结果了。
+// 真超了会明确报错，并在文案里让用户自行从媒体库下载，不给一个半截包。
+export const MEDIA_MAX_BYTES = 50 * 1024 * 1024;
 
 // 正文/封面里的站内媒体路径。尾部把 `)` `"` `<` 和常见中英文标点都排除掉 ——
 // 少了这一段 `![图](/media/a.jpg)` 会把右括号一起吞进 URL。
@@ -236,7 +237,8 @@ export async function dumpHexo(db, opts = {}) {
       total += buf.length;
       if (total > MEDIA_MAX_BYTES) {
         throw new Error('图片等媒体合计已超过 ' + Math.round(MEDIA_MAX_BYTES / 1048576) + 'MB 的上限，'
-          + '无法一次打包。请先取消勾选「连同图片一起打包」——不勾选时正文里的图片会指向线上地址，一样能用。');
+          + '无法一次打包。超过 ' + Math.round(MEDIA_MAX_BYTES / 1048576) + 'MB 的附件请自行从媒体库下载；'
+          + '也可以先取消勾选「连同图片一起打包」——不勾选时正文里的图片会指向线上地址，一样能用。');
       }
       files.push({ name: key, data: buf });
       stats.media++;
