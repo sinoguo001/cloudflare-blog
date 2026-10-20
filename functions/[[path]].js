@@ -313,9 +313,22 @@ function sharedPath(seg) {
 // 且渲染没主动挂 x-cache:0 否决自己（如加密文章的「密码错误」页）
 const SHARED = (seg, r) => r.status === 200 && sharedPath(seg) && r.headers.get('x-cache') !== '0';
 
+// 主题预览的参数校验（Ver 0.7 ⑥）：只认后台同一套 id 规则。
+// 非法值直接当没传（不 400）—— 手工改 URL 打错一个字不该看到报错页。
+function previewThemeId(v) {
+  const id = String(v || '').trim().toLowerCase();
+  if (!id) return '';
+  if (id === 'default') return 'default';
+  return /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(id) ? id : '';
+}
+
 async function serveFront(ctx, url, seg, method, path) {
+  // 带 ?theme= 的请求一律不读也不写共享缓存。
+  // 即便「登录态不缓存」的判据哪天出了偏差，也绝不能让「还没启用的主题」
+  // 落进边缘缓存、被匿名访客看见 —— 这里再加一道与 cookie 无关的闸。
+  const previewing = !!url.searchParams.get('theme');
   const anon = cache.canCache(ctx.request);
-  if (anon) {
+  if (anon && !previewing) {
     // render 是「重新渲染本页」的函数：缓存条目过期时用它做后台刷新。
     // 返回 null = 这一页不该缓存，read() 就不写回去。
     const hit = await cache.read(ctx, url, async () => {
@@ -330,8 +343,9 @@ async function serveFront(ctx, url, seg, method, path) {
   const vetoed = resp.headers.get('x-cache') === '0';   // 渲染自己说「别缓存我」
   const allow = SHARED(seg, resp);
   resp.headers.delete('x-cache');   // 内部标记，不外传
-  if (!anon || vetoed) {
-    // 因人而异（登录态 / 加密文章解锁态），或渲染明确要求不缓存：
+  if (previewing) resp.headers.set('x-robots-tag', 'noindex, nofollow');
+  if (!anon || vetoed || previewing) {
+    // 因人而异（登录态 / 加密文章解锁态 / 主题预览），或渲染明确要求不缓存：
     // 这一份既不能被边缘共享缓存留存，也不能让浏览器把它当公共页面存下来。
     resp.headers.set('cache-control', 'private, no-store');
   } else if (allow) {
@@ -362,6 +376,30 @@ async function front(ctx, url, seg, method, path) {
   s.set('_sidebar_html', await buildSidebar(env, s, ctx).catch(() => ''));
   const per = Math.min(20, Math.max(1, parseInt(s.get('per_page'), 10) || 8));
   const user = await userFromRequest(env, ctx.request);
+  // ---- 主题预览（Ver 0.7 ⑥）：前台任意页面加 ?theme=<id> ----
+  // 只有博主登录态才认。两条理由缺一不可：
+  //   ① 否则任何人都能把「还没启用」的主题套到你的站上试穿；
+  //   ② 预览页绝不能进边缘缓存（serveFront 已按 query 硬拦了一道，这里再按身份拦）。
+  // 只改本请求的 settings Map（每请求新建），不写库，不动任何人的 active_theme。
+  // 存在性用 head() 核实：id 合法但主题已被删时不覆盖，页面照旧显示当前主题。
+  const pvId = previewThemeId(url.searchParams.get('theme'));
+  if (pvId && user) {
+    const exists = pvId === 'default' || (env.BLOG && await env.BLOG.head('themes/' + pvId + '/style.css'));
+    if (exists) {
+      s.set('active_theme', pvId);
+      // 预览条要显示中文名：theme.json 读不到就退回 id
+      //（横幅不该因为元数据损坏而消失，否则人会分不清自己看的是预览还是线上）
+      let pvName = pvId === 'default' ? '系统默认' : '';
+      if (!pvName) {
+        try {
+          const mj = env.BLOG && await env.BLOG.get('themes/' + pvId + '/theme.json');
+          if (mj) { const j = await mj.json(); if (j && j.name) pvName = String(j.name).slice(0, 60); }
+        } catch (e) { pvName = ''; }
+      }
+      s.set('_preview_theme', pvId);
+      s.set('_preview_name', pvName || pvId);
+    }
+  }
   const pageNum = (p) => Math.max(1, parseInt(p, 10) || 1);
 
   // 首页 / /page/n

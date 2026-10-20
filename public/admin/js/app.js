@@ -1682,14 +1682,63 @@ async function viewThemes() {
       <div style="font-size:12px;color:#6b7280;margin-top:2px">${esc(t.author || '佚名')}${t.version ? ' · v' + esc(t.version) : ''}${t.builtin ? '' : ' · ' + esc(t.id)}</div>
       ${t.description ? `<div style="font-size:12.5px;color:#4b5563;margin-top:6px;line-height:1.5">${esc(t.description)}</div>` : ''}
       <div style="margin-top:10px;display:flex;gap:6px">
+        <button class="btn sm g" data-pv="${esc(t.id)}" data-pvname="${esc(t.name)}">预览</button>
         ${t.active ? '' : `<button class="btn sm p" data-act="${esc(t.id)}">启用</button>`}
         ${t.builtin ? '' : `<button class="btn sm d" data-del="${esc(t.id)}">删除</button>`}
       </div></div>`;
     return `<div class="card" style="margin:0;overflow:hidden;padding:0;${t.active ? 'outline:2px solid #2563eb' : ''}">${shot}${meta}</div>`;
   };
+  // 主题预览：用 iframe 打开真实前台，地址带 ?theme=<id>。
+  // 服务端只认博主登录态，并且这类请求既不读也不写边缘缓存（见 serveFront），
+  // 所以预览不会污染任何访客看到的页面。
+  // 「手机 / 平板」不是缩放，而是把 iframe 改窄 —— iframe 有自己的视口，
+  // 骨架的 @media 断点照常生效，看到的才是真机排版而不是缩略图。
+  const openPreview = (id, name) => {
+    const src = '/?theme=' + encodeURIComponent(id);
+    const mask = document.createElement('div');
+    mask.className = 'mask';
+    mask.style.cssText = 'z-index:400;background:rgba(15,23,42,.62);padding:0;display:flex;align-items:stretch;justify-content:center';
+    mask.innerHTML = `
+      <div style="display:flex;flex-direction:column;width:100%;max-width:1360px;height:100%;margin:0 auto;background:#eef2f7">
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:#111827;color:#fff;flex:none;flex-wrap:wrap">
+          <b style="font-size:14px">预览：${esc(name)}</b>
+          <span style="font-size:12px;color:#9ca3af">仅自己可见，访客看不到</span>
+          <div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap" id="pv-dev">
+            <button class="btn sm p" data-w="1280">桌面</button>
+            <button class="btn sm g" data-w="834">平板</button>
+            <button class="btn sm g" data-w="390">手机</button>
+            <a class="btn sm g" href="${src}" target="_blank" rel="noopener">新窗口</a>
+            <button class="btn sm g" id="pv-close">关闭</button>
+          </div>
+        </div>
+        <div id="pv-stage" style="flex:1;min-height:0;overflow:auto;display:flex;align-items:stretch;justify-content:center;padding:16px">
+          <iframe title="主题预览" src="${src}" style="flex:0 0 auto;align-self:stretch;width:1280px;max-width:100%;border:0;border-radius:10px;background:#fff;box-shadow:0 8px 30px rgba(15,23,42,.18)"></iframe>
+        </div>
+      </div>`;
+    document.body.appendChild(mask);
+    document.body.style.overflow = 'hidden';
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const close = () => {
+      mask.remove();
+      document.body.style.overflow = '';
+      document.removeEventListener('keydown', onKey);
+    };
+    document.addEventListener('keydown', onKey);
+    mask.querySelector('#pv-close').addEventListener('click', close);
+    mask.addEventListener('click', (e) => { if (e.target === mask) close(); });  // 点黑边关闭
+    mask.querySelectorAll('#pv-dev button[data-w]').forEach((b) => b.addEventListener('click', () => {
+      mask.querySelectorAll('#pv-dev button[data-w]').forEach((x) => { x.classList.remove('p'); x.classList.add('g'); });
+      b.classList.remove('g');
+      b.classList.add('p');
+      mask.querySelector('iframe').style.width = b.dataset.w + 'px';
+    }));
+  };
   const render = (data) => {
     listEl.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:14px">${data.items.map(cardHtml).join('')}</div>
-    <p class="hint">启用主题后，打开前台任意页面即可看到新外观；正在使用的主题被删除时会自动恢复「系统默认」。设计主题的方法见 README 的《主题设计指南》。</p>`;
+    <p class="hint">点「预览」可以先看效果，宽度可切桌面 / 平板 / 手机 —— 预览只对你这个登录态生效，访客看到的仍是当前主题；满意后再点「启用」。启用后打开前台任意页面即可看到新外观；正在使用的主题被删除时会自动恢复「系统默认」。设计主题的方法见 README 的《主题设计指南》。</p>`;
+    listEl.querySelectorAll('button[data-pv]').forEach((b) => b.addEventListener('click', () => {
+      openPreview(b.dataset.pv, b.dataset.pvname || b.dataset.pv);
+    }));
     listEl.querySelectorAll('button[data-act]').forEach((b) => b.addEventListener('click', async () => {
       const id = b.dataset.act;
       try {

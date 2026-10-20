@@ -738,6 +738,34 @@ export function layout(s, o) {
   // 音频播放（Ver 0.6 ③）：未启用或没填地址时是空串，于是连 CSS 与
   // /js/audio.js 的请求都不会发出去 —— 「不启用不显示」要彻底到这一层。
   const auPanel = audio.panel(s);
+  // 主题预览条（Ver 0.7 ⑥）：只有博主带 ?theme= 打开时才有，普通访客永远看不到。
+  // 为什么必须有这条：预览页与线上页长得一模一样，没有标记时人会以为主题已经启用了，
+  // 回头发现访客看到的还是旧皮肤。全部走内联样式 —— 主题会覆盖任意类名，
+  // 这条悬浮条不该被皮肤改形（包括圆角、颜色、定位）。
+  const pvId = String(s.get('_preview_theme') || '');
+  const pvBar = pvId ? `<div id="pv-bar" data-theme="${esc(pvId)}" style="position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:2147483647;display:flex;align-items:center;gap:9px;max-width:calc(100vw - 20px);padding:8px 14px;border-radius:999px;background:rgba(17,24,39,.94);color:#fff;font:13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.3);white-space:nowrap"><span style="opacity:.72">预览中<span class="pv-hide"> · 未生效</span></span><b style="font-weight:600;max-width:26vw;overflow:hidden;text-overflow:ellipsis">${esc(s.get('_preview_name') || pvId)}</b><a href="#" id="pv-exit" style="color:#93c5fd;text-decoration:none;font-weight:600">退出</a><a class="pv-hide" href="/admin/#/themes" target="_top" style="color:#93c5fd;text-decoration:none;font-weight:600">换主题</a><style>@media(max-width:480px){#pv-bar .pv-hide{display:none}#pv-bar b{max-width:52vw}}</style></div>
+<script>(function(){
+  // 站内跳转必须把 ?theme= 带过去，否则点第一篇文章预览就断了（页面上没有参数，
+  // 服务端就按正常主题渲染）。不用 cookie：cookie 会在这台浏览器上赖着不走，
+  // 事后连自己都分不清看的是预览还是线上；把状态留在地址里，关掉标签页就没了。
+  var T='${esc(pvId)}';
+  function keep(u){try{var x=new URL(u,location.href);if(x.origin===location.origin){x.searchParams.set('theme',T);return x.toString();}}catch(e){}return u;}
+  document.addEventListener('click',function(e){
+    var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;
+    if(!a)return;
+    var raw=a.getAttribute('href');
+    // 纯锚点（页内跳转 / 目录）与伪协议不动；外站链接也不动（不该把主题参数带出去）
+    if(!raw||raw.charAt(0)==='#'||/^(mailto:|tel:|javascript:)/i.test(raw))return;
+    a.setAttribute('href',keep(a.href));
+  },true);
+  document.addEventListener('submit',function(e){
+    var f=e.target;
+    if(!f||String(f.method||'').toLowerCase()!=='get')return;
+    var i=document.createElement('input');i.type='hidden';i.name='theme';i.value=T;f.appendChild(i);
+  },true);
+  var a=document.getElementById('pv-exit');
+  if(a)a.addEventListener('click',function(e){e.preventDefault();var u=new URL(location.href);u.searchParams.delete('theme');location.replace(u.toString());});
+})();</script>` : '';
   const mainInner = side
     ? `<div class="ly ${sideLeft ? 'sd-left' : 'sd-right'}">`
       + `<div class="ly-m">${o.content}</div>`
@@ -799,6 +827,7 @@ ${auPanel ? '<!-- 音频播放器（Ver 0.6 ③）：只在启用且填了地址
   ${beian ? `<br><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">${esc(beian)}</a>` : ''}
 </div></footer>
 ${auPanel}
+${pvBar}
 </body>
 </html>`;
 }
