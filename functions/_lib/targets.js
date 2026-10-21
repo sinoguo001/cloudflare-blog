@@ -76,7 +76,7 @@ const SRC = [
   ['settings', 'SELECT * FROM `settings`'],
   ['categories', 'SELECT * FROM `categories` ORDER BY id'],
   ['tags', 'SELECT * FROM `tags` ORDER BY id'],
-  ['posts', 'SELECT * FROM `posts` ORDER BY id'],
+  ['posts', "SELECT * FROM `posts` WHERE deleted_at IS NULL OR deleted_at='' ORDER BY id"],
   ['post_tags', 'SELECT * FROM `post_tags` ORDER BY post_id, tag_id'],
   ['comments', 'SELECT * FROM `comments` ORDER BY id'],
   ['links', 'SELECT * FROM `links` ORDER BY sort, id'],
@@ -91,6 +91,15 @@ export async function loadSource(db) {
   };
   const out = {};
   for (const [k, sql] of SRC) out[k] = await all(sql);
+  // 老库还没跑 0014 时上面的 deleted_at 条件会让整条查询失败（all() 吞异常返回空数组），
+  // 回退成不过滤 —— 宁可多搬几篇，也绝不能导出一个 0 篇文章的空文件。
+  if (!out.posts.length) out.posts = await all('SELECT * FROM `posts` ORDER BY id');
+  // 回收站里的文章/页面不参与迁移与静态导出：它们的状态可能仍是 published，原样搬过去
+  // 会在目标站真的上线。它们的评论与标签关联一并剔除，否则目标站会多出指向不存在文章的
+  // 孤儿行（Z-Blog 的评论数也会对不上）。
+  const kept = new Set(out.posts.map((p) => p.id));
+  out.post_tags = out.post_tags.filter((r) => kept.has(r.post_id));
+  out.comments = out.comments.filter((c) => kept.has(c.post_id));
   const map = new Map();
   for (const r of out.settings) map.set(r.key, r.value);
   out.settingMap = map;

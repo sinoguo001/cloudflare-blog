@@ -137,6 +137,7 @@ async function wHot(DB, s, it) {
     `SELECT p.id,p.title,p.slug,p.published_at,c.slug AS cat_slug
        FROM posts p LEFT JOIN categories c ON c.id=p.category_id
       WHERE p.status='published' AND p.type='post'
+        AND (p.deleted_at IS NULL OR p.deleted_at='')
       ORDER BY p.view_count DESC, p.id DESC LIMIT ?`
   ).bind(it.count).all();
   const rows = (r.results || []).map((p, i) => liRank(i, postUrl(s, p), p.title));
@@ -150,6 +151,7 @@ async function wRecent(DB, s, it) {
     `SELECT p.id,p.title,p.slug,p.published_at,c.slug AS cat_slug
        FROM posts p LEFT JOIN categories c ON c.id=p.category_id
       WHERE p.status='published' AND p.type='post'
+        AND (p.deleted_at IS NULL OR p.deleted_at='')
       ORDER BY COALESCE(p.published_at,p.updated_at) DESC LIMIT ?`
   ).bind(it.count).all();
   const rows = (r.results || []).map((p) => liPlain(postUrl(s, p), p.title));
@@ -165,6 +167,7 @@ async function wComments(DB, s, it) {
        FROM comments cm JOIN posts p ON p.id=cm.post_id
        LEFT JOIN categories c ON c.id=p.category_id
       WHERE cm.status='approved' AND p.status='published'
+        AND (p.deleted_at IS NULL OR p.deleted_at='')
         AND (p.password IS NULL OR p.password='')
       ORDER BY cm.id DESC LIMIT ?`
   ).bind(it.count).all();
@@ -214,6 +217,7 @@ async function wArchive(DB, s, it) {
   const r = await DB.prepare(
     `SELECT substr(p.published_at,1,7) AS ym, COUNT(*) n FROM posts p
       WHERE p.status='published' AND p.type='post'
+        AND (p.deleted_at IS NULL OR p.deleted_at='')
         AND p.published_at IS NOT NULL AND p.published_at<>''
       GROUP BY ym ORDER BY ym DESC LIMIT ?`
   ).bind(it.count).all();

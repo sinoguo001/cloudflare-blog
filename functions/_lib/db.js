@@ -39,9 +39,12 @@ async function uniqueSlug(db, table, base, excludeId) {
 // type / in_nav 两列由 migrations/0005_pages.sql 建立。万一使用者部署后没跑迁移，
 // 这里在首次访问时自动补上，避免前台因为「no such column: p.type」整站 500。
 // D1 支持在 Worker 里执行 ALTER TABLE，故不需要本地工具链。
-let postColsReady = false;
+// ★ 缓存按「库对象」记，不用一个全局布尔：一个进程里可能同时面对多个库
+//   （测试里的老库 / 新库、导入时的第二个实例），全局布尔会让第二个库误以为已经补过列，
+//   于是它上面第一条带 deleted_at 的查询直接 no such column。
+const postColsReady = new WeakSet();
 export async function ensurePostCols(db) {
-  if (postColsReady) return;
+  if (postColsReady.has(db)) return;
   try {
     const r = await db.prepare('PRAGMA table_info(posts)').all();
     const cols = new Set(((r && r.results) || []).map((x) => x.name));
@@ -52,7 +55,9 @@ export async function ensurePostCols(db) {
     if (!cols.has('password')) await db.prepare("ALTER TABLE posts ADD COLUMN password TEXT NOT NULL DEFAULT ''").run();
     // 文章置顶优先级（0=不置顶，越大越靠前）；列表排序要用，缺列会整站 500
     if (!cols.has('pin')) await db.prepare('ALTER TABLE posts ADD COLUMN pin INTEGER NOT NULL DEFAULT 0').run();
-    postColsReady = true;
+    // 回收站（Ver 0.7 ⑪）：空串=不在回收站；非空=删除时间。前台每条查询都要靠它过滤
+    if (!cols.has('deleted_at')) await db.prepare("ALTER TABLE posts ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''").run();
+    postColsReady.add(db);
     // 顺带补 categories：文章查询要联父分类别名，少这一列会整站 500
     await ensureCatCols(db);
   } catch (e) { /* 补列失败不阻断浏览：没有这两列时页面功能不可用，但文章照常 */ }
@@ -63,9 +68,9 @@ export const postPass = (v) => (v == null ? '' : String(v).slice(0, 64));
 
 // ---------- categories 表结构兜底（Ver 0.4 二级分类） ----------
 // parent_id 由 migrations/0006_subcats.sql 建立，没跑迁移时这里自动补，避免整站 500。
-let catColsReady = false;
+const catColsReady = new WeakSet();   // 同上：按库对象记，别用一个全局布尔
 export async function ensureCatCols(db) {
-  if (catColsReady) return;
+  if (catColsReady.has(db)) return;
   try {
     const r = await db.prepare('PRAGMA table_info(categories)').all();
     const cols = new Set(((r && r.results) || []).map((x) => x.name));
@@ -73,7 +78,7 @@ export async function ensureCatCols(db) {
     if (!cols.has('parent_id')) await db.prepare('ALTER TABLE categories ADD COLUMN parent_id INTEGER NOT NULL DEFAULT 0').run();
     // 导航栏开关：默认 0，升级后导航栏与旧版一致
     if (!cols.has('in_nav')) await db.prepare('ALTER TABLE categories ADD COLUMN in_nav INTEGER NOT NULL DEFAULT 0').run();
-    catColsReady = true;
+    catColsReady.add(db);
   } catch (e) { /* 补列失败时按「全是顶级分类」继续跑，不阻断浏览 */ }
 }
 
@@ -87,6 +92,15 @@ const POST_SEL = `SELECT p.*, c.name AS cat_name, c.slug AS cat_slug,
 // 二级分类的完整路径别名：顶级是自己，二级是「父/子」
 export const catFullSlug = (c) =>
   (c && c.parent_slug ? c.parent_slug + '/' : '') + String((c && c.slug) || '');
+
+// 回收站（Ver 0.7 ⑪）：deleted_at 为空的才是「活着」的文章/页面。
+// ★ 这条和 status='published' 一样是最低门槛，所以默认就排除，只有回收站列表
+//   显式传 deleted:'only' 才反过来只取被删的。任何一个直接写 SQL 的地方
+//   （侧边栏、热力图、仪表盘）都要自己带上同样的条件 —— 漏一处就是删掉的文章还在外面露头。
+// ⚠️ 下面两个常量带 `p.` 前缀，只能用在 `FROM posts p`（或 posts po 要自己改前缀）的查询里；
+//    UPDATE posts / FROM posts 不带别名的地方请手写 `deleted_at`，否则 SQL 直接报错。
+export const LIVE_POST = "(p.deleted_at IS NULL OR p.deleted_at='')";
+export const DELETED_POST = "(p.deleted_at IS NOT NULL AND p.deleted_at<>'')";
 
 function rowOf(p) {
   return {
@@ -114,10 +128,15 @@ function rowOf(p) {
 // type：'post' 文章（默认）| 'page' 独立页面 | 'all' 两者都要
 // 默认只取文章：首页 / 分类 / 标签 / 归档 / 搜索 / RSS 都不该出现「关于我」这类页面，
 // 除非调用方显式传 type，页面由此天然与文章流隔离。
-export async function listPosts(db, { status = 'published', type = 'post', cat, tag, q, inNav, unlockedOnly, pinFirst = true, page = 1, per = 8 } = {}) {
+// deleted：'live'（默认，只取没删的）| 'only'（只用回收站列表）| 'all'
+export async function listPosts(db, { status = 'published', type = 'post', cat, tag, q, inNav, unlockedOnly, pinFirst = true, page = 1, per = 8, deleted = 'live' } = {}) {
   await ensurePostCols(db);
   await ensureCatCols(db);
   const where = [], b = [];
+  // 回收站是最高优先级的口径：'only' 时反过来只留被删的；其余一律排除被删的。
+  // 放在 status 之前，免得调用方传 status:'all' 时把回收站里的也带出来。
+  if (deleted === 'only') where.push(DELETED_POST);
+  else if (deleted !== 'all') where.push(LIVE_POST);
   if (status && status !== 'all') { where.push('p.status=?'); b.push(status); }
   if (type && type !== 'all') { where.push('p.type=?'); b.push(type); }
   if (unlockedOnly) where.push("(p.password IS NULL OR p.password='')");
@@ -151,9 +170,12 @@ export async function listPosts(db, { status = 'published', type = 'post', cat, 
   // 置顶优先（Ver 0.4 ⑪）：pin 大的排最前；未置顶的文章 pin 都是 0，自然回到时间倒序。
   // 归档页走 archivePosts（按时间分组），不受这里影响；pinFirst=false 给「最近文章」这类
   // 语义上必须严格按时间的列表用。
-  const order = pinFirst
-    ? 'ORDER BY p.pin DESC, COALESCE(p.published_at,p.updated_at) DESC'
-    : 'ORDER BY COALESCE(p.published_at,p.updated_at) DESC';
+  // 回收站按「删除时间」倒序（刚删的在最前）——置顶优先级在这里没有意义
+  const order = deleted === 'only'
+    ? 'ORDER BY p.deleted_at DESC, p.id DESC'
+    : (pinFirst
+      ? 'ORDER BY p.pin DESC, COALESCE(p.published_at,p.updated_at) DESC'
+      : 'ORDER BY COALESCE(p.published_at,p.updated_at) DESC');
   const rows = await db.prepare(`${POST_SEL} ${w} ${order} LIMIT ? OFFSET ?`)
     .bind(...b, per, pg.offset).all();
   const items = (rows.results || []).map(rowOf);
@@ -186,12 +208,16 @@ async function fillExtras(db, items) {
   } catch (e) { /* 点赞挂了不连累正文 */ }
 }
 
-export async function getPost(db, { id, slug } = {}) {
+export async function getPost(db, { id, slug, withDeleted = false } = {}) {
   // POST_SEL 里取了父分类别名，没跑 0006 迁移会报 no such column: c.parent_id，先补列
   await ensureCatCols(db);
+  await ensurePostCols(db);
+  // 默认不认回收站里的行：详情页、编辑页、评论校验走的都是这里，
+  // 一处放行就等于「删了还能打开」。只有后台改状态时才显式 withDeleted。
+  const live = withDeleted ? '' : ` AND ${LIVE_POST}`;
   const p = id
-    ? await db.prepare(`${POST_SEL} WHERE p.id=?`).bind(id).first()
-    : await db.prepare(`${POST_SEL} WHERE p.slug=?`).bind(slug).first();
+    ? await db.prepare(`${POST_SEL} WHERE p.id=?${live}`).bind(id).first()
+    : await db.prepare(`${POST_SEL} WHERE p.slug=?${live}`).bind(slug).first();
   if (!p) return null;
   const post = rowOf(p);
   await fillExtras(db, [post]);
@@ -249,12 +275,57 @@ export async function updatePost(db, id, f) {
   return true;
 }
 
+// ---------- 回收站（Ver 0.7 ⑪） ----------
+// 三个动作分工，别混用：
+//   trashPost  ：只写一个删除时间戳。评论、标签关联、点赞、别名、发布时间原样留着 ——
+//                正因如此，还原不需要重拼任何关系，删了再还原跟没删过完全一样。
+//   restorePost：把时间戳清空。顺手再走一次 uniqueSlug：正常不会撞（被删的仍占着自己的
+//                别名），防的是「彻底删除后新文章抢了同一个别名、之后又从备份还原旧文」。
+//   purgePost  ：真删，连带评论、标签关联、点赞一起清（就是原来的 deletePost）。
+export async function trashPost(db, id) {
+  await ensurePostCols(db);
+  // ★ 这里不能用 LIVE_POST：UPDATE 语句没有表别名，写 p.deleted_at 会直接报错
+  const r = await db.prepare(
+    "UPDATE posts SET deleted_at=? WHERE id=? AND (deleted_at IS NULL OR deleted_at='')"
+  ).bind(bnNow(), id).run();
+  return !!(r && r.meta && r.meta.changes);
+}
+
+export async function restorePost(db, id) {
+  await ensurePostCols(db);
+  const r = await db.prepare(
+    "UPDATE posts SET deleted_at='' WHERE id=? AND deleted_at IS NOT NULL AND deleted_at<>''"
+  ).bind(id).run();
+  if (!(r && r.meta && r.meta.changes)) return false;
+  const cur = await db.prepare('SELECT slug FROM posts WHERE id=?').bind(id).first();
+  if (cur && cur.slug) {
+    const slug = await uniqueSlug(db, 'posts', cur.slug, id);
+    if (slug !== cur.slug) await db.prepare('UPDATE posts SET slug=? WHERE id=?').bind(slug, id).run();
+  }
+  return true;
+}
+
 export async function deletePost(db, id) {
   await db.prepare('DELETE FROM comments WHERE post_id=?').bind(id).run();
   await db.prepare('DELETE FROM post_tags WHERE post_id=?').bind(id).run();
   await db.prepare('DELETE FROM posts WHERE id=?').bind(id).run();
   // 点赞记录跟着删：不清会留下孤儿行，日后新建文章复用 id 时会凭空多出赞
   try { await db.prepare('DELETE FROM post_likes WHERE post_id=?').bind(id).run(); } catch (e) { /* 表没建过就算了 */ }
+}
+
+// 清空回收站（可以只清某一类）：逐篇走 purgePost，一条路径，别在这里再写一套 DELETE。
+// 返回真删掉的篇数。传 type 时只清 post / page 其中一类。
+export async function emptyTrash(db, { type } = {}) {
+  await ensurePostCols(db);
+  const where = ["deleted_at IS NOT NULL", "deleted_at<>''"];
+  const args = [];
+  if (type === 'post' || type === 'page') { where.push('type=?'); args.push(type); }
+  const r = await db.prepare(
+    `SELECT id FROM posts WHERE ${where.join(' AND ')} ORDER BY id`
+  ).bind(...args).all();
+  const ids = ((r && r.results) || []).map((x) => x.id);
+  for (const id of ids) await deletePost(db, id);
+  return ids.length;
 }
 
 // ---------- 文章点赞（Ver 0.4 ⑦） ----------
@@ -413,9 +484,11 @@ async function setPostTags(db, postId, names) {
 // 返回 full_slug（父/子）供前台拼地址；count 含二级分类的文章，与父分类页实际列出的数量一致。
 export async function listCategories(db) {
   await ensureCatCols(db);
+  await ensurePostCols(db);   // 计数子查询里用到 posts.deleted_at
   const r = await db.prepare(
     `SELECT c.*, p.slug AS parent_slug, p.name AS parent_name,
        (SELECT COUNT(*) FROM posts po WHERE po.status='published'
+          AND (po.deleted_at IS NULL OR po.deleted_at='')
           AND (po.category_id=c.id OR po.category_id IN (SELECT id FROM categories WHERE parent_id=c.id))) AS count
      FROM categories c LEFT JOIN categories p ON p.id=c.parent_id
      ORDER BY c.parent_id ASC, c.id ASC`).all();
@@ -487,9 +560,11 @@ export async function deleteCategory(db, id) {
 
 // ---------- tags ----------
 export async function listTags(db) {
+  await ensurePostCols(db);   // 计数子查询里用到 posts.deleted_at
   const r = await db.prepare(
     `SELECT t.*, (SELECT COUNT(*) FROM post_tags pt JOIN posts p ON p.id=pt.post_id
-       WHERE pt.tag_id=t.id AND p.status='published') AS count
+       WHERE pt.tag_id=t.id AND p.status='published'
+         AND (p.deleted_at IS NULL OR p.deleted_at='')) AS count
      FROM tags t ORDER BY t.id ASC`).all();
   return r.results || [];
 }
@@ -501,10 +576,14 @@ export async function deleteTag(db, id) {
 // ---------- comments ----------
 export async function listComments(db, { status, limit = 100, postId } = {}) {
   await ensureIpGeoTables(db).catch(() => {});
+  await ensurePostCols(db);   // 下面要按 posts.deleted_at 排除回收站里的留言
   const w = [], b = [];
   // 注意：本查询联了 posts 表，两表都有 status / id 等列，条件必须限定别名 cm.
   if (status && status !== 'all') { w.push('cm.status=?'); b.push(status); }
   if (postId) { w.push('cm.post_id=?'); b.push(postId); }
+  // 回收站里文章的留言不进任何评论列表（Ver 0.7 ⑪）：仪表盘「最近评论」会带出文章标题，
+  // 后台评论页也会出现一条点进去 404 的记录。评论本身没删，文章还原后照常回来。
+  w.push("(p.deleted_at IS NULL OR p.deleted_at='')");
   const wsql = w.length ? 'WHERE ' + w.join(' AND ') : '';
   const r = await db.prepare(
     `SELECT cm.*, p.title AS post_title, p.slug AS post_slug
@@ -561,19 +640,24 @@ export async function recentCommentsByIp(db, ip, seconds = 60) {
 export async function stats(db) {
   await ensurePostCols(db);
   const s = (sql) => db.prepare(sql).first();
-  // 文章数与页面数分开统计：仪表盘「文章 N 篇」不该把「关于我」这类页面算进去
-  const [posts, published, drafts, pages, cats, tags, cmAll, cmPending] = await Promise.all([
-    s(`SELECT COUNT(*) n FROM posts WHERE type='post'`),
-    s(`SELECT COUNT(*) n FROM posts WHERE type='post' AND status='published'`),
-    s(`SELECT COUNT(*) n FROM posts WHERE type='post' AND status='draft'`),
-    s(`SELECT COUNT(*) n FROM posts WHERE type='page'`),
+  // 这里的 posts 查询没有表别名，回收站条件手写（见 LIVE_POST 的告警）
+  const LIVE = "(deleted_at IS NULL OR deleted_at='')";
+  // 文章数与页面数分开统计：仪表盘「文章 N 篇」不该把「关于我」这类页面算进去；
+  // 回收站里的同样不算 —— 删了的文章在后台任何计数里都不该继续占数
+  const [posts, published, drafts, pages, cats, tags, cmAll, cmPending, trash] = await Promise.all([
+    s(`SELECT COUNT(*) n FROM posts WHERE type='post' AND ${LIVE}`),
+    s(`SELECT COUNT(*) n FROM posts WHERE type='post' AND status='published' AND ${LIVE}`),
+    s(`SELECT COUNT(*) n FROM posts WHERE type='post' AND status='draft' AND ${LIVE}`),
+    s(`SELECT COUNT(*) n FROM posts WHERE type='page' AND ${LIVE}`),
     s(`SELECT COUNT(*) n FROM categories`),
     s(`SELECT COUNT(*) n FROM tags`), s(`SELECT COUNT(*) n FROM comments`),
     s(`SELECT COUNT(*) n FROM comments WHERE status='pending'`),
+    // 回收站篇数：导航角标用得到，省得后台为它单开一个接口
+    s(`SELECT COUNT(*) n FROM posts WHERE deleted_at IS NOT NULL AND deleted_at<>''`),
   ]);
   const v = (r) => (r ? r.n : 0);
   return { posts: v(posts), published: v(published), drafts: v(drafts), pages: v(pages),
-    categories: v(cats), tags: v(tags), comments: v(cmAll), pending: v(cmPending) };
+    categories: v(cats), tags: v(tags), comments: v(cmAll), pending: v(cmPending), trash: v(trash) };
 }
 
 // ---------- 站点访问统计（PV / UV，按天聚合） ----------
@@ -1010,7 +1094,8 @@ export async function archivePosts(db) {
     // 只归档文章：页面没有发布时间概念，混进来会变成一堆无日期条目
     `SELECT p.id,p.title,p.slug,p.published_at,c.slug AS cat_slug
       FROM posts p LEFT JOIN categories c ON c.id=p.category_id
-      WHERE p.status='published' AND p.type='post' ORDER BY p.published_at DESC`).all();
+      WHERE p.status='published' AND p.type='post' AND ${LIVE_POST}
+      ORDER BY p.published_at DESC`).all();
   return r.results || [];
 }
 export async function dumpAll(db) {

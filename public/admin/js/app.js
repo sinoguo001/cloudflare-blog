@@ -137,6 +137,12 @@ async function statsBadge() {
         elBadge.textContent = st.pending || '';
         elBadge.style.display = st.pending > 0 ? '' : 'none';
       }
+      // 回收站里堆了多少篇：提醒博主隔段时间去清一次，但也只是个数字，不做自动清理
+      const trBadge = document.getElementById('badge-trash');
+      if (trBadge) {
+        trBadge.textContent = st.trash || '';
+        trBadge.style.display = st.trash > 0 ? '' : 'none';
+      }
     }
     // 待审友链申请也挂个角标（stats 接口不含友链，单独取一次计数）
     // 取不到就别动它：把角标清成 0 会把真实的待审数掩盖掉
@@ -271,6 +277,7 @@ function shell(contentHtml) {
       <a href="#/dashboard" data-nav="dashboard">仪表盘</a>
       <a href="#/posts" data-nav="posts">文章</a>
       <a href="#/pages" data-nav="pages">页面</a>
+      <a href="#/trash" data-nav="trash">回收站<span class="badge" id="badge-trash" style="display:none"></span></a>
       <a href="#/comments" data-nav="comments">评论<span class="badge" id="badge-pending" style="display:none"></span></a>
       <a href="#/links" data-nav="links">朋友<span class="badge" id="badge-links" style="display:none"></span></a>
       <a href="#/categories" data-nav="categories">分类</a>
@@ -410,9 +417,9 @@ async function viewPosts() {
         const id = btn.dataset.id;
         try {
           if (act === 'del') {
-            if (!(await confirmDanger(`确定删除《${btn.dataset.title}》？文章、标签关联与评论将一并删除，此操作不可恢复。`, '删除文章'))) return;
+            if (!(await confirmDanger(`把《${btn.dataset.title}》移入回收站？标签与评论会一起保留，之后可以在「回收站」还原或彻底删除。`, '移入回收站'))) return;
             await API.del('/posts/' + id);
-            toast('已删除');
+            toast('已移入回收站，可在「回收站」还原');
           } else if (act === 'pub') {
             await API.post('/posts/' + id + '/publish', { status: 'published' });
             toast('已发布 ✓ 前台 / 分类 / 标签 / 归档 / RSS / 站点地图已同步');
@@ -799,9 +806,9 @@ async function viewPages() {
         const id = btn.dataset.id;
         try {
           if (act === 'del') {
-            if (!(await confirmDanger(`确定删除页面《${btn.dataset.title}》？此操作不可恢复。`, '删除页面'))) return;
+            if (!(await confirmDanger(`把页面《${btn.dataset.title}》移入回收站？之后可以在「回收站」还原或彻底删除。`, '移入回收站'))) return;
             await API.del('/posts/' + id);
-            toast('已删除');
+            toast('已移入回收站，可在「回收站」还原');
           } else if (act === 'pub') {
             await API.post('/posts/' + id + '/publish', { status: 'published' });
             toast('已发布 ✓ 页面已上线，并进入站点地图');
@@ -824,6 +831,110 @@ async function viewPages() {
     pageTab = b.dataset.t; page = 1; syncTabs(); loadList();
   });
   view().querySelector('#pg-new').addEventListener('click', () => go('#/pages/new'));
+  syncTabs();
+  loadList();
+}
+
+// ================= 回收站（Ver 0.7 ⑪） =================
+// 删除（文章 / 页面）现在只是打一个删除时间戳，评论、标签、别名、发布时间全留着，
+// 所以这里三个动作都很轻：还原 = 清时间戳；彻底删除 = 真删；清空 = 逐篇真删。
+// ★ 列表不复用 viewPosts：那边的接口默认就排除回收站，回收站要走 deleted:'only'。
+async function viewTrash() {
+  pageTitle('回收站');
+  shell(`<div class="page-head"><h1>回收站</h1>
+    <div class="spacer"><button class="btn sm d" id="tr-empty">清空回收站</button></div></div>
+    <div class="card" style="padding:13px 16px;margin-bottom:14px">
+      <div class="hint">删除的文章与页面会先放在这里，<b>原始状态、标签、评论与别名都保留着</b>，可以随时还原。
+        「彻底删除」与「清空回收站」不可撤销 —— 文章、评论、标签关联与点赞会一起清掉。</div>
+    </div>
+    <div class="tabs" id="tr-tabs">
+      <button data-t="all">全部</button><button data-t="post">文章</button><button data-t="page">页面</button>
+    </div>
+    <div class="card"><div id="tr-list"><div class="loading">加载中…</div></div></div>`);
+  let page = 1;
+  let trTab = 'all';
+  let allTotal = 0;      // 「全部」那一档的总数，清空前拿来提醒到底有多少项
+  const tabsEl = view().querySelector('#tr-tabs');
+  const syncTabs = () => {
+    tabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === trTab));
+  };
+  const loadList = async () => {
+    const listEl = view().querySelector('#tr-list');
+    listEl.innerHTML = '<div class="loading">加载中…</div>';
+    try {
+      const qs = new URLSearchParams({ type: trTab, page: String(page), per: '30' });
+      const data = await API.get('/trash?' + qs.toString());
+      if (trTab === 'all') allTotal = data.total || 0;
+      renderRows(listEl, data);
+    } catch (e) { listEl.innerHTML = `<div class="empty-note">${esc(e.message)}</div>`; }
+  };
+  const renderRows = (listEl, data) => {
+    if (!data.items.length) {
+      listEl.innerHTML = '<div class="empty-note">回收站是空的。删除的文章与页面会先出现在这里。</div>';
+      return;
+    }
+    const rows = data.items.map((p) => {
+      const kind = p.type === 'page' ? '<span class="tag-mini">页面</span>' : '<span class="tag-mini">文章</span>';
+      // 状态是「删之前」的状态：还原后会照原样回到已发布 / 草稿，这里提前告诉博主
+      const st = p.status === 'published'
+        ? '<span class="st published">已发布</span>'
+        : '<span class="st draft">草稿</span>';
+      const lockTag = p.locked ? '<span class="tag-mini lock">🔒 加密</span>' : '';
+      return `<tr>
+        <td><div class="cell-title">${esc(p.title)}${kind}${st}${lockTag}</div>
+          <div class="cell-sub">原地址 ${esc(p.url || '')}</div></td>
+        <td style="white-space:nowrap">${fmtTime(p.deleted_at)}</td>
+        <td style="white-space:nowrap">
+          <button class="btn sm ok" data-act="restore" data-id="${p.id}">还原</button>
+          <button class="btn sm d" data-act="purge" data-id="${p.id}" data-title="${esc(p.title)}">彻底删除</button>
+        </td>
+      </tr>`;
+    }).join('');
+    const pager = data.pages > 1 ? `<div class="pager-line">
+      <button class="btn sm" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>‹ 上一页</button>
+      <span class="hint">第 ${data.page} / ${data.pages} 页 · 共 ${data.total} 项</span>
+      <button class="btn sm" data-page="${page + 1}" ${page >= data.pages ? 'disabled' : ''}>下一页 ›</button>
+    </div>` : `<div class="hint" style="margin-top:12px">共 ${data.total} 项</div>`;
+    listEl.innerHTML = `<div class="tbl-w"><table class="tbl"><thead><tr>
+      <th>标题</th><th>删除时间</th><th>操作</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>${pager}`;
+    listEl.querySelectorAll('button[data-act]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const act = btn.dataset.act;
+        const id = btn.dataset.id;
+        try {
+          if (act === 'restore') {
+            const r = await API.post('/posts/' + id + '/restore');
+            // 极端情况下（别名被别的文章占了）还原时会自动改名，这里如实说一声
+            toast(r && r.slug ? `已还原 ✓ 地址 /post/${r.slug}` : '已还原 ✓');
+          } else if (act === 'purge') {
+            if (!(await confirmDanger(`彻底删除《${btn.dataset.title}》？文章、评论、标签关联与点赞会一起删除，无法恢复。`, '彻底删除'))) return;
+            await API.del('/posts/' + id + '/purge');
+            toast('已彻底删除');
+          }
+          loadList();
+        } catch (e) { toast(e.message, 'bad'); }
+      });
+    });
+    listEl.querySelectorAll('[data-page]').forEach((b) => {
+      b.addEventListener('click', () => { page = parseInt(b.dataset.page, 10); loadList(); });
+    });
+  };
+  tabsEl.addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-t]');
+    if (!b) return;
+    trTab = b.dataset.t; page = 1; syncTabs(); loadList();
+  });
+  view().querySelector('#tr-empty').addEventListener('click', async () => {
+    if (!allTotal) { toast('回收站已经是空的'); return; }
+    // confirm 字段是给后端的一道闸：不带它接口直接 400，避免误发请求把库清空
+    if (!(await confirmDanger(`清空回收站？其中 ${allTotal} 项会被彻底删除（文章、评论、标签关联与点赞一并清掉），无法恢复。`, '清空回收站'))) return;
+    try {
+      const r = await API.post('/trash/empty', { confirm: 'empty' });
+      toast(`回收站已清空（${(r && r.removed) || 0} 项）`);
+      page = 1; loadList();
+    } catch (e) { toast(e.message, 'bad'); }
+  });
   syncTabs();
   loadList();
 }
@@ -2877,7 +2988,7 @@ async function viewSettings(tabArg) {
               <button class="btn" type="button" id="fav-clear">清除</button>
             </div>
           </div>
-          <p class="hint" style="margin-bottom:0">上传的图片存入 R2，地址会自动填入左侧输入框，<b>需点下方「保存全部设置」才生效</b>。两者都留空时，页头与标签页图标会显示默认的首字方块：底色固定为品牌蓝（不随主题色变化），方块里的字取站点名称首字（改站点名称会自动跟随）。</p>
+          <p class="hint" style="margin-bottom:0">上传的图片存入 R2，地址会自动填入左侧输入框，<b>需点「保存全部设置」才生效</b>。<b>页头 Logo 一旦填了，页头就只显示这张图</b> —— 首字方块、站点名称与副标题会自动收起，所以图上请自带站名。两者都留空时，页头与标签页图标会显示默认的首字方块：底色固定为品牌蓝（不随主题色变化），方块里的字取站点名称首字（改站点名称会自动跟随）。</p>
         </div>
         <div class="card">
           <div class="sec-title">对外订阅与收录</div>
@@ -3901,6 +4012,7 @@ async function router() {
     if (seg[0] === 'pages' && seg.length === 1) { await viewPages(); return; }
     if (seg[0] === 'pages' && seg[1] === 'new') { await viewEditor(null, 'page'); return; }
     if (seg[0] === 'pages' && /^\d+$/.test(seg[1] || '')) { await viewEditor(parseInt(seg[1], 10), 'page'); return; }
+    if (seg[0] === 'trash' && seg.length === 1) { await viewTrash(); return; }
     if (seg[0] === 'comments') { await viewComments(); return; }
     if (seg[0] === 'links') { await viewLinks(); return; }
     if (seg[0] === 'categories') { await viewCategories(); return; }

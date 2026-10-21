@@ -139,11 +139,11 @@ html[data-theme="dark"] ::selection { background: #4a322c; color: #f2e9dc }
 .brand { font-size: 21px; font-weight: 500; letter-spacing: .06em }
 .brand small { font-family: var(--font-body); letter-spacing: .02em }
 
-/* 首字方块：从圆角蓝块改成朱色小印章 */
+/* 首字方块：只改形状（方一点的印章），★ 底色与字色一律不动 ——
+   品牌标恒为骨架的品牌蓝 #2563eb，不跟 --accent 走。
+   这里写 var(--accent) 会让换主题时「云」跟着变色（Wei 明确要求 logo 不随主题变）。 */
 .brand-mark {
   border-radius: 3px;
-  background: var(--accent);
-  color: var(--on-accent);
   font-family: var(--jp-serif);
   font-weight: 600;
   box-shadow: 0 1px 0 rgba(120, 80, 60, .12);

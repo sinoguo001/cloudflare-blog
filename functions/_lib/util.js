@@ -85,6 +85,43 @@ export const MEDIA_TYPES = {
 };
 // 分类型体积上限。视频留 20MB 余量：平台单次请求体硬上限 100MB，
 // 顶格上传的话超一点就只拿到一个含糊的 413，不如自己先拦下来给句人话。
+// 上传体写 R2：★ R2 只接受「长度已知」的 body —— request.body / response.body，
+// 或 FixedLengthStream 的可读端。千万别为了数字节给 request.body 套 TransformStream：
+// pipeThrough 会把定长信息弄丢，R2 直接抛
+// "Provided readable stream must have a known length"，前台只看到「服务器内部错误」，
+// 跟文件大不大没有半点关系（Ver 0.8 修的就是这个坑）。
+// 带 content-length：原样透传，上限先用表头挡一道；
+// 不带（HTTP/2 chunked）：只能边读边数，读完拼成一块 Uint8Array 再写，长度天然已知。
+// 代价是这份文件要在内存里过一遍，所以上限必须由调用方的 max 兜住。
+export async function putUpload(bucket, key, request, max, opts = {}) {
+  const raw = request.headers.get('content-length');
+  const len = raw == null ? NaN : parseInt(raw, 10);
+  if (Number.isFinite(len) && len > max) return { tooLarge: true };
+  if (!request.body) return { empty: true };
+  if (Number.isFinite(len)) {
+    await bucket.put(key, request.body, opts);
+    return { ok: true, size: len };
+  }
+  const reader = request.body.getReader();
+  const chunks = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.byteLength;
+    if (n > max) {
+      try { await reader.cancel(); } catch (e) { /* 已经断了就算 */ }
+      return { tooLarge: true };
+    }
+    chunks.push(value);
+  }
+  const buf = new Uint8Array(n);
+  let off = 0;
+  for (const c of chunks) { buf.set(c, off); off += c.byteLength; }
+  await bucket.put(key, buf, opts);
+  return { ok: true, size: n };
+}
+
 export const MEDIA_MAX = { image: 8 * 1024 * 1024, audio: 20 * 1024 * 1024, video: 80 * 1024 * 1024 };
 export const mediaKindOf = (ct) => (String(ct || '').startsWith('video/') ? 'video'
   : String(ct || '').startsWith('audio/') ? 'audio' : 'image');

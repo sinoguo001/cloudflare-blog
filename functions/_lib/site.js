@@ -262,7 +262,13 @@ img{max-width:100%}
 .hd{background:var(--card);border-bottom:1px solid var(--line)}
 .hd-in{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding:14px 0}
 .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:20px;color:var(--text);margin-right:auto}
+/* 传了自定义 Logo 图：只留图，「云」方块与站名 / 副标题一起收起。
+   三者同排会显得拥挤，图还会被挤到 20 多像素；而 Logo 本身就是完整标识。 */
+.brand.has-logo .brand-text{display:none}
 .brand-mark{width:34px;height:34px;border-radius:9px;background:#2563eb;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800}
+/* 品牌标恒为品牌蓝：选择器挂到 a.brand 上，特异性高过任何主题的 .brand-mark ——
+   将来哪个主题（或 R2 里那份旧 CSS）再写 background:var(--accent)，这枚方块也不会变色。*/
+a.brand .brand-mark{background:#2563eb;color:#fff}
 .brand-img{height:36px;width:auto;max-width:170px;object-fit:contain;display:block}
 .brand small{display:block;font-weight:400;font-size:12px;color:var(--muted);line-height:1.2}
 .nav{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
@@ -635,7 +641,13 @@ export function brandChar(s) {
 // 页头标识：设了 logo_image 用图片，否则用文字方块（按钮式方形 + 首字）
 function brandMark(s) {
   const img = String(s.get('logo_image') || '').trim();
-  return img ? `<img class="brand-img" src="${esc(img)}" alt="">` : `<span class="brand-mark">${esc(brandChar(s))}</span>`;
+  // 传了自定义 Logo，文字就被收起，图得自己把站名说出来（alt 不能空着）
+  if (img) return `<img class="brand-img" src="${esc(img)}" alt="${esc(String(s.get('site_title') || '').trim())}">`;
+  return `<span class="brand-mark">${esc(brandChar(s))}</span>`;
+}
+// 自定义 Logo 存在时，页头只留图（标题 / 副标题 / 首字方块全收）
+export function hasCustomLogo(s) {
+  return !!String(s.get('logo_image') || '').trim();
 }
 // 动态图标的版本号：每次改 faviconSvg 的画法（换底色、换形状）都要 +1。
 // 它进 URL，URL 一变浏览器与 CDN 就都不会再拿旧缓存 —— 否则改了颜色，浏览器标签里
@@ -797,8 +809,8 @@ ${fontHead(s)}
 ${auPanel ? '<!-- 音频播放器（Ver 0.6 ③）：只在启用且填了地址时才请求它，iOS 之外用到的 HLS 解析库也是按需再加载 -->\n<script src="/js/audio.js?v=1" defer></script>\n' : ''}</head>
 <body data-slug="${o.bodySlug || ''}">
 <header class="hd"><div class="wrap${side ? ' wide' : ''} hd-in">
-  <a class="brand" href="/">${brandMark(s)}
-    <span>${esc(title)}<small>${esc(s.get('site_subtitle'))}</small></span></a>
+  <a class="brand${hasCustomLogo(s) ? ' has-logo' : ''}" href="/">${brandMark(s)}
+    <span class="brand-text">${esc(title)}<small>${esc(s.get('site_subtitle'))}</small></span></a>
   <nav class="nav">
     ${nav('/', '首页', 'home')}
     ${navCatsHtml}

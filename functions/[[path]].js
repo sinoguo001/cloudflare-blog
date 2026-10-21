@@ -5,7 +5,8 @@
 // ============================================================
 import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, isEmail, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard,
   normalizePermalink, permalinkOf, permalinkRegex, postUrl, pageUrl, catUrl, permalinkVarsMatch,
-  sha256Hex, safeEqual, postPassCookie, parseRange, MEDIA_TYPES, MEDIA_MAX, mediaKindOf } from './_lib/util.js';
+  sha256Hex, safeEqual, postPassCookie, parseRange, MEDIA_TYPES, MEDIA_MAX, mediaKindOf,
+  putUpload } from './_lib/util.js';
 // cloudflare:sockets 必须静态 import：Pages Functions 的打包器只稳妥支持顶层静态导入，
 // 动态 import('cloudflare:sockets') 在真机上可能加载失败，表现为接口直接 5xx。
 // 传给 mail.js 而不是让它自己 import —— 这样本地 Node 测试仍能注入假 socket。
@@ -1029,24 +1030,13 @@ async function api(ctx, url, seg, method) {
       const len = parseInt(request.headers.get('content-length') || '0', 10);
       if (len > max) return err(mediaLimitMsg(kind, max), 413);
       const key = MEDIA_PREFIX + `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-      // 慢路：HTTP/2 与流式请求不一定给 content-length，光靠上面那条等于没限制。
-      // 所以边写边数字节，一超限就掐断（R2 会中止这次写入，不会留下半截对象）。
-      let n = 0, over = false;
-      const limiter = new TransformStream({
-        transform(chunk, ctl) {
-          n += chunk.byteLength;
-          if (n > max) { over = true; ctl.error(new Error('MEDIA_TOO_LARGE')); return; }
-          ctl.enqueue(chunk);
-        },
-      });
-      try {
-        await env.BLOG.put(key, request.body ? request.body.pipeThrough(limiter) : request.body,
-          { httpMetadata: { contentType: ct }, customMetadata: { ct } });
-      } catch (e) {
-        if (!over) throw e;
-        await env.BLOG.delete(key).catch(() => {});
-        return err(mediaLimitMsg(kind, max), 413);
-      }
+      // 上限与「已知长度」一起交给 putUpload：它带 content-length 时直接透传 request.body，
+      // 不带时才边读边数。★ 这里绝不能自己 pipeThrough 数字节 —— 长度信息一丢，
+      // R2 就报 "Provided readable stream must have a known length"，上传必 500。
+      const up = await putUpload(env.BLOG, key, request, max,
+        { httpMetadata: { contentType: ct }, customMetadata: { ct } });
+      if (up.tooLarge) return err(mediaLimitMsg(kind, max), 413);
+      if (up.empty) return err('没有收到文件内容', 400);
       // 注意：url 里不能再拼一次 media/ —— R2 的键已经带了，拼两次会变成
       // /media/media/xxx 取不到对象（图片显示不出来、视频放不了）。
       return json({ ok: true, key, url: '/media/' + key.slice(MEDIA_PREFIX.length), kind });
@@ -1086,24 +1076,11 @@ async function api(ctx, url, seg, method) {
     const len = parseInt(request.headers.get('content-length') || '0', 10);
     if (len > max) return err(font.fontLimitMsg, 413);
     const key = font.FONT_PREFIX + `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-    // 与媒体上传同一套「慢路」：HTTP/2 与流式请求不一定带 content-length，
-    // 光靠上面那条等于没限制，所以边写边数字节，一超限立刻掐断。
-    let n = 0, over = false;
-    const limiter = new TransformStream({
-      transform(chunk, ctl) {
-        n += chunk.byteLength;
-        if (n > max) { over = true; ctl.error(new Error('FONT_TOO_LARGE')); return; }
-        ctl.enqueue(chunk);
-      },
-    });
-    try {
-      await env.BLOG.put(key, request.body ? request.body.pipeThrough(limiter) : request.body,
-        { httpMetadata: { contentType: font.FONT_MIME[ext] }, customMetadata: { ct: font.FONT_MIME[ext] } });
-    } catch (e) {
-      if (!over) throw e;
-      await env.BLOG.delete(key).catch(() => {});
-      return err(font.fontLimitMsg, 413);
-    }
+    // 与媒体上传同一个入口：带 content-length 直接透传，未知长度才缓冲（见 util.js putUpload）
+    const up = await putUpload(env.BLOG, key, request, max,
+      { httpMetadata: { contentType: font.FONT_MIME[ext] }, customMetadata: { ct: font.FONT_MIME[ext] } });
+    if (up.tooLarge) return err(font.fontLimitMsg, 413);
+    if (up.empty) return err('没有收到文件内容', 400);
     return json({ ok: true, key, url: '/fonts/' + key.slice(font.FONT_PREFIX.length), ext });
   }
 
@@ -1416,6 +1393,9 @@ async function api(ctx, url, seg, method) {
   // 所有查询并行发起，避免串行往返把 D1 延迟叠加起来。
   if (seg[0] === 'dashboard' && method === 'GET' && seg.length === 1) {
     const monthStart = bnNow().slice(0, 8) + '01'; // 本月 1 号 00:00（北京时间字符串可直接比大小）
+    // 下面 Promise.all 里有几条手写 SQL 直接用 posts.deleted_at，而补列是在 stats()/listPosts()
+    // 内部做的。并发发起时手写 SQL 可能先跑，老库上就会 no such column —— 先显式等补列。
+    await db.ensurePostCols(dbx);
     const nOf = (r) => (r && r.n) || 0;
     const [st, pending, recent, cmts, top, mPosts, mCmts, words, views, pv, linkCnt, linkPending, sm] = await Promise.all([
       db.stats(dbx),
@@ -1425,12 +1405,16 @@ async function api(ctx, url, seg, method) {
       db.listComments(dbx, { status: 'all', limit: 6 }),
       dbx.prepare(`SELECT p.id,p.title,p.slug,p.view_count,p.published_at,c.slug AS cat_slug FROM posts p
                    LEFT JOIN categories c ON c.id=p.category_id WHERE p.status='published'
+                     AND (p.deleted_at IS NULL OR p.deleted_at='')
                    ORDER BY p.view_count DESC, p.id DESC LIMIT 5`).all(),
-      dbx.prepare(`SELECT COUNT(*) n FROM posts WHERE created_at>=?`).bind(monthStart).first(),
+      dbx.prepare(`SELECT COUNT(*) n FROM posts WHERE created_at>=?
+                     AND (deleted_at IS NULL OR deleted_at='')`).bind(monthStart).first(),
       dbx.prepare(`SELECT COUNT(*) n FROM comments WHERE created_at>=?`).bind(monthStart).first(),
       // 字数按 Markdown 源码统计：SQLite 的 length() 对文本返回字符数（不是字节），中文不会被放大 3 倍
-      dbx.prepare(`SELECT COALESCE(SUM(LENGTH(content_md)),0) n FROM posts`).first(),
-      dbx.prepare(`SELECT COALESCE(SUM(view_count),0) n FROM posts`).first(),
+      dbx.prepare(`SELECT COALESCE(SUM(LENGTH(content_md)),0) n FROM posts
+                     WHERE (deleted_at IS NULL OR deleted_at='')`).first(),
+      dbx.prepare(`SELECT COALESCE(SUM(view_count),0) n FROM posts
+                     WHERE (deleted_at IS NULL OR deleted_at='')`).first(),
       // 访问统计表可能尚未建立（老库），失败要给出 null 而不是让整个仪表盘 500
       db.pvSummary(dbx, 7).catch(() => null),
       // 友链表同理：老库还没建时不能拖垮整个仪表盘
@@ -1984,9 +1968,12 @@ async function api(ctx, url, seg, method) {
         return json(out);
       }
       if (method === 'DELETE') {
-        await db.deletePost(dbx, id);
+        // 回收站（Ver 0.7 ⑪）：删除只是打一个时间戳，评论 / 标签 / 别名 / 发布时间全部原样留着，
+        // 所以「还原」不需要重拼任何关系。真要删干净走 /purge 或清空回收站。
+        const ok = await db.trashPost(dbx, id);
+        if (!ok) return err('文章不存在', 404);
         clearForPost(post, await db.settingsMap(dbx));
-        return json({ ok: true });
+        return json({ ok: true, trashed: true });
       }
       if (method === 'PUT') {
         const body = (await readJson(request)) || {};
@@ -2023,6 +2010,63 @@ async function api(ctx, url, seg, method) {
       if (!ok) return err('文章不存在', 404);
       clearForPost(await db.getPost(dbx, { id }), await db.settingsMap(dbx));
       return json({ ok: true, status: b.status });
+    }
+    // 回收站：还原 / 彻底删除（Ver 0.7 ⑪）
+    // 两条都必须排在 GET/PUT/DELETE /api/posts/:id 之外 —— 那个分支只看 seg.length===2，
+    // 这里是 3，不会互相吞。
+    if (seg.length === 3 && /^\d+$/.test(seg[1]) && (seg[2] === 'restore' || seg[2] === 'purge')) {
+      const id = parseInt(seg[1], 10);
+      // 单篇读取要绕过「排除回收站」的默认：否则一条都不可能找到，还原永远 404
+      const gone = await db.getPost(dbx, { id, withDeleted: true });
+      if (!gone) return err('文章不存在', 404);
+      if (!gone.deleted_at) return err('这篇不在回收站里', 400);
+      const sm = await db.settingsMap(dbx);
+      if (seg[2] === 'restore') {
+        if (method !== 'POST') return err('接口不存在', 404);
+        const ok = await db.restorePost(dbx, id);
+        if (!ok) return err('还原失败，请刷新后重试', 409);
+        const back = await db.getPost(dbx, { id });
+        clearForPost(back, sm);
+        // 把最终别名回传：极端情况下还原时别名已被占，会自动加序号，前端要能提示
+        return json({ ok: true, restored: true, slug: back ? back.slug : gone.slug, type: gone.type });
+      }
+      if (method !== 'POST' && method !== 'DELETE') return err('接口不存在', 404);
+      await db.deletePost(dbx, id);
+      clearForPost(gone, sm);
+      return json({ ok: true, purged: true });
+    }
+    return err('接口不存在', 404);
+  }
+  // --- 回收站（Ver 0.7 ⑪）---
+  if (seg[0] === 'trash') {
+    // 列表：文章与页面一起给，按删除时间倒序（与后台「文章 / 页面」两个列表分开的口径不同）
+    if (method === 'GET' && seg.length === 1) {
+      const type = String(url.searchParams.get('type') || 'all');
+      const data = await db.listPosts(dbx, {
+        status: 'all',   // 回收站里已发布与草稿混在一起，状态只做展示，不做筛选
+        type: type === 'post' || type === 'page' ? type : 'all',
+        deleted: 'only',
+        page: parseInt(url.searchParams.get('page'), 10) || 1,
+        per: Math.min(100, parseInt(url.searchParams.get('per'), 10) || 30),
+      });
+      const sm = await db.settingsMap(dbx);
+      data.items = data.items.map((p) => ({
+        ...p,
+        // 地址照常算出来，后台「查看」按钮据此判断能不能点（回收站里的一律不给查看）
+        url: p.type === 'page' ? pageUrl(p) : postUrl(sm, p),
+      }));
+      return json(data);
+    }
+    // 清空：整个回收站唯一一条一次删多篇、且不可撤销的接口，必须带 confirm:'empty'。
+    // 不传或传别的值一律拒绝 —— 默认值要落在「不动数据」那一侧。
+    if (method === 'POST' && seg.length === 2 && seg[1] === 'empty') {
+      const b = (await readJson(request)) || {};
+      if (b.confirm !== 'empty') return err('请确认清空回收站', 400);
+      const type = b.type === 'post' || b.type === 'page' ? b.type : '';
+      const n = await db.emptyTrash(dbx, { type });
+      // 一次删多篇，受影响路径说不全 → 整站缓存一起清（页面不多时比逐个算便宜）
+      clearAll();
+      return json({ ok: true, removed: n });
     }
     return err('接口不存在', 404);
   }

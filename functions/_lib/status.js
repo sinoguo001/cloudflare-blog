@@ -65,6 +65,8 @@ export function fmtBytes(n) {
 // ------------------------------------------------------------
 export async function heatData(DB, opts = {}) {
   if (!DB) return null;
+  // 查询里用到 deleted_at（回收站，Ver 0.7 ⑪）：老库没跑 0014 时先补列，别让挂件整块 500
+  await db.ensurePostCols(DB).catch(() => {});
   const weeks = clampWeeks(opts.weeks);
   // ★ bnNow() 返回「北京时间」字符串，前 10 位就是北京的今天。
   //   绝不能拿 new Date() 去取，Workers 跑在 UTC，会差 8 小时、
@@ -80,7 +82,9 @@ export async function heatData(DB, opts = {}) {
   const r = await DB.prepare(
     `SELECT d, SUM(ap) AS ap, SUM(ac) AS ac FROM (
        SELECT substr(published_at,1,10) AS d, 1 AS ap, 0 AS ac FROM posts
-        WHERE status='published' AND type='post' AND published_at>=? AND published_at<?
+        WHERE status='published' AND type='post'
+          AND (deleted_at IS NULL OR deleted_at='')
+          AND published_at>=? AND published_at<?
        UNION ALL
        SELECT substr(created_at,1,10) AS d, 0 AS ap, 1 AS ac FROM comments
         WHERE status='approved' AND created_at>=? AND created_at<?
@@ -294,6 +298,7 @@ export async function cfStats(env, s, ctx) {
 export async function serverModel(env, s, ctx) {
   const DB = env && env.DB;
   if (!DB) return null;
+  await db.ensurePostCols(DB).catch(() => {});   // 同上：deleted_at 可能还没补
 
   const t0 = Date.now();
   let row = null;
@@ -301,11 +306,14 @@ export async function serverModel(env, s, ctx) {
   try {
     row = await DB.prepare(
       `SELECT
-         (SELECT COUNT(*) FROM posts WHERE status='published' AND type='post') AS posts,
+         (SELECT COUNT(*) FROM posts
+           WHERE status='published' AND type='post'
+             AND (deleted_at IS NULL OR deleted_at='')) AS posts,
          (SELECT COUNT(*) FROM comments WHERE status='approved') AS comments,
          (SELECT COUNT(*) FROM comments WHERE status='pending') AS pending,
          (SELECT MIN(published_at) FROM posts
            WHERE status='published' AND type='post'
+             AND (deleted_at IS NULL OR deleted_at='')
              AND published_at IS NOT NULL AND published_at<>'') AS first_at`
     ).first();
   } catch (e) { dbOk = false; }
