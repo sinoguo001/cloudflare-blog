@@ -3667,7 +3667,7 @@ async function viewSettings(tabArg) {
         const d = await API.upload(file);
         v.querySelector(inputSel).value = d.url || ('/media/' + d.key);
         const pct = d._webp ? Math.max(0, Math.round((1 - d._webp.to / d._webp.from) * 100)) : 0;
-        toast(pct ? `已上传，转 WebP 省 ${pct}%` : '已上传');
+        toast(pct ? `已上传，转 WebP 省 ${pct}% —— 记得点「保存全部设置」` : '已上传 —— 记得点「保存全部设置」');
         refreshIcons();
       } catch (e) { toast(e.message, 'bad'); }
       f.value = '';
@@ -3982,7 +3982,21 @@ async function viewSettings(tabArg) {
     const done = busy('正在保存设置…', '设置即时生效，请稍候');
     try {
       await API.patch('/settings', body);
-      toast('设置已保存 ✓ 前台已同步更新');
+      // ★ 回读核对：接口回 200 不等于真的写进去了（老版 functions 会静默忽略新字段，
+      //   地址被清洗成空串时也照样回 200）。不核对就会出现「明明设过，前台一直是默认」。
+      //   这里只比两个「一改就看得见」的字段，多一次 GET 换一个确定性，值得。
+      const saved = await API.get('/settings/read').catch(() => null);
+      const norm = (x) => String(x || '').trim();
+      const lost = [];
+      if (saved) {
+        if (norm(saved.logo_image) !== norm(body.logo_image)) lost.push('页头 Logo');
+        if (norm(saved.favicon_image) !== norm(body.favicon_image)) lost.push('Favicon');
+      }
+      if (lost.length) {
+        toast(`${lost.join(' 与 ')} 没有写进服务端：请确认线上已部署最新 functions，然后重新上传一次再保存`, 'bad');
+      } else {
+        toast('设置已保存 ✓ 前台已同步更新');
+      }
       v.querySelector('#s-pw').value = '';
       v.querySelector('#s-pw2').value = '';
     } catch (e) { toast(e.message, 'bad'); }

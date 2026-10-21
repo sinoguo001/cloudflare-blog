@@ -1047,7 +1047,10 @@ async function api(ctx, url, seg, method) {
         items: (list.objects || []).map((o) => ({
           key: o.key, size: o.size, uploaded: o.uploaded,
           ct: o.customMetadata?.ct || mimeOfExt(o.key),
-          url: '/media/' + o.key,
+          // R2 的键本身就带 media/ 前缀，再拼一次会得到 /media/media/xxx。
+          // 取的时候虽然兼容这种写法，但界面里复制出来的地址要跟上传接口一致，
+          // 否则粘进 Logo / 正文后会写进一份「历史格式」的路径。
+          url: '/media/' + (o.key.startsWith(MEDIA_PREFIX) ? o.key.slice(MEDIA_PREFIX.length) : o.key),
         })),
         truncated: list.truncated, cursor: list.cursor,
       });
@@ -1482,18 +1485,34 @@ async function api(ctx, url, seg, method) {
     }
     if (method === 'PATCH' && seg.length === 1) {
     const b = (await readJson(request)) || {};
-    // 永久链接先校验再写：不合法直接拒，避免落一半字段；空串表示恢复默认
-    if (b.permalink != null) {
-      const pm = normalizePermalink(b.permalink);
-      if (!pm) return err('永久链接格式不合法：需以 / 开头且包含 {slug} 或 {id}，可用变量 {year} {month} {day} {category}');
-      await db.setSetting(dbx, 'permalink', pm);
+    // ★ 所有「会整条拒绝」的校验必须全部做完再开始写库。
+    //   以前是边校验边写：permalink / email 排在 logo 前面，一旦不合法就直接 return，
+    //   排在后面的 logo、favicon、侧边栏等字段一个都没写。用户看到的是「邮箱格式不正确」，
+    //   却会在下一次保存时发现 Logo 莫名其妙回到了默认（Ver 0.7 ⑩ 踩过）。
+    // 永久链接：不合法直接拒；空串表示恢复默认
+    const pmVal = b.permalink != null ? normalizePermalink(b.permalink) : null;
+    if (b.permalink != null && !pmVal) {
+      return err('永久链接格式不合法：需以 / 开头且包含 {slug} 或 {id}，可用变量 {year} {month} {day} {category}');
     }
-    // 博主邮箱同先校验后写：留空表示清除，填了必须是合法格式（不验证是否真实存在）
-    if (b.email != null) {
-      const em = String(b.email).trim();
-      if (em && !isEmail(em)) return err('邮箱格式不正确（示例：name@example.com）');
-      await db.setSetting(dbx, 'email', em.slice(0, 120));
+    // 博主邮箱：留空表示清除，填了必须是合法格式（不验证是否真实存在）。
+    // 先按原值校验、写入时再截断：先截断会把超长的非法地址截成「看起来合法」。
+    const em = b.email != null ? String(b.email).trim() : null;
+    if (em && !isEmail(em)) return err('邮箱格式不正确（示例：name@example.com）');
+    // 图标地址：只接受站内相对路径或 http(s)，挡掉 javascript: 等伪协议；传空串表示清除。
+    // ★ 非空却不合法时必须报错：以前是静默存成空串、接口照样回 200「已保存」，
+    //   现象正是「明明设过 Logo，前台一直是默认方块，后台输入框还空了」。
+    const safeUrl = (v) => (/^(https?:\/\/|\/)/i.test(String(v || '').trim()) ? String(v).trim().slice(0, 300) : '');
+    const logoVal = b.logo_image != null ? safeUrl(b.logo_image) : null;
+    if (b.logo_image != null && String(b.logo_image).trim() && !logoVal) {
+      return err('Logo 地址不合法：需以 / 开头（站内图片）或 http(s):// 开头');
     }
+    const favVal = b.favicon_image != null ? safeUrl(b.favicon_image) : null;
+    if (b.favicon_image != null && String(b.favicon_image).trim() && !favVal) {
+      return err('Favicon 地址不合法：需以 / 开头（站内图片）或 http(s):// 开头');
+    }
+    // ---- 校验全过，开始写库 ----
+    if (pmVal != null) await db.setSetting(dbx, 'permalink', pmVal);
+    if (em != null) await db.setSetting(dbx, 'email', em.slice(0, 120));
     const allowed = { site_title: 60, site_subtitle: 80, author_name: 30, footer_text: 500, seo_desc: 200, beian: 100, copyright: 600 };
     // 代码高亮主题与头像源：取值受限，避免写入任意值
     if (b.code_theme != null) {
@@ -1507,10 +1526,9 @@ async function api(ctx, url, seg, method) {
     for (const k of Object.keys(allowed)) {
       if (b[k] != null) await db.setSetting(dbx, k, String(b[k]).slice(0, allowed[k]));
     }
-    // 图标地址：只接受站内相对路径或 http(s)，挡掉 javascript: 等伪协议；传空串表示清除
-    const safeUrl = (v) => (/^(https?:\/\/|\/)/i.test(String(v || '').trim()) ? String(v).trim().slice(0, 300) : '');
-    if (b.logo_image != null) await db.setSetting(dbx, 'logo_image', safeUrl(b.logo_image));
-    if (b.favicon_image != null) await db.setSetting(dbx, 'favicon_image', safeUrl(b.favicon_image));
+    // 图标地址（校验在最前面已做完，这里只落库；空串 = 清除）
+    if (logoVal != null) await db.setSetting(dbx, 'logo_image', logoVal);
+    if (favVal != null) await db.setSetting(dbx, 'favicon_image', favVal);
     if (b.per_page != null) await db.setSetting(dbx, 'per_page', String(Math.min(20, Math.max(1, parseInt(b.per_page, 10) || 8))));
     if (b.allow_comments != null) await db.setSetting(dbx, 'allow_comments', b.allow_comments ? '1' : '0');
     if (b.comment_audit != null) await db.setSetting(dbx, 'comment_audit', b.comment_audit ? '1' : '0');
