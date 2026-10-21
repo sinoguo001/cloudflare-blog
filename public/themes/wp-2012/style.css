@@ -70,12 +70,14 @@ body {
   border-bottom: 0;
   padding-top: 26px;
 }
+/* ★ 页头节点本身就是 .wrap：只要上下为 0，左右那 22px 留给 .wrap
+   （原来写 padding:0 0 0，窄屏下品牌、站名会贴到屏幕左边缘） */
 .hd-in {
   display: flex;
   align-items: flex-end;
   flex-wrap: wrap;
   gap: 0;
-  padding: 0 0 0;
+  padding-block: 0;
 }
 .brand {
   order: 1;
@@ -113,10 +115,12 @@ body {
 }
 .theme-btn:hover, .search-btn:hover { border-color: #21759b; color: #21759b }
 
-/* 导航：通栏、上下细线、项与项之间 32px，不再有胶囊底色 */
+/* 导航：通栏、上下细线、项与项之间 32px，不再有胶囊底色。
+   ★ 这里用 width 而不是 flex-basis：窄屏要靠 calc() 把宽度补回两侧负边距，
+   flex-basis 会盖掉 width，写多少都不生效。 */
 .nav {
   order: 3;
-  flex-basis: 100%;
+  width: 100%;
   margin-top: 14px;
   gap: 0;
   border-top: 1px solid var(--line);
@@ -493,8 +497,10 @@ html[data-theme="dark"] .like-btn { background: #2f2f2f; border-color: #444; col
 @media (max-width: 640px) {
   .brand { font-size: 22px; line-height: 1.7 }
   .brand small { font-size: 12.5px }
-  /* 导航在手机上是横向滑动条，别被 32px 的项距撑出横向溢出 */
-  .nav { margin: 10px -22px 0; padding: 0 12px; overflow-x: auto; flex-wrap: nowrap }
+  /* 导航在手机上是横向滑动条，别被 32px 的项距撑出横向溢出。
+     ★ 宽度补回两侧负边距（22px × 2），内边距也用 22px —— 首项才和品牌左边缘对齐；
+     只写 width:100% 会让整条左移 22px、右边空出 44px。 */
+  .nav { width: calc(100% + 44px); margin: 10px -22px 0; padding: 0 22px; overflow-x: auto; flex-wrap: nowrap }
   .nav a { margin-right: 22px; padding: 9px 0; white-space: nowrap }
   .main { padding: 18px 0 30px }
   .pc-title { font-size: 19px }

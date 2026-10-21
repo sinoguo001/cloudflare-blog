@@ -132,7 +132,8 @@ html[data-theme="dark"] ::selection { background: #4a322c; color: #f2e9dc }
    2. 页头与导航
    ============================================================ */
 .hd { border-bottom: 1px solid var(--line) }
-.hd-in { padding: 16px 0 }
+/* 页头节点本身就是 .wrap：只改上下，左右那 20px 留给 .wrap（写成 padding:16px 0 会让品牌贴边） */
+.hd-in { padding-block: 16px }
 
 /* 站名用 500：宋体只有 400 / 700 两档，500 会落到常规字重 ——
    明朝体的「细」正是小清新的关键，600 会被合成加粗、糊成一团 */
@@ -406,7 +407,7 @@ html[data-theme="dark"] .sd-hc { background: #2f2b25 }
   .art-body { font-size: 16px; line-height: 1.9 }
   .art-body h2 { font-size: 20px }
   .article h1 { font-size: 24px }
-  .hd-in { padding: 11px 0 0 }
+  .hd-in { padding-block: 11px 0 }
   /* 手机导航是横向滑条，当前项仍用实心块（触屏要够醒目），
      但把骨架的 8px 药丸收成 2px 方章，和全站其他圆角统一 */
   .nav a { border-radius: 2px }

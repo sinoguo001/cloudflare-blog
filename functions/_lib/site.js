@@ -260,7 +260,9 @@ img{max-width:100%}
 .wrap{max-width:880px;margin:0 auto;padding:0 20px}
 /* 顶栏 */
 .hd{background:var(--card);border-bottom:1px solid var(--line)}
-.hd-in{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding:14px 0}
+/* ★ 页头元素本身就是 .wrap（<div class="wrap hd-in">），只补上下内边距，左右必须留给 .wrap ——
+   写成 padding:14px 0 会把正文那 20px 的边距抹成 0，品牌与站点名直接贴到屏幕边上。 */
+.hd-in{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding-block:14px}
 .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:20px;color:var(--text);margin-right:auto}
 /* 传了自定义 Logo 图：只留图，「云」方块与站名 / 副标题一起收起。
    三者同排会显得拥挤，图还会被挤到 20 多像素；而 Logo 本身就是完整标识。 */
@@ -269,7 +271,7 @@ img{max-width:100%}
 /* 品牌标恒为品牌蓝：选择器挂到 a.brand 上，特异性高过任何主题的 .brand-mark ——
    将来哪个主题（或 R2 里那份旧 CSS）再写 background:var(--accent)，这枚方块也不会变色。*/
 a.brand .brand-mark{background:#2563eb;color:#fff}
-.brand-img{height:36px;width:auto;max-width:170px;object-fit:contain;display:block}
+.brand-img{height:64px;width:auto;max-width:300px;object-fit:contain;display:block}
 .brand small{display:block;font-weight:400;font-size:12px;color:var(--muted);line-height:1.2}
 .nav{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
 .nav a{padding:6px 12px;border-radius:8px;color:var(--text);font-size:15px}
@@ -593,15 +595,17 @@ textarea.lf-input{min-height:86px;resize:vertical;line-height:1.7}
  .pc{grid-template-columns:1fr}.pc-cover img{width:100%;height:auto;max-height:180px}
  .article{padding:22px 18px}.comments{padding:20px 18px}.cmt-child{margin-left:20px}
  /* ---- 页头：桌面的 14px 内边距 + 18px 间距在手机上太奢侈，整块占到 175px（近五分之一屏）---- */
- .hd-in{gap:8px 12px;padding:11px 0 0}
+ .hd-in{gap:8px 12px;padding-block:11px 0}
  .brand{font-size:18px;gap:8px}
  .brand-mark{width:30px;height:30px;border-radius:8px;font-size:15px}
- .brand-img{height:30px}
+ .brand-img{height:42px}
  .brand small{font-size:11.5px}
  /* 导航条：独占一行 + 横向滑动，**不换行**。项数是用户在后台随时增减的，
     换行会让页头高度不可控（原来 6 项就撑成两行，第三行只剩两个孤零零的按钮）。
-    负边距让它贴到屏幕两侧，滑动时首尾不会被 .wrap 的 20px 内边距截住。 */
- .nav{order:3;width:100%;margin:0 -20px;padding:8px 20px;gap:2px;
+    负边距让它贴到屏幕两侧，滑动时首尾不会被 .wrap 的 20px 内边距截住。
+    ★ 宽度必须写 calc(100% + 40px)：百分比算的是 .wrap 的**内容盒**（已经是视口 -40），
+    只写 width:100% 再配 -20px 负边距，整条会被推左 20px、右边还空出 40px。 */
+ .nav{order:3;width:calc(100% + 40px);margin:0 -20px;padding:8px 20px;gap:2px;
    flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
    border-top:1px solid var(--line);-webkit-overflow-scrolling:touch;
    scrollbar-width:none;-ms-overflow-style:none;
@@ -653,9 +657,11 @@ export function hasCustomLogo(s) {
 // 它进 URL，URL 一变浏览器与 CDN 就都不会再拿旧缓存 —— 否则改了颜色，浏览器标签里
 // 那张旧图能赖上几小时（浏览器对 favicon 有独立缓存，Ctrl+F5 都刷不掉）。
 export const FAVICON_VER = '2';
-// 自定义图标地址：favicon 优先用 favicon_image，没设则复用 logo_image，都没设则用动态 /favicon.svg
+// 自定义图标地址：只认 favicon_image，绝不回退到页头 Logo。
+// 页头 Logo 是横图（常见 3:1 以上），缩进 16px 的标签页只剩一团色块，反而认不出；
+// 两处各管各的 —— 设了 Logo 不会顺带把浏览器标签改掉。
 export function faviconHref(s) {
-  const custom = String(s.get('favicon_image') || s.get('logo_image') || '').trim();
+  const custom = String(s.get('favicon_image') || '').trim();
   if (custom) return custom; // 用户自己的图片：原样用，不加参数
   // 默认动态图标：把版本号与首字拼进 URL，改画法或改站名都能立刻甩掉旧缓存
   return `/favicon.svg?v=${FAVICON_VER}-${encodeURIComponent(brandChar(s))}`;

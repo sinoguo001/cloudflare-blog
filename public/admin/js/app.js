@@ -2983,7 +2983,7 @@ async function viewSettings(tabArg) {
             <label>浏览器标签图标 Favicon（建议正方形，≥ 64×64）</label>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
               <span id="fav-prev" style="width:38px;height:38px;border-radius:9px;background:#2563eb;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden">云</span>
-              <input class="inp" id="s-favicon_image" placeholder="留空则自动沿用 Logo，再无则用默认首字图标" style="flex:1;min-width:190px">
+              <input class="inp" id="s-favicon_image" placeholder="留空则用默认首字图标，与页头 Logo 互不影响" style="flex:1;min-width:190px">
               <label class="btn" style="cursor:pointer;margin:0">上传<input type="file" id="fav-file" accept="image/*" hidden></label>
               <button class="btn" type="button" id="fav-clear">清除</button>
             </div>
