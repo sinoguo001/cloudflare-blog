@@ -1729,7 +1729,7 @@ async function viewMedia() {
       };
       box.innerHTML = `<div class="mg">${r.items.map((m) => `
         <div class="mg-it">${thumbOf(m)}
-          <div class="mi-meta">${fmtSize(m.size)}<br>${fmtTime(String(m.uploaded).slice(0, 19).replace('T', ' '))}</div>
+          <div class="mi-meta">${fmtSize(m.size)}<br>${fmtTime(m.uploaded_bn || String(m.uploaded).slice(0, 19).replace('T', ' '))}</div>
           <div class="mi-ops"><button class="btn sm" data-copy="${esc(m.url)}">复制链接</button>
           <button class="btn sm d" data-del="${esc(m.key)}">删除</button></div></div>`).join('')}</div>
         ${r.truncated ? `<div style="margin-top:14px"><button class="btn" id="m-more">加载更多</button></div>` : ''}`;
@@ -2065,7 +2065,7 @@ async function viewBackup() {
     if (!items.length) { listBox.innerHTML = '<div class="empty-note">暂无备份</div>'; return; }
     listBox.innerHTML = `<div class="tbl-w"><table class="tbl"><thead><tr><th>文件</th><th>大小</th><th>备份时间</th><th>操作</th></tr></thead><tbody>${
       items.map((it) => `<tr><td><code>${esc(it.name)}</code></td><td>${fmtSize(it.size)}</td>
-        <td>${fmtTime(String(it.uploaded).slice(0, 19).replace('T', ' '))}</td>
+        <td>${fmtTime(it.uploaded_bn || String(it.uploaded).slice(0, 19).replace('T', ' '))}</td>
         <td><button class="btn sm g" data-dl="${esc(it.name)}">下载</button>
         <button class="btn sm d" data-restore="${esc(it.name)}">恢复</button>
         <button class="btn sm g" data-delbk="${esc(it.name)}">删除</button></td></tr>`).join('')}

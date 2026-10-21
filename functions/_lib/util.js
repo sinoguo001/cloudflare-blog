@@ -18,11 +18,21 @@ export function stripHtml(h) {
     .replace(/\s+/g, ' ').trim();
 }
 
+// UTC 时间（Date / 毫秒数 / 带 Z 的 ISO 字符串）-> 北京时间 'YYYY-MM-DD HH:MM:SS'
+// 只用于外部给的 UTC 时间：R2 的 `uploaded`、fetch 拿到的 HTTP 时间等。
+// 库里存的时间**已经是**北京字符串，千万别过这个函数（会再 +8 变成 16 小时）。
+// 不传/解不动时返回空串，调用方用 `x || 兜底` 即可，不会显示 NaN。
+export function bnFromUTC(v) {
+  let t = NaN;
+  if (v instanceof Date) t = v.getTime();
+  else if (typeof v === 'number') t = v;
+  else if (typeof v === 'string' && v) t = Date.parse(v);
+  if (!Number.isFinite(t)) return '';
+  return new Date(t + 8 * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
+}
+
 // 北京时间（UTC+8）字符串 'YYYY-MM-DD HH:MM:SS'
-export const bnNow = () => {
-  const d = new Date(Date.now() + 8 * 3600e3);
-  return d.toISOString().slice(0, 19).replace('T', ' ');
-};
+export const bnNow = () => bnFromUTC(Date.now());
 
 export function fmtDate(s, time = false) {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}))?/.exec(s || '');

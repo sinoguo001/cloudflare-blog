@@ -3,7 +3,7 @@
 // 负责：/api/* 接口、/media/* R2 图片代理、前台页面 SSR、
 //       rss.xml / sitemap.xml / robots.txt、后台静态资源(经 ASSETS)
 // ============================================================
-import { json, err, esc, bnNow, readJson, mimeOfExt, isHexColor, isEmail, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard,
+import { json, err, esc, bnNow, bnFromUTC, readJson, mimeOfExt, isHexColor, isEmail, stripHtml, wantsFeedHtml, readCookie, newVisitorId, hitGuard,
   normalizePermalink, permalinkOf, permalinkRegex, postUrl, pageUrl, catUrl, permalinkVarsMatch,
   sha256Hex, safeEqual, postPassCookie, parseRange, MEDIA_TYPES, MEDIA_MAX, mediaKindOf,
   putUpload } from './_lib/util.js';
@@ -1046,6 +1046,9 @@ async function api(ctx, url, seg, method) {
       return json({
         items: (list.objects || []).map((o) => ({
           key: o.key, size: o.size, uploaded: o.uploaded,
+          // R2 的 uploaded 是 UTC，直接上屏会比文章、评论的时间早 8 小时。
+          // 这里多给一份北京时间字符串，界面统一用它；uploaded 原样保留（排序、兼容老前端）。
+          uploaded_bn: bnFromUTC(o.uploaded),
           ct: o.customMetadata?.ct || mimeOfExt(o.key),
           // R2 的键本身就带 media/ 前缀，再拼一次会得到 /media/media/xxx。
           // 取的时候虽然兼容这种写法，但界面里复制出来的地址要跟上传接口一致，
@@ -1250,7 +1253,8 @@ async function api(ctx, url, seg, method) {
     }
     if (method === 'GET' && seg.length === 1) {
       const all = (await env.BLOG.list({ prefix: 'backups/', limit: 100 })).objects || [];
-      return json({ items: all.sort((a, b) => b.uploaded - a.uploaded).map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded, name: o.key.split('/').pop() })) });
+      // uploaded 是 R2 给的 UTC；界面按北京时间显示（否则备份时间会早 8 小时）
+      return json({ items: all.sort((a, b) => b.uploaded - a.uploaded).map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded, uploaded_bn: bnFromUTC(o.uploaded), name: o.key.split('/').pop() })) });
     }
     if (method === 'GET' && seg.length === 2 && seg[1] !== 'restore') {
       const obj = await env.BLOG.get('backups/' + seg[1]);

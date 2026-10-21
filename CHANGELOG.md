@@ -26,6 +26,7 @@
 | 12 | 修复 | 手机上看，页头的 Logo 与站名贴着屏幕左边缘，导航条又整条往左偏了大约一个字，右边空出更宽的一道白 | 根因是 `.hd-in` 同时也是 `.wrap`：`padding:14px 0` / `11px 0 0` 把 `.wrap` 的左右 20px 抹成 0，而导航条仍按 `margin:0 -20px` 去抵消那 20px，于是整条左移、右侧空 40px。改为 `.hd-in` 只写 `padding-block`（左右留给 `.wrap`），导航条宽度写 `calc(100% + 2×gutter)` 把负边距补回来；2012 主题的 `.nav` 由 `flex-basis` 改 `width`（否则 calc 不生效），窄屏内边距 12px → 22px。实测三种主题下品牌、首项、正文同一条竖线。新增 `.rev-navmobile.py`（9 坏法） |
 | 13 | 修复 | 换了自己的横版 Logo 后，页头那块看着特别小，图里的字比原来的站名还小一截 | `.brand-img` 由 `height:36px` / `max-width:170px` 改为 **64px / 300px**（窄屏 42px）。36px 时 1400×420 的图只有 120px 宽、图内文字实测 13.6px；保留 `object-fit:contain`，超宽图等比内缩不压扁。`.logo-smoke.mjs` 补 4 条断言 |
 | 14 | 修复 | 设了页头 Logo 之后，浏览器标签上的站点图标也变成那张横图，缩到 16px 只剩一团色块 | `faviconHref()` 去掉 `favicon_image || logo_image` 的回退，**只认「站点图标」**，留空回到动态 `/favicon.svg`（品牌蓝 + 站名首字）；后台输入框提示改成「与页头 Logo 互不影响」。后台入口的标签图标本来就固定 `/favicon.svg?v=2`，不受影响 |
+| 15 | 修复 | 媒体库里附件的时间比文章、评论早 8 小时，看着像时区设错了 | R2 的 `uploaded` 是 UTC，列表接口原样透传、前端 `slice(0,19)` 直接上屏。新增 `bnFromUTC()`（`functions/_lib/util.js`，`bnNow()` 改为复用它，全站只有一个 +8 的落点），`GET /api/media` 与 `GET /api/backup` 各多返回一份 `uploaded_bn`（北京字符串），后台媒体库与备份列表优先用它；`uploaded` 保留不动，排序与老前端不受影响。`.media-smoke.mjs` 补 3 条、`.bkdel-smoke.mjs` 补 2 条断言，`.rev-media.py` 加 3 条坏法（去掉 +8 / 不返字段 / 前端改回切 UTC） |
 
 ---
 
