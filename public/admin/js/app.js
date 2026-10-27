@@ -2966,6 +2966,28 @@ async function viewSettings(tabArg) {
         <p class="hint">下方预览按当前填写内容实时加载。字体文件存入 R2，<b>点最下方「保存全部设置」才生效</b>；中文字体一个常有 5–10MB，为不让首屏等它，只作用于文章正文、并且字体没下载完时先用系统字体把字显示出来。</p>
         <p class="warn-box">⚠️ <b>字体有版权。</b>上传或引用前请先确认你已获得授权（商用字库尤其要留意授权范围）。本程序只负责加载你自己提供的字体，不附带任何字体文件，也不对由此产生的版权纠纷负责。</p>
       </div>
+      <div class="card">
+        <div class="sec-title">搜索引擎推送 <small>发布文章后主动把地址递过去，不用干等它自己爬</small></div>
+        <div class="nav-toggles" style="margin-bottom:12px">
+          <label><input type="checkbox" id="s-seo_push_on"> 发布后自动推送</label>
+        </div>
+        <div class="field">
+          <label>百度准入密钥 <small>搜索资源平台 → 普通收录 → API 提交，复制那串 token</small></label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <input class="inp" id="s-baidu_token" placeholder="粘贴百度搜索资源平台的准入密钥" spellcheck="false" style="flex:1;min-width:190px">
+            <button class="btn" type="button" id="baidu-clear">清除</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>IndexNow 密钥 <small>必应 / Yandex 等共用；填了本站会自动提供验证文件</small></label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <input class="inp" id="s-indexnow_key" placeholder="8–128 位字母、数字或连字符" spellcheck="false" style="flex:1;min-width:190px">
+            <button class="btn" type="button" id="indexnow-clear">清除</button>
+          </div>
+        </div>
+        <p class="hint" id="seo-state">还没推送过。</p>
+        <p class="hint" style="margin-bottom:0">百度要先把站点加进搜索资源平台并验证归属，密钥才有效。<b>Google 没有通用网页推送接口</b>（只认上面的站点地图），这里不假装支持。密钥只存不显示，<b>留空保存不会把已填的冲掉</b>；草稿、独立页面与加密文章不推送，同一篇 10 分钟内只推一次。</p>
+      </div>
       </div>
       <div>
         <div class="card">
@@ -3739,6 +3761,35 @@ async function viewSettings(tabArg) {
   fontRemoteIn.value = s.font_remote || '';
   fontFamilyIn.value = s.font_family || '';
   fontOn.checked = s.font_on === '1';
+  // ---- 搜索引擎推送（Ver 0.8 ①）：密钥只写不读，框里永远不回显真值 ----
+  const seoOn = v.querySelector('#s-seo_push_on');
+  const baiduIn = v.querySelector('#s-baidu_token');
+  const indexnowIn = v.querySelector('#s-indexnow_key');
+  const seoState = v.querySelector('#seo-state');
+  let baiduClear = false;
+  let indexnowClear = false;
+  seoOn.checked = s.seo_push_on === '1';
+  baiduIn.value = '';
+  indexnowIn.value = '';
+  baiduIn.placeholder = s.baidu_token_set === '1' ? '已设置，留空保持不变' : '粘贴百度搜索资源平台的准入密钥';
+  indexnowIn.placeholder = s.indexnow_key_set === '1' ? '已设置，留空保持不变' : '8–128 位字母、数字或连字符';
+  v.querySelector('#baidu-clear').addEventListener('click', () => {
+    baiduIn.value = '';
+    baiduClear = true;
+    baiduIn.placeholder = '保存后清除（点下方「保存全部设置」生效）';
+  });
+  v.querySelector('#indexnow-clear').addEventListener('click', () => {
+    indexnowIn.value = '';
+    indexnowClear = true;
+    indexnowIn.placeholder = '保存后清除（点下方「保存全部设置」生效）';
+  });
+  // 上次推送结果：开了却没效果时，这里能直接看出是哪一家、报了什么
+  const seoLast = (() => { try { return JSON.parse(s._seo_last || '{}'); } catch (e) { return {}; } })();
+  if (seoLast && Array.isArray(seoLast.items) && seoLast.items.length) {
+    seoState.textContent = `上次推送（${seoLast.time || '—'}）：` + seoLast.items
+      .map((i) => `${i.name}${i.ok ? '成功' : '失败'}——${i.msg}`).join('；');
+    seoState.style.color = seoLast.ok ? '#15803d' : '#b91c1c';
+  }
   fontSrcEl.addEventListener('click', (e) => {
     const b = e.target.closest('button[data-m]');
     if (!b) return;
@@ -3947,6 +3998,12 @@ async function viewSettings(tabArg) {
       font_local: v.querySelector('#s-font_local').value.trim(),
       font_remote: v.querySelector('#s-font_remote').value.trim(),
       font_family: v.querySelector('#s-font_family').value.trim(),
+      // 搜索引擎推送（Ver 0.8 ①）：留空＝保持原值，只有点过「清除」才发 *_clear
+      seo_push_on: seoOn.checked,
+      baidu_token: baiduIn.value.trim(),
+      baidu_clear_token: baiduClear,
+      indexnow_key: indexnowIn.value.trim(),
+      indexnow_clear_key: indexnowClear,
       // 音频播放（Ver 0.6 ③）：默认关；列表只收流媒体地址，服务端再洗一遍
       audio_on: v.querySelector('#s-audio_on').checked,
       audio_title: v.querySelector('#s-audio_title').value.trim(),

@@ -33,6 +33,8 @@ import * as jump from './_lib/jump.js';
 import * as zip from './_lib/zip.js';
 // 数据导入（Ver 0.7 ①）：只负责白名单与写库，SQL 解析在浏览器端做（理由见文件头注释）
 import * as importdb from './_lib/importdb.js';
+// 搜索引擎主动推送（Ver 0.8 ①）：百度普通收录 + IndexNow（必应等）
+import * as seo from './_lib/seo.js';
 import { ADMIN_SHELL } from './_lib/admin-shell.js';
 import * as presets from './_lib/presets.js';
 import { newSalt, pbkdf2, userFromRequest, makeSessionValue, setSessionCookie, clearSessionCookie } from './_lib/auth.js';
@@ -135,6 +137,18 @@ async function handle(ctx) {
   // ---- API ----
   if (seg[0] === 'api') return api(ctx, url, seg.slice(1), method);
 
+  // ---- IndexNow 密钥文件（Ver 0.8 ①）----
+  // 必应 / Yandex 等要求用站点根下的 <key>.txt 证明域名归属，内容就是这个 key 本身。
+  // ⚠️ 必须排在下面「静态资源」分支之前：.txt 命中 STATIC_EXT，会被直接交给 ASSETS
+  //    变成 404。这里只拦「填了 key 且路径正好对上」的那一个，不匹配就继续往下走，
+  //    站点里原有的任何 .txt 行为都不变。
+  if (method === 'GET' && /^\/[A-Za-z0-9-]{8,128}\.txt$/.test(path)) {
+    const sk = await db.settingsMap(env.DB);
+    const key = seo.safeKey(sk.get('indexnow_key'));
+    if (key && path === '/' + key + '.txt') {
+      return new Response(key, { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=300' } });
+    }
+  }
   // ---- 后台静态资源与根静态文件 ----
   // （/media、/backup、robots/rss/sitemap 等动态路径需排除，避免被扩展名规则截胡）
   // ⚠️ fonts 必须在这里排除：.woff2 / .ttf 都命中下面的 STATIC_EXT，
@@ -764,6 +778,29 @@ async function api(ctx, url, seg, method) {
       const p = await db.getPost(dbx, { id: c.post_id });
       if (p && p.type !== 'page') clearPaths([postUrl(await db.settingsMap(dbx), p)]);
     } catch (e) { /* 清缓存失败不影响评论处理本身 */ }
+  };
+
+  // ---- 搜索引擎推送（Ver 0.8 ①）----
+  // 只在「文章」「已发布」「没加密」时推：
+  //   - 独立页面不进搜索列表，推了只是浪费配额；
+  //   - 加密文章的正文对搜索引擎是锁着的，收录一个打不开的地址没有意义。
+  // 同一地址 10 分钟内只推一次：编辑器带自动保存，每敲几个字就推会把每日配额刷掉。
+  const SEO_THROTTLE_MS = 10 * 60 * 1000;
+  const seoPush = (p, sm) => {
+    if (!p || p.type === 'page' || p.status !== 'published' || p.password) return;
+    const cfg = seo.config(sm, url.origin);
+    if (!cfg.on || (!cfg.baidu && !cfg.indexnow)) return;
+    const target = cfg.base.replace(/\/+$/, '') + postUrl(sm, p);
+    ctx.waitUntil((async () => {
+      try {
+        const prev = JSON.parse((await db.settingsMap(dbx)).get('_seo_last') || '{}');
+        if (prev.url === target && prev.ok && Date.now() - (prev.ts || 0) < SEO_THROTTLE_MS) return;
+      } catch (e) { /* 旧状态坏了就当从没推过 */ }
+      const r = await seo.push(cfg, [target]);
+      if (!r) return;
+      // 存一份给设置页显示：开了没效果时，这里能直接看出是哪一家、报了什么
+      await db.setSetting(dbx, '_seo_last', JSON.stringify({ ...r, url: target, time: bnNow() }));
+    })().catch(() => {}));
   };
 
   // ---- IP 归属地（Ver 0.5 ⑦）----
@@ -1477,13 +1514,20 @@ async function api(ctx, url, seg, method) {
       // Cloudflare API Token 同样只回传「有没有配过」，绝不把值送回浏览器。
       // 它比邮件授权码更敏感：拿到就能读整个 Zone 的流量数据。
       const hasCfToken = !!all.cf_api_token;
+      // 搜索引擎推送密钥同理：只回传「有没有配过」，值不出服务端
+      const hasBaidu = !!all.baidu_token;
+      const hasIndexnow = !!all.indexnow_key;
       delete all.admin_pass_hash;
       delete all.admin_pass_salt;
       delete all.admin_pass_iter;
       delete all.mail_pass;
       delete all.cf_api_token;
+      delete all.baidu_token;
+      delete all.indexnow_key;
       all.mail_pass_set = hasPass ? '1' : '0';
       all.cf_api_token_set = hasCfToken ? '1' : '0';
+      all.baidu_token_set = hasBaidu ? '1' : '0';
+      all.indexnow_key_set = hasIndexnow ? '1' : '0';
       if (!(await authUser())) delete all.email;
       return json(all);
     }
@@ -1514,6 +1558,12 @@ async function api(ctx, url, seg, method) {
     if (b.favicon_image != null && String(b.favicon_image).trim() && !favVal) {
       return err('Favicon 地址不合法：需以 / 开头（站内图片）或 http(s):// 开头');
     }
+    // 搜索引擎推送密钥（Ver 0.8 ①）：格式不对在这里就拒，别等推送时才回一句「密钥无效」。
+    // 空串 = 保持原值（表单里那个框默认不回显真密钥），要清除走下面的 *_clear 标记。
+    const baiduVal = b.baidu_token != null && String(b.baidu_token).trim() ? seo.safeToken(b.baidu_token) : null;
+    if (baiduVal === '') return err('百度准入密钥格式不对：应为 6–80 位字母、数字、下划线或连字符');
+    const indexnowVal = b.indexnow_key != null && String(b.indexnow_key).trim() ? seo.safeKey(b.indexnow_key) : null;
+    if (indexnowVal === '') return err('IndexNow 密钥格式不对：8–128 位，只能用字母、数字与连字符');
     // ---- 校验全过，开始写库 ----
     if (pmVal != null) await db.setSetting(dbx, 'permalink', pmVal);
     if (em != null) await db.setSetting(dbx, 'email', em.slice(0, 120));
@@ -1590,6 +1640,14 @@ async function api(ctx, url, seg, method) {
     if (b.font_local != null) await db.setSetting(dbx, 'font_local', font.safeFontUrl(b.font_local));
     if (b.font_remote != null) await db.setSetting(dbx, 'font_remote', font.safeFontUrl(b.font_remote));
     if (b.font_family != null) await db.setSetting(dbx, 'font_family', font.safeFamily(b.font_family));
+    // ---- 搜索引擎推送（Ver 0.8 ①）：默认关 ----
+    // 两个密钥都「只写不读」：表单里留空表示保持原值，要清除必须显式传 *_clear，
+    // 否则每次点保存都会把已经填好的密钥冲成空串（邮件授权码踩过同一个坑）。
+    if (b.seo_push_on != null) await db.setSetting(dbx, 'seo_push_on', b.seo_push_on ? '1' : '0');
+    if (baiduVal) await db.setSetting(dbx, 'baidu_token', baiduVal);
+    if (b.baidu_clear_token) await db.setSetting(dbx, 'baidu_token', '');
+    if (indexnowVal) await db.setSetting(dbx, 'indexnow_key', indexnowVal);
+    if (b.indexnow_clear_key) await db.setSetting(dbx, 'indexnow_key', '');
     // ---- 音频播放（Ver 0.6 ③）：默认关；只播流媒体地址，不接本地上传 ----
     // 列表是 JSON 数组，一律过 normalizeAudio 清洗：地址必须 http(s):// 或站内 / 开头
     // （挡住 javascript: / data: 这类伪协议），标题剥尖括号，条数夹在 60 以内。
@@ -1975,7 +2033,11 @@ async function api(ctx, url, seg, method) {
         cover_key: body.cover_key || null, tags: Array.isArray(body.tags) ? body.tags : [],
       });
       const post = await db.getPost(dbx, { id });
-      if (status === 'published') clearForPost(post, await db.settingsMap(dbx));
+      if (status === 'published') {
+        const sm = await db.settingsMap(dbx);
+        clearForPost(post, sm);
+        seoPush(post, sm);
+      }
       return json({ ok: true, id, slug: post.slug });
     }
     // 单篇操作 GET/PUT/DELETE /api/posts/:id
@@ -2019,7 +2081,9 @@ async function api(ctx, url, seg, method) {
           tags: Array.isArray(body.tags) ? body.tags : [],
         });
         const np = await db.getPost(dbx, { id });
-        clearForPost(np, await db.settingsMap(dbx));
+        const sm = await db.settingsMap(dbx);
+        clearForPost(np, sm);
+        seoPush(np, sm);
         return json({ ok: true, slug: np.slug });
       }
     }
@@ -2030,7 +2094,10 @@ async function api(ctx, url, seg, method) {
       if (!['published', 'draft'].includes(b.status)) return err('非法状态');
       const ok = await db.setPostStatus(dbx, id, b.status);
       if (!ok) return err('文章不存在', 404);
-      clearForPost(await db.getPost(dbx, { id }), await db.settingsMap(dbx));
+      const np = await db.getPost(dbx, { id });
+      const sm = await db.settingsMap(dbx);
+      clearForPost(np, sm);
+      seoPush(np, sm);
       return json({ ok: true, status: b.status });
     }
     // 回收站：还原 / 彻底删除（Ver 0.7 ⑪）

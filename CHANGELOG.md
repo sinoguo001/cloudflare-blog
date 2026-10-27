@@ -27,6 +27,7 @@
 | 13 | 修复 | 换了自己的横版 Logo 后，页头那块看着特别小，图里的字比原来的站名还小一截 | `.brand-img` 由 `height:36px` / `max-width:170px` 改为 **64px / 300px**（窄屏 42px）。36px 时 1400×420 的图只有 120px 宽、图内文字实测 13.6px；保留 `object-fit:contain`，超宽图等比内缩不压扁。`.logo-smoke.mjs` 补 4 条断言 |
 | 14 | 修复 | 设了页头 Logo 之后，浏览器标签上的站点图标也变成那张横图，缩到 16px 只剩一团色块 | `faviconHref()` 去掉 `favicon_image || logo_image` 的回退，**只认「站点图标」**，留空回到动态 `/favicon.svg`（品牌蓝 + 站名首字）；后台输入框提示改成「与页头 Logo 互不影响」。后台入口的标签图标本来就固定 `/favicon.svg?v=2`，不受影响 |
 | 15 | 修复 | 媒体库里附件的时间比文章、评论早 8 小时，看着像时区设错了 | R2 的 `uploaded` 是 UTC，列表接口原样透传、前端 `slice(0,19)` 直接上屏。新增 `bnFromUTC()`（`functions/_lib/util.js`，`bnNow()` 改为复用它，全站只有一个 +8 的落点），`GET /api/media` 与 `GET /api/backup` 各多返回一份 `uploaded_bn`（北京字符串），后台媒体库与备份列表优先用它；`uploaded` 保留不动，排序与老前端不受影响。`.media-smoke.mjs` 补 3 条、`.bkdel-smoke.mjs` 补 2 条断言，`.rev-media.py` 加 3 条坏法（去掉 +8 / 不返字段 / 前端改回切 UTC） |
+| 16 | 新增 | 文章发布后只能干等搜索引擎自己爬，百度常常几天才收录；想主动提交，又不希望每改一个字就推一次、把每日配额刷掉 | 新增 `functions/_lib/seo.js`：接百度「普通收录」API（POST 纯文本、一行一个地址）与 IndexNow（必应 / Yandex / Seznam 等共用）。IndexNow 验证文件由本站 `GET /<key>.txt` 自动托管，后台只填一个 key，不用放文件；这条路由必须排在静态资源分支之前，否则 `.txt` 会被当成静态资源交出去变 404。发布、保存已发布文章、重新上线三个入口各接一次 `ctx.waitUntil`，搜索引擎再慢也不影响「文章存没存进去」。草稿、独立页面、加密文章不推；同一地址 10 分钟内只推一次（自动保存不会刷爆配额）。两个密钥只写不读：接口只回传「配过了」，留空保存保持原值，清除要显式点按钮。推送结果写 `_seo_last`，设置页显示哪家成功、哪家报了什么。Google 无通用网页推送接口（Indexing API 只覆盖招聘与直播），不假装支持。新增 `.seo-smoke.mjs`（59 条）与 `.rev-seo.py`（12 坏法） |
 
 ---
 
